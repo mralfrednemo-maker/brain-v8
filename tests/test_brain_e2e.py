@@ -1,0 +1,131 @@
+"""End-to-end Brain orchestrator tests with mock data."""
+import pytest
+
+from thinker.brain import Brain
+from thinker.config import BrainConfig
+from thinker.types import Outcome
+from conftest import MockLLMClient, load_model_output
+
+
+def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
+    """Queue all responses needed for a full Brain run (no search_fn).
+
+    Call order per Brain.run() with search_fn=None:
+    Gate1(sonnet) -> R1(4 models) -> R1_args(sonnet) -> R1_pos(sonnet)
+    -> R2(3 models) -> R2_args(sonnet) -> R2_pos(sonnet) -> R1vR2_cmp(sonnet)
+    -> R3(2 models) -> R3_args(sonnet) -> R3_pos(sonnet) -> R2vR3_cmp(sonnet)
+    -> Synthesis(sonnet) -> Gate2(sonnet)
+    """
+    # Gate 1
+    mock.add_response("sonnet", "VERDICT: PASS\nQUESTIONS:\nREASONING: Clear incident.")
+
+    # --- Round 1 ---
+    mock.add_responses_from_fixtures(1, ["r1", "reasoner", "glm5", "kimi"])
+    # R1 argument extraction
+    mock.add_response("sonnet", (
+        "ARG-1: [r1] Full shutdown is safest given active RCE\n"
+        "ARG-2: [reasoner] Controlled isolation minimizes business impact\n"
+        "ARG-3: [glm5] The 847 requests indicate automated exploitation\n"
+        "ARG-4: [kimi] GDPR 72-hour notification applies\n"
+    ))
+    # R1 position extraction
+    mock.add_response("sonnet", (
+        "r1: O3 [HIGH] — controlled isolation first\n"
+        "reasoner: O3 [MEDIUM] — prefers isolation\n"
+        "glm5: O4 [HIGH] — full shutdown\n"
+        "kimi: O4 [HIGH] — full shutdown\n"
+    ))
+
+    # --- Round 2 ---
+    mock.add_responses_from_fixtures(2, ["r1", "reasoner", "glm5"])
+    # R2 argument extraction
+    mock.add_response("sonnet", (
+        "ARG-5: [r1] Evidence confirms RCE severity warrants shutdown\n"
+        "ARG-6: [glm5] Isolation delays may allow lateral movement\n"
+    ))
+    # R2 position extraction
+    mock.add_response("sonnet", (
+        "r1: O4 [HIGH] — shifted to full shutdown after evidence\n"
+        "reasoner: O3 [MEDIUM] — still prefers isolation\n"
+        "glm5: O4 [HIGH] — maintains shutdown position\n"
+    ))
+    # R1->R2 argument comparison
+    mock.add_response("sonnet", "ARG-1: ADDRESSED\nARG-2: ADDRESSED\nARG-3: MENTIONED\nARG-4: ADDRESSED\n")
+
+    # --- Round 3 ---
+    mock.add_responses_from_fixtures(3, ["r1", "reasoner"])
+    # R3 argument extraction
+    mock.add_response("sonnet", "ARG-7: [r1] All models converging on O4\n")
+    # R3 position extraction
+    mock.add_response("sonnet", (
+        "r1: O4 [HIGH] — full shutdown\n"
+        "reasoner: O4 [HIGH] — converged to shutdown\n"
+    ))
+    # R2->R3 argument comparison
+    mock.add_response("sonnet", "ARG-5: ADDRESSED\nARG-6: ADDRESSED\n")
+
+    # --- Synthesis ---
+    mock.add_response("sonnet", (
+        "---\nfinal_status: COMPLETE\nv3_outcome_class: CONSENSUS\nconfidence: high\n---\n\n"
+        "# Deliberation Report\n\n## TL;DR\nAll models converged on full service shutdown (O4).\n"
+    ))
+
+    # --- Gate 2 ---
+    mock.add_response("sonnet", (
+        "CONVERGENCE: YES — Both final models agree on O4 with aligned reasoning\n"
+        "EVIDENCE: YES — Strong evidence from authoritative sources\n"
+        "DISSENT: YES — All arguments addressed\n"
+        "DATA: YES — Key claims verified\n"
+        "REPORT: YES — Report is thorough\n"
+        "VERDICT: DECIDE\n"
+        "REASONING: High confidence consensus with evidence support."
+    ))
+
+
+class TestBrainE2E:
+    """Full Brain run with mock data."""
+
+    async def test_full_run_decides(self):
+        mock = MockLLMClient()
+        _setup_full_mock(mock, rounds=3)
+
+        brain = Brain(
+            config=BrainConfig(rounds=3),
+            llm_client=mock,
+            search_fn=None,  # No live search in tests
+        )
+        result = await brain.run(brief=(
+            "# Security Incident Assessment\n\n"
+            "JWT bypass in production. 847 requests. Active RCE.\n"
+        ))
+        assert result.outcome == Outcome.DECIDE
+        assert result.gate1.passed is True
+        assert result.gate2 is not None
+        assert result.gate2.outcome == Outcome.DECIDE
+        assert "proof_schema_version" in result.proof
+        assert result.proof["proof_schema_version"] == "2.0"
+
+    async def test_gate1_rejection_short_circuits(self):
+        mock = MockLLMClient()
+        mock.add_response("sonnet", (
+            "VERDICT: NEED_MORE\n"
+            "QUESTIONS:\n- What system is affected?\n- What is the scope?\n"
+            "REASONING: Brief is too vague."
+        ))
+        brain = Brain(config=BrainConfig(rounds=3), llm_client=mock, search_fn=None)
+        result = await brain.run(brief="Something broke, help?")
+        assert result.outcome == Outcome.NEED_MORE
+        assert len(result.gate1.questions) >= 1
+        # Should NOT have called any deliberation models
+        assert len(mock.calls_for("r1")) == 0
+
+    async def test_proof_has_round_data(self):
+        mock = MockLLMClient()
+        _setup_full_mock(mock, rounds=3)
+        brain = Brain(config=BrainConfig(rounds=3), llm_client=mock, search_fn=None)
+        result = await brain.run(brief="JWT bypass incident. 847 requests. Active RCE.")
+        proof = result.proof
+        assert "1" in proof["rounds"]
+        assert "2" in proof["rounds"]
+        assert "3" in proof["rounds"]
+        assert proof["final_status"] == "COMPLETE"

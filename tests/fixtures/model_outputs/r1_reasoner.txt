@@ -1,0 +1,20 @@
+[ANALYSIS]
+The situation involves an active RCE exploit with confirmed compromises on 3 of 8 application pods. The primary goals are to contain the breach, eliminate the vulnerability, and minimize business disruption during peak hours. Each option presents distinct trade-offs:
+
+- **Option 1 (Emergency patch)**: High risk due to untested patch on custom SAML integration; could cause widespread authentication failures if it breaks, potentially leading to a full outage anyway. Does not address existing compromises; attacker persistence on compromised pods remains.  
+- **Option 2 (WAF + scheduled patch)**: Leaves the vulnerability and compromised pods active; 15% false positive rate directly impacts users, and new exploit variants may bypass WAF. Provides no containment, allowing attacker to continue operating and potentially escalate.  
+- **Option 3 (Controlled isolation)**: Immediately isolates compromised pods, containing the breach and removing attacker access from those pods. Maintains 62.5% capacity with WAF protection on remaining pods, though they remain vulnerable. Allows patching and testing on isolated pods without affecting production, enabling a safer rollout. Capacity reduction may cause performance issues, and WAF false positives still affect some users.  
+- **Option 4 (Full shutdown)**: Eliminates all attack surface and ensures a clean rebuild, but causes a complete 2–4 hour outage during peak business hours, with high customer impact.
+
+Given the severity of active RCE and confirmed compromises, containment is the highest priority. Option 3 achieves immediate containment while preserving partial service. It also provides flexibility: once the patch is tested on isolated pods, it can be rolled out to remaining pods in a controlled manner (e.g., rolling updates) to fully remediate. Option 4 is the most secure but incurs maximal business disruption; given the attacker has not yet moved laterally, Option 3’s containment may suffice while avoiding a full outage. Options 1 and 2 either introduce unquantified risk or fail to contain the breach.
+
+[CONCLUSION]
+Option 3 (Controlled service isolation) is the recommended course of action.
+
+[CONFIDENCE: MEDIUM]
+The recommendation balances containment and continuity, but uncertainties remain regarding capacity under reduced pods and the effectiveness of WAF against novel exploit variants.
+
+[KEY ARGUMENTS]
+1. Immediate isolation of compromised pods contains the breach, limiting attacker lateral movement and reducing further damage.
+2. Maintains partial service during peak hours, avoiding a full outage and minimizing business impact.
+3. Provides a pathway to safely test and deploy the patch on isolated pods, enabling a controlled rollout to remaining pods once validated.
