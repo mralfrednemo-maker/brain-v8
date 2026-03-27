@@ -1,4 +1,9 @@
-"""Evidence Ledger — stores, deduplicates, prioritizes, and formats evidence."""
+"""Evidence Ledger — stores, deduplicates, and formats evidence.
+
+Evidence items are kept in insertion order (Google's ranking order).
+No confidence re-ranking — we trust Google's authority ranking.
+Cap at max_items, FIFO eviction (oldest/lowest-ranked items dropped first).
+"""
 from __future__ import annotations
 
 import hashlib
@@ -8,18 +13,12 @@ from thinker.types import Confidence, EvidenceItem
 from thinker.tools.cross_domain import is_cross_domain
 
 
-# Priority score for eviction: higher = more likely to survive
-_CONFIDENCE_SCORES = {
-    Confidence.HIGH: 3,
-    Confidence.MEDIUM: 2,
-    Confidence.LOW: 1,
-}
-
-
 class EvidenceLedger:
     """Manages evidence items with dedup, cross-domain filtering, and cap enforcement.
 
-    V8 spec Section 4: MAX_EVIDENCE_ITEMS = 10 per round with priority-based eviction.
+    Items are kept in Google's ranking order (insertion order).
+    Cap enforced via FIFO eviction — newest items from later searches
+    are dropped first, preserving the highest-ranked earliest results.
     """
 
     def __init__(self, max_items: int = 10, brief_domain: Optional[str] = None):
@@ -47,6 +46,10 @@ class EvidenceLedger:
         if item.url in self._seen_urls:
             return False
 
+        # Cap check — reject if full (preserves Google rank order of existing items)
+        if len(self.items) >= self.max_items:
+            return False
+
         self._content_hashes.add(content_hash)
         self._seen_urls.add(item.url)
         item.content_hash = content_hash
@@ -54,40 +57,25 @@ class EvidenceLedger:
 
         # Check for contradictions with existing items
         from thinker.tools.contradiction import detect_contradiction
-        for existing in self.items[:-1]:  # Compare with all except the new one
+        for existing in self.items[:-1]:
             ctr = detect_contradiction(existing, item)
             if ctr:
                 self.contradictions.append(ctr)
 
-        # Enforce cap via eviction
-        if len(self.items) > self.max_items:
-            self._evict()
-
         return True
-
-    def _evict(self):
-        """Evict lowest-priority items to stay within max_items."""
-        self.items.sort(key=lambda e: _CONFIDENCE_SCORES.get(e.confidence, 0), reverse=True)
-        evicted = self.items[self.max_items:]
-        self.items = self.items[:self.max_items]
-        # Clean up tracking for evicted items
-        for e in evicted:
-            self._content_hashes.discard(e.content_hash)
-            self._seen_urls.discard(e.url)
 
     def format_for_prompt(self) -> str:
         """Format all evidence for injection into a model prompt."""
         if not self.items:
             return ""
-        lines = ["[RESEARCH CONTEXT — Web-verified evidence]\n"]
-        for item in self.items:
+        lines = []
+        for i, item in enumerate(self.items, 1):
             lines.append(
-                f"{{{item.evidence_id}}} [{item.confidence.value}] {item.fact}\n"
+                f"{{{item.evidence_id}}} {item.fact}\n"
                 f"Source: {item.url}\n"
             )
         lines.append(
-            "[EVIDENCE DISCIPLINE]\n"
             "Any specific number, percentage, or dollar figure in your analysis "
-            "MUST cite an evidence ID (E001-E999) from the Research Context above."
+            "MUST cite an evidence ID (E001-E999) from above."
         )
         return "\n".join(lines)

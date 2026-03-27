@@ -1,170 +1,110 @@
-"""Gate 2: Can we trust this answer?
+"""Gate 2: Deterministic trust assessment.
 
-V8 spec Section 4, Gate 2:
-Gate 2 is NOT boolean checkboxes. It's LLM judgment backed by mechanical
-tool data. The tools provide the DATA. The LLM provides the JUDGMENT.
+No LLM call. Thresholds on mechanical tool data only.
 
-Five questions:
-1. Models converged? (Position Tracker data -> LLM judges reasoning agreement)
-2. Evidence credible? (Contradiction Detector data -> LLM judges source quality)
-3. Dissent addressed? (Argument Tracker data -> LLM judges engagement quality)
-4. Enough data found? (Evidence count + gaps -> LLM judges sufficiency)
-5. Report honest? (Blocker IDs in report -> LLM judges genuine engagement)
+For decision briefs: DECIDE or ESCALATE based on agreement + argument engagement.
+For analysis briefs: always deliver, classification label attached.
+
+Classification system (adapted from Chamber V11):
+- CONSENSUS: models agree, all arguments addressed, no open issues
+- CLOSED_WITH_ACCEPTED_RISKS: models agree, but open blockers/contradictions acknowledged
+- PARTIAL_CONSENSUS: models agree on some points, diverge on others
+- INSUFFICIENT_EVIDENCE: not enough evidence gathered to support conclusions
+- NO_CONSENSUS: fundamental disagreement persists after all rounds
 """
 from __future__ import annotations
 
-import re
-
-from thinker.types import (
-    Argument, Blocker, Contradiction, Gate2Assessment, Outcome, Position,
-)
+from thinker.types import Argument, ArgumentStatus, Blocker, Contradiction, Gate2Assessment, Outcome, Position
 
 
-GATE2_PROMPT = """You are the final trust gate for a multi-model deliberation system.
-Your job is to determine whether the answer is trustworthy enough to act on,
-or whether it should be escalated to a human decision maker.
+def classify_outcome(
+    agreement_ratio: float,
+    ignored_arguments: int,
+    mentioned_arguments: int,
+    evidence_count: int,
+    contradictions: int,
+    open_blockers: int,
+    search_enabled: bool,
+) -> str:
+    """Deterministic outcome classification.
 
-You will receive MECHANICAL DATA from automated tools, plus the synthesis report.
-The tools provide data. YOU provide judgment.
+    Returns one of: CONSENSUS, CLOSED_WITH_ACCEPTED_RISKS, PARTIAL_CONSENSUS,
+    INSUFFICIENT_EVIDENCE, NO_CONSENSUS.
+    """
+    # NO_CONSENSUS: low agreement or many ignored arguments
+    if agreement_ratio < 0.5 or ignored_arguments >= 3:
+        return "NO_CONSENSUS"
 
-## Mechanical Data
+    # INSUFFICIENT_EVIDENCE: search was enabled but found nothing
+    if search_enabled and evidence_count == 0:
+        return "INSUFFICIENT_EVIDENCE"
 
-### Convergence
-agreement_ratio: {agreement_ratio}
-Final positions:
-{position_summary}
+    # CONSENSUS: high agreement, all arguments engaged, no open issues
+    if (agreement_ratio >= 0.75
+            and ignored_arguments == 0
+            and contradictions == 0
+            and open_blockers == 0):
+        return "CONSENSUS"
 
-### Evidence
-Total evidence items: {evidence_count}
-Contradictions detected: {contradiction_summary}
+    # CLOSED_WITH_ACCEPTED_RISKS: high agreement but open issues acknowledged
+    if agreement_ratio >= 0.75 and ignored_arguments == 0:
+        return "CLOSED_WITH_ACCEPTED_RISKS"
 
-### Dissent
-Unaddressed arguments after final round: {unaddressed_summary}
-
-### Open Blockers
-{blocker_summary}
-
-### Synthesis Report
-{report_text}
-
-## Your Assessment
-
-For each question, answer YES or NO with a brief justification.
-"YES" means the data supports trust. "NO" means it doesn't.
-
-CONVERGENCE: YES/NO — Do models agree for the SAME REASONS? (Labels matching != reasoning agrees)
-EVIDENCE: YES/NO — Are sources authoritative, current, and cross-corroborated?
-DISSENT: YES/NO — Were all significant arguments substantively engaged with?
-DATA: YES/NO — Given the evidence found, can the question be answered confidently?
-REPORT: YES/NO — Does the report genuinely engage with each blocker, or just name-drop?
-
-Then give your final verdict:
-VERDICT: DECIDE | ESCALATE
-REASONING: (one paragraph)"""
+    # PARTIAL_CONSENSUS: moderate agreement or some arguments unengaged
+    return "PARTIAL_CONSENSUS"
 
 
-def build_gate2_prompt(
+def run_gate2_deterministic(
     agreement_ratio: float,
     positions: dict[str, Position],
     contradictions: list[Contradiction],
     unaddressed_arguments: list[Argument],
     open_blockers: list[Blocker],
     evidence_count: int,
-    report_text: str,
-) -> str:
-    """Build Gate 2 prompt with all mechanical tool data injected."""
-    # Position summary
-    if positions:
-        pos_lines = [f"  {m}: {p.primary_option} [{p.confidence.value}] {p.qualifier}"
-                     for m, p in positions.items()]
-        position_summary = "\n".join(pos_lines)
-    else:
-        position_summary = "  (no position data available)"
+    search_enabled: bool,
+) -> Gate2Assessment:
+    """Deterministic Gate 2 — no LLM call.
 
-    # Contradiction summary
-    if contradictions:
-        ctr_lines = [f"  {c.contradiction_id}: {c.topic} [{c.severity}] — evidence {c.evidence_ids}"
-                     for c in contradictions]
-        contradiction_summary = "\n".join(ctr_lines)
-    else:
-        contradiction_summary = "  None detected"
+    For decision briefs: DECIDE requires agreement >= 0.75 and all arguments addressed.
+    Otherwise: ESCALATE.
+    """
+    ignored = [a for a in unaddressed_arguments if a.status == ArgumentStatus.IGNORED]
+    mentioned = [a for a in unaddressed_arguments if a.status == ArgumentStatus.MENTIONED]
 
-    # Unaddressed arguments
-    if unaddressed_arguments:
-        ua_lines = [f"  {a.argument_id}: [{a.model}] {a.text} ({a.status.value})"
-                    for a in unaddressed_arguments]
-        unaddressed_summary = "\n".join(ua_lines)
-    else:
-        unaddressed_summary = "  All arguments addressed"
+    convergence_ok = agreement_ratio >= 0.75
+    evidence_ok = evidence_count >= 3 or not search_enabled
+    dissent_ok = len(ignored) == 0
+    data_ok = evidence_count > 0 or not search_enabled
+    no_blockers = len(open_blockers) == 0
 
-    # Open blockers
-    if open_blockers:
-        bl_lines = [f"  {b.blocker_id}: {b.kind.value} — {b.detail}" for b in open_blockers]
-        blocker_summary = "\n".join(bl_lines)
+    # DECIDE requires convergence + dissent addressed
+    # Evidence and blockers are secondary (affect classification, not the gate)
+    if convergence_ok and dissent_ok:
+        outcome = Outcome.DECIDE
     else:
-        blocker_summary = "  No open blockers"
+        outcome = Outcome.ESCALATE
 
-    return GATE2_PROMPT.format(
+    outcome_class = classify_outcome(
         agreement_ratio=agreement_ratio,
-        position_summary=position_summary,
+        ignored_arguments=len(ignored),
+        mentioned_arguments=len(mentioned),
         evidence_count=evidence_count,
-        contradiction_summary=contradiction_summary,
-        unaddressed_summary=unaddressed_summary,
-        blocker_summary=blocker_summary,
-        report_text=report_text[:5000],
+        contradictions=len(contradictions),
+        open_blockers=len(open_blockers),
+        search_enabled=search_enabled,
     )
-
-
-def _parse_gate2_response(text: str) -> Gate2Assessment:
-    """Parse Sonnet's Gate 2 assessment."""
-    def _check(label: str) -> bool:
-        match = re.search(rf"{label}:\s*(YES|NO)", text, re.IGNORECASE)
-        return match.group(1).upper() == "YES" if match else False
-
-    verdict_match = re.search(r"VERDICT:\s*(DECIDE|ESCALATE)", text, re.IGNORECASE)
-    outcome = Outcome.DECIDE if verdict_match and verdict_match.group(1).upper() == "DECIDE" else Outcome.ESCALATE
-
-    reasoning_match = re.search(r"REASONING:\s*(.+)", text, re.DOTALL)
-    reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
 
     return Gate2Assessment(
         outcome=outcome,
-        convergence_ok=_check("CONVERGENCE"),
-        evidence_credible=_check("EVIDENCE"),
-        dissent_addressed=_check("DISSENT"),
-        enough_data=_check("DATA"),
-        report_honest=_check("REPORT"),
-        reasoning=reasoning,
+        convergence_ok=convergence_ok,
+        evidence_credible=evidence_ok,
+        dissent_addressed=dissent_ok,
+        enough_data=data_ok,
+        report_honest=no_blockers,
+        reasoning=(
+            f"Deterministic: agreement={agreement_ratio:.2f}, "
+            f"ignored={len(ignored)}, evidence={evidence_count}, "
+            f"contradictions={len(contradictions)}, blockers={len(open_blockers)}, "
+            f"class={outcome_class}"
+        ),
     )
-
-
-async def run_gate2(
-    client,
-    agreement_ratio: float,
-    positions: dict[str, Position],
-    contradictions: list[Contradiction],
-    unaddressed_arguments: list[Argument],
-    open_blockers: list[Blocker],
-    evidence_count: int,
-    report_text: str,
-) -> Gate2Assessment:
-    """Run Gate 2 trust assessment.
-
-    Feeds mechanical tool data to Sonnet for LLM judgment.
-    On LLM failure: escalate (conservative — don't auto-decide without trust check).
-    """
-    prompt = build_gate2_prompt(
-        agreement_ratio, positions, contradictions,
-        unaddressed_arguments, open_blockers, evidence_count, report_text,
-    )
-    resp = await client.call("sonnet", prompt)
-
-    if not resp.ok:
-        return Gate2Assessment(
-            outcome=Outcome.ESCALATE,
-            convergence_ok=False, evidence_credible=False,
-            dissent_addressed=False, enough_data=False, report_honest=False,
-            reasoning=f"Gate 2 LLM failed ({resp.error}) — escalating conservatively",
-        )
-
-    return _parse_gate2_response(resp.text)

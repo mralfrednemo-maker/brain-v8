@@ -2,55 +2,99 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from thinker.search import SearchOrchestrator, SearchPhase
+from thinker.search import SearchOrchestrator, SearchPhase, parse_model_search_requests
 from thinker.types import EvidenceItem, Confidence
 
 
-class TestSearchOrchestrator:
-    """Search orchestration: reactive + proactive queries."""
+class TestParseModelSearchRequests:
+    """parse_model_search_requests extracts queries from model output appendices."""
 
-    async def test_reactive_queries_extracted(self, mock_llm):
-        mock_llm.add_response("sonnet", (
-            "QUERIES:\n"
+    def test_numbered_queries(self):
+        output = (
+            "Some analysis text...\n\n"
+            "SEARCH_REQUESTS:\n"
             "1. CVE-2026-1234 JWT bypass severity CVSS score\n"
             "2. GDPR Article 33 notification timeline requirements\n"
             "3. SOC 2 breach reporting obligations\n"
-        ))
-        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]))
-        queries = await orch.generate_reactive_queries({
-            "r1": "JWT bypass is critical, CVSS unknown",
-            "glm5": "Need to check GDPR timeline",
-        })
-        assert len(queries) >= 2
+        )
+        queries = parse_model_search_requests(output)
+        assert len(queries) == 3
+        assert "CVE-2026-1234" in queries[0]
+        assert "GDPR" in queries[1]
+
+    def test_none_returns_empty(self):
+        output = "Some analysis...\n\nSEARCH_REQUESTS:\nNONE\n"
+        queries = parse_model_search_requests(output)
+        assert queries == []
+
+    def test_no_section_returns_empty(self):
+        output = "Just analysis text, no search requests section."
+        queries = parse_model_search_requests(output)
+        assert queries == []
+
+    def test_max_5_queries(self):
+        lines = [f"{i}. Query number {i}" for i in range(1, 10)]
+        output = "Analysis...\n\nSEARCH_REQUESTS:\n" + "\n".join(lines)
+        queries = parse_model_search_requests(output)
+        assert len(queries) == 5
+
+
+class TestSearchOrchestrator:
+    """Search orchestration: model-requested + proactive queries."""
+
+    def test_collect_model_requests(self, mock_llm):
+        """collect_model_requests parses search appendices directly — no LLM call."""
+        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]), max_results=10)
+        model_outputs = {
+            "r1": "Analysis...\n\nSEARCH_REQUESTS:\n1. CVE-2026-1234 details\n2. JWT bypass mitigations\n",
+            "glm5": "Analysis...\n\nSEARCH_REQUESTS:\n1. GDPR Article 33 timeline\n",
+            "kimi": "Analysis...\n\nSEARCH_REQUESTS:\nNONE\n",
+        }
+        queries = orch.collect_model_requests(model_outputs)
+        assert len(queries) == 3
+        assert "CVE-2026-1234" in queries[0]
 
     async def test_proactive_queries_from_claims(self, mock_llm):
         mock_llm.add_response("sonnet", (
-            "CLAIMS:\n"
-            "1. '847 requests' — verify actual log count\n"
-            "2. '72 hours' — verify GDPR notification deadline\n"
             "QUERIES:\n"
             "1. GDPR Article 33 breach notification deadline hours\n"
         ))
-        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]))
-        queries = await orch.generate_proactive_queries({
-            "r1": "The 847 requests over 33 minutes suggest automated exploitation",
-            "kimi": "GDPR requires notification within 72 hours",
-        })
+        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]), max_results=10)
+        queries = await orch.generate_proactive_queries(
+            {
+                "r1": "The 847 requests over 33 minutes suggest automated exploitation",
+                "kimi": "GDPR requires notification within 72 hours",
+            },
+            already_queued=["CVE-2026-1234 details"],
+        )
         assert len(queries) >= 1
+
+    async def test_proactive_receives_already_queued(self, mock_llm):
+        """Proactive prompt includes already_queued so it doesn't duplicate model requests."""
+        mock_llm.add_response("sonnet", "NONE\n")
+        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]), max_results=10)
+        await orch.generate_proactive_queries(
+            {"r1": "text"},
+            already_queued=["CVE-2026-1234 details", "GDPR timeline"],
+        )
+        prompt = mock_llm.last_prompt_for("sonnet")
+        assert "CVE-2026-1234 details" in prompt
+        assert "GDPR timeline" in prompt
 
     async def test_deduplication(self, mock_llm):
         mock_llm.add_response("sonnet", "QUERIES:\n1. GDPR notification deadline\n")
-        mock_llm.add_response("sonnet", "CLAIMS:\n1. 72h\nQUERIES:\n1. GDPR notification deadline\n")
-        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]))
-        reactive = await orch.generate_reactive_queries({"r1": "text"})
-        proactive = await orch.generate_proactive_queries({"r1": "text"})
-        combined = orch.deduplicate(reactive + proactive)
-        assert len(combined) <= len(reactive) + len(proactive)
+        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]), max_results=10)
+        model_requests = ["GDPR notification deadline"]
+        proactive = await orch.generate_proactive_queries(
+            {"r1": "text"}, already_queued=model_requests,
+        )
+        combined = orch.deduplicate(model_requests + proactive)
+        assert len(combined) <= len(model_requests) + len(proactive)
 
     async def test_topic_tracking_uses_sonar_for_repeat(self, mock_llm):
         search_fn = AsyncMock(return_value=[])
         sonar_fn = AsyncMock(return_value=[])
-        orch = SearchOrchestrator(mock_llm, search_fn=search_fn, sonar_fn=sonar_fn)
+        orch = SearchOrchestrator(mock_llm, search_fn=search_fn, sonar_fn=sonar_fn, max_results=10)
         orch.mark_topic_searched("GDPR notification")
         await orch.execute_query("GDPR notification deadline", phase=SearchPhase.R2_R3)
         sonar_fn.assert_called_once()
@@ -59,26 +103,15 @@ class TestSearchOrchestrator:
     async def test_first_search_uses_playwright(self, mock_llm):
         search_fn = AsyncMock(return_value=[])
         sonar_fn = AsyncMock(return_value=[])
-        orch = SearchOrchestrator(mock_llm, search_fn=search_fn, sonar_fn=sonar_fn)
+        orch = SearchOrchestrator(mock_llm, search_fn=search_fn, sonar_fn=sonar_fn, max_results=10)
         await orch.execute_query("CVE-2026-1234 details", phase=SearchPhase.R1_R2)
         search_fn.assert_called_once()
         sonar_fn.assert_not_called()
 
-
-class TestFactExtraction:
-    """LLM extracts facts from full page content."""
-
-    async def test_extract_facts_from_page(self, mock_llm):
-        mock_llm.add_response("sonnet", (
-            "FACTS:\n"
-            "- {E001} [HIGH] GDPR Article 33 requires notification within 72 hours of breach discovery\n"
-            "- {E002} [MEDIUM] Notification must be made to supervisory authority, not just data subjects\n"
-        ))
-        orch = SearchOrchestrator(mock_llm, search_fn=AsyncMock(return_value=[]))
-        facts = await orch.extract_facts(
-            page_content="Full article about GDPR Article 33...",
-            url="https://gdpr-info.eu/art-33",
-            query="GDPR notification deadline",
-        )
-        assert len(facts) >= 1
-        assert facts[0].evidence_id == "E001"
+    async def test_max_results_respected(self, mock_llm):
+        from thinker.types import SearchResult
+        many_results = [SearchResult(url=f"https://{i}.com", title=f"R{i}", snippet=f"s{i}") for i in range(20)]
+        search_fn = AsyncMock(return_value=many_results)
+        orch = SearchOrchestrator(mock_llm, search_fn=search_fn, max_results=10)
+        results = await orch.execute_query("test query", phase=SearchPhase.R1_R2)
+        assert len(results) <= 10

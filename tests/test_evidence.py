@@ -29,21 +29,29 @@ class TestEvidenceAdd:
         ledger.add(item1)
         assert ledger.add(item2) is False
 
-    def test_cap_enforced(self):
+    def test_cap_enforced_fifo_reject(self):
+        """Cap is enforced by rejecting new items when full (FIFO — earliest items preserved)."""
         ledger = EvidenceLedger(max_items=3)
-        for i in range(5):
-            ledger.add(EvidenceItem(
+        for i in range(3):
+            assert ledger.add(EvidenceItem(
                 f"E{i:03d}", "topic", f"fact {i}", f"https://{i}.com", Confidence.MEDIUM,
-            ))
-        assert len(ledger.items) <= 3
+            )) is True
+        # 4th item rejected — ledger is full
+        assert ledger.add(EvidenceItem(
+            "E003", "topic", "fact 3", "https://3.com", Confidence.MEDIUM,
+        )) is False
+        assert len(ledger.items) == 3
 
-    def test_high_confidence_survives_eviction(self):
+    def test_fifo_preserves_insertion_order(self):
+        """When full, first 2 items are kept, 3rd is rejected (no confidence-based eviction)."""
         ledger = EvidenceLedger(max_items=2)
-        ledger.add(EvidenceItem("E001", "t", "low fact", "https://1.com", Confidence.LOW))
-        ledger.add(EvidenceItem("E002", "t", "high fact", "https://2.com", Confidence.HIGH))
-        ledger.add(EvidenceItem("E003", "t", "med fact", "https://3.com", Confidence.MEDIUM))
+        ledger.add(EvidenceItem("E001", "t", "first fact", "https://1.com", Confidence.LOW))
+        ledger.add(EvidenceItem("E002", "t", "second fact", "https://2.com", Confidence.HIGH))
+        # Ledger is full — 3rd item rejected regardless of confidence
+        assert ledger.add(EvidenceItem("E003", "t", "third fact", "https://3.com", Confidence.HIGH)) is False
+        assert len(ledger.items) == 2
         ids = {e.evidence_id for e in ledger.items}
-        assert "E002" in ids  # HIGH confidence survives
+        assert ids == {"E001", "E002"}
 
 
 class TestCrossDomainFilter:
@@ -79,8 +87,16 @@ class TestEvidenceFormat:
         assert "{E001}" in text
         assert "{E002}" in text
         assert "CVE-2026-1234" in text
-        assert "[HIGH]" in text
-        assert "[MEDIUM]" in text
+        # No confidence tags in formatted output (removed in V8)
+        assert "[HIGH]" not in text
+        assert "[MEDIUM]" not in text
+
+    def test_format_includes_citation_instruction(self):
+        ledger = EvidenceLedger(max_items=10)
+        ledger.add(EvidenceItem("E001", "JWT", "CVE found",
+                                "https://nvd.nist.gov", Confidence.HIGH))
+        text = ledger.format_for_prompt()
+        assert "MUST cite an evidence ID" in text
 
     def test_empty_ledger_format(self):
         ledger = EvidenceLedger(max_items=10)

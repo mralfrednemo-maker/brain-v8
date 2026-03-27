@@ -1,9 +1,10 @@
 """Brain Orchestrator — wires the full V8 deliberation pipeline.
 
 Flow:
-  Gate 1 -> R1 -> Search -> [Argument Track -> Round -> Search] x (rounds-1) -> Synthesis -> Gate 2
+  Gate 1 -> R1 -> Search(R1) -> R2 -> Search(R2) -> R3 -> Synthesis Gate -> Deterministic Gate 2
 
-V8 spec Section 4.
+Search after R1 and R2 only. R3 is final convergence — no search.
+Gate 2 is fully deterministic — no LLM call.
 """
 from __future__ import annotations
 
@@ -14,14 +15,13 @@ from thinker.argument_tracker import ArgumentTracker
 from thinker.config import BrainConfig, ROUND_TOPOLOGY
 from thinker.evidence import EvidenceLedger
 from thinker.gate1 import run_gate1
-from thinker.gate2 import run_gate2
+from thinker.gate2 import run_gate2_deterministic, classify_outcome
 from thinker.proof import ProofBuilder
 from thinker.rounds import execute_round
 from thinker.search import SearchOrchestrator, SearchPhase
 from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
-from thinker.tools.ungrounded import find_ungrounded_stats
 from thinker.types import BrainResult, Outcome, SearchResult
 
 
@@ -31,9 +31,6 @@ class Brain:
     Usage:
         brain = Brain(config, llm_client, search_fn)
         result = await brain.run(brief)
-        # result.outcome is DECIDE, ESCALATE, or NEED_MORE
-        # result.proof is the proof.json dict
-        # result.report is the Hermes markdown
     """
 
     def __init__(
@@ -54,6 +51,11 @@ class Brain:
         argument_tracker = ArgumentTracker(self._llm)
         position_tracker = PositionTracker(self._llm)
         blocker_ledger = BlockerLedger()
+        search_enabled = self._search_fn is not None
+        # Persist search orchestrator across rounds for topic tracking
+        search_orch = SearchOrchestrator(
+            self._llm, search_fn=self._search_fn,
+        ) if search_enabled else None
         proof.set_blocker_ledger(blocker_ledger)
 
         # --- Gate 1 ---
@@ -70,12 +72,15 @@ class Brain:
         unaddressed_text = ""
 
         for round_num in range(1, self._config.rounds + 1):
+            is_last_round = round_num == self._config.rounds
+
             # Execute round
             round_result = await execute_round(
                 self._llm, round_num=round_num, brief=brief,
                 prior_views=prior_views if round_num > 1 else None,
                 evidence_text=evidence.format_for_prompt() if round_num > 1 else "",
                 unaddressed_arguments=unaddressed_text if round_num > 1 else "",
+                is_last_round=is_last_round,
             )
             proof.record_round(round_num, round_result.responded, round_result.failed)
 
@@ -99,26 +104,29 @@ class Brain:
                 changes = position_tracker.get_position_changes(round_num - 1, round_num)
                 proof.record_position_changes(changes)
 
-            # Search phase (between rounds, not after the last round)
-            if round_num < self._config.rounds and self._search_fn:
-                search_orch = SearchOrchestrator(
-                    self._llm, search_fn=self._search_fn,
-                )
+            # Search phase — after R1 and R2 only (not the last round)
+            if not is_last_round and search_orch:
                 phase = SearchPhase.R1_R2 if round_num == 1 else SearchPhase.R2_R3
 
-                reactive = await search_orch.generate_reactive_queries(round_result.texts)
-                proactive = await search_orch.generate_proactive_queries(round_result.texts)
-                queries = search_orch.deduplicate(reactive + proactive)
+                # 1. Collect model-requested searches from appendices
+                model_requests = search_orch.collect_model_requests(round_result.texts)
 
+                # 2. Sonnet proactive sweep for what models missed
+                proactive = await search_orch.generate_proactive_queries(
+                    round_result.texts, already_queued=model_requests,
+                )
+
+                # 3. Deduplicate
+                queries = search_orch.deduplicate(model_requests + proactive)
+
+                # 4. Execute searches — results kept in Google ranking order
                 total_admitted = 0
                 for query in queries[:self._config.max_search_queries_per_phase]:
                     results = await search_orch.execute_query(query, phase)
                     for sr in results:
-                        if sr.full_content:
-                            facts = await search_orch.extract_facts(sr.full_content, sr.url, query)
-                            for fact in facts:
-                                if evidence.add(fact):
-                                    total_admitted += 1
+                        ev = EvidenceItem_from_search_result(sr, total_admitted)
+                        if ev and evidence.add(ev):
+                            total_admitted += 1
 
                 proof.record_research_phase(
                     phase.value, "playwright", len(queries), total_admitted,
@@ -134,32 +142,45 @@ class Brain:
             # Prepare prior views for next round
             prior_views = round_result.texts
 
-        # --- Synthesis ---
-        final_views = prior_views  # Last round's outputs
-        report = await run_synthesis(
-            self._llm, brief=brief, final_views=final_views,
-            blocker_summary=blocker_ledger.summary(),
-        )
-        proof.set_synthesis_status("COMPLETE" if "DEGRADED" not in report else "DEGRADED")
-
-        # --- Gate 2 ---
+        # --- Classification (deterministic) ---
         final_round = self._config.rounds
         agreement = position_tracker.agreement_ratio(final_round)
         final_positions = position_tracker.positions_by_round.get(final_round, {})
-        gate2 = await run_gate2(
-            self._llm,
+
+        outcome_class = classify_outcome(
+            agreement_ratio=agreement,
+            ignored_arguments=len([a for a in argument_tracker.all_unaddressed
+                                   if a.status.value == "IGNORED"]),
+            mentioned_arguments=len([a for a in argument_tracker.all_unaddressed
+                                     if a.status.value == "MENTIONED"]),
+            evidence_count=len(evidence.items),
+            contradictions=len(evidence.contradictions),
+            open_blockers=len(blocker_ledger.open_blockers()),
+            search_enabled=search_enabled,
+        )
+
+        # --- Synthesis Gate ---
+        final_views = prior_views
+        report, report_json = await run_synthesis(
+            self._llm, brief=brief, final_views=final_views,
+            blocker_summary=blocker_ledger.summary(),
+            outcome_class=outcome_class,
+        )
+        proof.set_synthesis_status("COMPLETE" if report else "FAILED")
+
+        # --- Gate 2 (deterministic) ---
+        gate2 = run_gate2_deterministic(
             agreement_ratio=agreement,
             positions=final_positions,
-            contradictions=[],  # TODO: wire contradiction detector
+            contradictions=evidence.contradictions,
             unaddressed_arguments=argument_tracker.all_unaddressed,
             open_blockers=blocker_ledger.open_blockers(),
             evidence_count=len(evidence.items),
-            report_text=report,
+            search_enabled=search_enabled,
         )
 
         # --- Final status ---
         outcome = gate2.outcome
-        outcome_class = "CONSENSUS" if agreement >= 0.8 else "PARTIAL_CONSENSUS" if agreement >= 0.5 else "NO_CONSENSUS"
         proof.set_outcome(outcome, agreement, outcome_class)
         proof.set_final_status("COMPLETE")
         proof.set_evidence_count(len(evidence.items))
@@ -170,19 +191,30 @@ class Brain:
         )
 
 
-def _get_anthropic_token() -> str:
-    """Read the current OAuth access token from Claude Code's credentials file.
+def EvidenceItem_from_search_result(sr: SearchResult, counter: int):
+    """Convert a SearchResult to an EvidenceItem for the ledger."""
+    from thinker.types import Confidence, EvidenceItem
+    content = sr.full_content or sr.snippet
+    if not content:
+        return None
+    return EvidenceItem(
+        evidence_id=f"E{counter + 1:03d}",
+        topic=sr.title[:100],
+        fact=content[:500],
+        url=sr.url,
+        confidence=Confidence.MEDIUM,  # Not used for ranking, just a default
+    )
 
-    Claude Code keeps this file refreshed — the access token rotates every ~8h
-    but the file always has a valid one.
+
+def _get_anthropic_token() -> str:
+    """Get the Anthropic OAuth token.
+
+    Uses the 1-year setup-token from ANTHROPIC_OAUTH_TOKEN env var (set in .env).
+    This is the long-lived token generated 2026-03-17, NOT the rotating
+    ~/.claude/.credentials.json token which expires every ~8h.
     """
-    import json
-    from pathlib import Path
-    creds_path = Path.home() / ".claude" / ".credentials.json"
-    if creds_path.exists():
-        creds = json.loads(creds_path.read_text(encoding="utf-8"))
-        return creds.get("claudeAiOauth", {}).get("accessToken", "")
-    return ""
+    import os
+    return os.environ.get("ANTHROPIC_OAUTH_TOKEN", "")
 
 
 async def main():
@@ -223,11 +255,15 @@ async def main():
     proof_path = os.path.join(args.outdir, "proof.json")
     with open(proof_path, "w", encoding="utf-8") as f:
         json.dump(result.proof, f, indent=2)
-    report_path = os.path.join(args.outdir, "hermes-final-report.md")
+    report_path = os.path.join(args.outdir, "report.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(result.report)
+    report_json_path = os.path.join(args.outdir, "report.json")
+    with open(report_json_path, "w", encoding="utf-8") as f:
+        json.dump(result.proof, f, indent=2)
 
     print(f"Outcome: {result.outcome.value}")
+    print(f"Class: {result.proof.get('v3_outcome_class', 'N/A')}")
     print(f"Proof: {proof_path}")
     print(f"Report: {report_path}")
 

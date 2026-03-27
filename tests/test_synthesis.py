@@ -30,26 +30,53 @@ class TestSynthesisPrompt:
 
 class TestSynthesisExecution:
 
-    async def test_synthesis_returns_report(self, mock_llm):
+    async def test_synthesis_returns_tuple(self, mock_llm):
+        """run_synthesis returns (markdown, json_data) tuple."""
         mock_llm.add_response("sonnet", (
-            "---\n"
-            "final_status: COMPLETE\n"
-            "v3_outcome_class: CONSENSUS\n"
-            "confidence: high\n"
-            "---\n\n"
             "# Deliberation Report\n\n## TL;DR\nModels reached consensus on full shutdown.\n"
+            "\n---JSON---\n\n"
+            '{"title": "Security Incident", "tldr": "Consensus on shutdown", '
+            '"verdict": "Full shutdown", "confidence": "high", '
+            '"agreed_points": ["shutdown"], "contested_points": [], '
+            '"key_findings": ["RCE confirmed"], "risk_factors": [], '
+            '"evidence_cited": ["E001"], "unresolved_questions": []}'
         ))
-        report = await run_synthesis(
+        markdown, json_data = await run_synthesis(
             mock_llm, brief="Brief", final_views={"r1": "v", "reasoner": "v"},
-            blocker_summary={},
+            blocker_summary={}, outcome_class="CONSENSUS",
         )
-        assert "CONSENSUS" in report
-        assert "# Deliberation Report" in report
+        assert "# Deliberation Report" in markdown
+        assert "CONSENSUS" in markdown
+        assert isinstance(json_data, dict)
+        assert json_data["outcome_class"] == "CONSENSUS"
 
-    async def test_synthesis_failure_returns_degraded(self, mock_llm):
-        """If Hermes fails, return a degraded report."""
-        report = await run_synthesis(
+    async def test_synthesis_without_json_section(self, mock_llm):
+        """If LLM doesn't produce ---JSON--- separator, still returns tuple."""
+        mock_llm.add_response("sonnet", (
+            "# Deliberation Report\n\n## TL;DR\nModels reached consensus.\n"
+        ))
+        markdown, json_data = await run_synthesis(
+            mock_llm, brief="Brief", final_views={"r1": "v"},
+            blocker_summary={}, outcome_class="CONSENSUS",
+        )
+        assert "# Deliberation Report" in markdown
+        assert isinstance(json_data, dict)
+
+    async def test_synthesis_failure_returns_degraded_tuple(self, mock_llm):
+        """If Hermes fails, return a degraded (markdown, json_data) tuple."""
+        markdown, json_data = await run_synthesis(
             mock_llm, brief="Brief", final_views={"r1": "v"},
             blocker_summary={},
         )
-        assert "DEGRADED" in report or "failed" in report.lower()
+        assert "Failed" in markdown or "failed" in markdown.lower()
+        assert json_data.get("status") == "FAILED"
+
+    async def test_outcome_class_appended(self, mock_llm):
+        """outcome_class is appended to markdown and json_data."""
+        mock_llm.add_response("sonnet", "# Report\n\n---JSON---\n\n{}")
+        markdown, json_data = await run_synthesis(
+            mock_llm, brief="Brief", final_views={"r1": "v"},
+            blocker_summary={}, outcome_class="PARTIAL_CONSENSUS",
+        )
+        assert "PARTIAL_CONSENSUS" in markdown
+        assert json_data["outcome_class"] == "PARTIAL_CONSENSUS"

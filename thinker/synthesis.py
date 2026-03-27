@@ -1,12 +1,14 @@
-"""Hermes Synthesis — generates the final deliberation report.
+"""Synthesis Gate — generates the final deliberation report.
 
-V8 spec Section 4, Synthesis:
-Hermes (Claude Sonnet) writes a human-readable report. Sees ONLY the final
-round's views. "DO NOT INVENT NEW ARGUMENTS." Very strict.
+Not an agent — a single LLM call that synthesizes the final round's views
+into a dual-format output: JSON (machine-readable) + markdown (human-readable).
+
+The deterministic classification label (CONSENSUS, CLOSED_WITH_ACCEPTED_RISKS, etc.)
+is appended to the output after the LLM call.
 """
 from __future__ import annotations
 
-SYNTHESIS_PROMPT = """You are Hermes, the synthesis engine for a multi-model deliberation system.
+SYNTHESIS_PROMPT = """You are the synthesis gate for a multi-model deliberation system.
 
 Your job is to write a clear, honest report summarizing what the models concluded.
 
@@ -26,15 +28,10 @@ Your job is to write a clear, honest report summarizing what the models conclude
 {blocker_summary}
 
 ## Output Format
-Write a YAML frontmatter header followed by a markdown report:
 
-```
----
-final_status: COMPLETE | PARTIAL | INSUFFICIENT
-v3_outcome_class: CONSENSUS | PARTIAL_CONSENSUS | NO_CONSENSUS
-confidence: high | medium | low
----
+You MUST produce TWO sections separated by a line containing only "---JSON---".
 
+SECTION 1: Markdown report
 # Deliberation Report: [Title]
 
 ## TL;DR
@@ -45,14 +42,31 @@ confidence: high | medium | low
 
 ## Consensus Map
 ### Agreed
+[Points all models agreed on]
 ### Contested
+[Points where models diverged — state both sides honestly]
 
 ## Key Findings
-[Numbered, with evidence citations]
+[Numbered, with evidence citations where available]
 
 ## Risk Factors
 [Table: Risk | Severity | Mitigation]
-```"""
+
+---JSON---
+
+SECTION 2: JSON object (fill fields if applicable, use "N/A" if not)
+{{
+  "title": "...",
+  "tldr": "...",
+  "verdict": "...",
+  "confidence": "high|medium|low",
+  "agreed_points": ["...", "..."],
+  "contested_points": ["...", "..."],
+  "key_findings": ["...", "..."],
+  "risk_factors": [{{"risk": "...", "severity": "...", "mitigation": "..."}}],
+  "evidence_cited": ["E001", "E002"],
+  "unresolved_questions": ["...", "..."]
+}}"""
 
 
 def build_synthesis_prompt(
@@ -67,24 +81,65 @@ def build_synthesis_prompt(
     )
 
 
+def parse_synthesis_output(text: str) -> tuple[str, dict]:
+    """Split synthesis output into markdown report and JSON object.
+
+    Returns (markdown_report, json_data). If JSON parsing fails,
+    json_data is a dict with error info.
+    """
+    import json
+
+    if "---JSON---" in text:
+        parts = text.split("---JSON---", 1)
+        markdown = parts[0].strip()
+        json_text = parts[1].strip()
+    else:
+        # LLM didn't follow format — treat whole thing as markdown
+        markdown = text.strip()
+        json_text = ""
+
+    json_data = {}
+    if json_text:
+        # Strip markdown code fences if present
+        json_text = json_text.strip()
+        if json_text.startswith("```"):
+            json_text = "\n".join(json_text.split("\n")[1:])
+        if json_text.endswith("```"):
+            json_text = "\n".join(json_text.split("\n")[:-1])
+        try:
+            json_data = json.loads(json_text.strip())
+        except json.JSONDecodeError:
+            json_data = {"parse_error": "Failed to parse JSON section", "raw": json_text[:500]}
+
+    return markdown, json_data
+
+
 async def run_synthesis(
     client,
     brief: str,
     final_views: dict[str, str],
     blocker_summary: dict,
-) -> str:
-    """Run Hermes synthesis. Returns the full markdown report."""
+    outcome_class: str = "",
+) -> tuple[str, dict]:
+    """Run the Synthesis Gate. Returns (markdown_report, json_data).
+
+    The outcome_class is appended to both outputs after the LLM call.
+    """
     prompt = build_synthesis_prompt(brief, final_views, blocker_summary)
     resp = await client.call("sonnet", prompt)
 
     if not resp.ok:
-        return (
-            "---\n"
-            "final_status: DEGRADED\n"
-            "v3_outcome_class: NO_CONSENSUS\n"
-            "confidence: low\n"
-            "---\n\n"
-            f"# Synthesis Failed\n\nHermes synthesis failed: {resp.error}\n"
+        markdown = (
+            f"# Synthesis Failed\n\nSynthesis gate failed: {resp.error}\n"
         )
+        json_data = {"status": "FAILED", "error": resp.error}
+        return markdown, json_data
 
-    return resp.text
+    markdown, json_data = parse_synthesis_output(resp.text)
+
+    # Append deterministic classification
+    if outcome_class:
+        markdown += f"\n\n---\n**Classification: {outcome_class}**\n"
+        json_data["outcome_class"] = outcome_class
+
+    return markdown, json_data

@@ -14,7 +14,8 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
     Gate1(sonnet) -> R1(4 models) -> R1_args(sonnet) -> R1_pos(sonnet)
     -> R2(3 models) -> R2_args(sonnet) -> R2_pos(sonnet) -> R1vR2_cmp(sonnet)
     -> R3(2 models) -> R3_args(sonnet) -> R3_pos(sonnet) -> R2vR3_cmp(sonnet)
-    -> Synthesis(sonnet) -> Gate2(sonnet)
+    -> Synthesis(sonnet)
+    (Gate 2 is deterministic — no LLM call needed)
     """
     # Gate 1
     mock.add_response("sonnet", "VERDICT: PASS\nQUESTIONS:\nREASONING: Clear incident.")
@@ -64,22 +65,18 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
     # R2->R3 argument comparison
     mock.add_response("sonnet", "ARG-5: ADDRESSED\nARG-6: ADDRESSED\n")
 
-    # --- Synthesis ---
+    # --- Synthesis (returns dual format: markdown + JSON) ---
     mock.add_response("sonnet", (
-        "---\nfinal_status: COMPLETE\nv3_outcome_class: CONSENSUS\nconfidence: high\n---\n\n"
         "# Deliberation Report\n\n## TL;DR\nAll models converged on full service shutdown (O4).\n"
+        "\n---JSON---\n\n"
+        '{"title": "Security Incident Assessment", "tldr": "Consensus on O4 shutdown", '
+        '"verdict": "Full shutdown (O4)", "confidence": "high", '
+        '"agreed_points": ["RCE confirmed", "Shutdown required"], "contested_points": [], '
+        '"key_findings": ["CVE-2026-1234 active RCE", "847 automated requests"], '
+        '"risk_factors": [], "evidence_cited": ["E001"], "unresolved_questions": []}'
     ))
 
-    # --- Gate 2 ---
-    mock.add_response("sonnet", (
-        "CONVERGENCE: YES — Both final models agree on O4 with aligned reasoning\n"
-        "EVIDENCE: YES — Strong evidence from authoritative sources\n"
-        "DISSENT: YES — All arguments addressed\n"
-        "DATA: YES — Key claims verified\n"
-        "REPORT: YES — Report is thorough\n"
-        "VERDICT: DECIDE\n"
-        "REASONING: High confidence consensus with evidence support."
-    ))
+    # No Gate 2 mock needed — it's deterministic
 
 
 class TestBrainE2E:
