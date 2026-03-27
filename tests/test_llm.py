@@ -10,7 +10,7 @@ from thinker.config import BrainConfig, R1_MODEL, REASONER_MODEL, GLM5_MODEL, SO
 def config():
     return BrainConfig(
         openrouter_api_key="test-or-key",
-        anthropic_api_key="test-anth-key",
+        anthropic_oauth_token="test-oauth-token",
         deepseek_api_key="test-ds-key",
         zai_api_key="test-zai-key",
     )
@@ -83,11 +83,14 @@ class TestLLMClientOpenAICompat:
 class TestLLMClientAnthropic:
     async def test_successful_call(self, config):
         client = LLMClient(config)
-        mock_msg = MagicMock()
-        mock_msg.content = [MagicMock(text="sonnet response")]
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "content": [{"text": "sonnet response"}]
+        }
+        mock_response.raise_for_status = MagicMock()
 
-        with patch.object(client._anthropic, "messages", create=True) as mock_messages:
-            mock_messages.create = AsyncMock(return_value=mock_msg)
+        with patch.object(client._http_anthropic, "post", new_callable=AsyncMock, return_value=mock_response):
             result = await client._call_anthropic("test prompt", 4096)
             assert result.ok is True
             assert result.text == "sonnet response"

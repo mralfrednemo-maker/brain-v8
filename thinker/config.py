@@ -49,7 +49,7 @@ class BrainConfig:
     max_evidence_items: int = 10
     max_search_queries_per_phase: int = 5
     openrouter_api_key: str = ""
-    anthropic_api_key: str = ""
+    anthropic_oauth_token: str = ""
     deepseek_api_key: str = ""
     zai_api_key: str = ""
     brave_api_key: str = ""

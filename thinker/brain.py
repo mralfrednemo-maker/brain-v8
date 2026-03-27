@@ -175,6 +175,8 @@ async def main():
     import argparse
     import json
     import os
+    from dotenv import load_dotenv
+    load_dotenv()
 
     parser = argparse.ArgumentParser(description="Thinker V8 Brain Engine")
     parser.add_argument("--brief", required=True, help="Path to brief markdown file")
@@ -188,7 +190,7 @@ async def main():
         rounds=args.rounds,
         wall_clock_budget_s=args.budget,
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        anthropic_oauth_token=os.environ.get("ANTHROPIC_OAUTH_TOKEN", ""),
         deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         zai_api_key=os.environ.get("ZAI_API_KEY", ""),
         brave_api_key=os.environ.get("BRAVE_API_KEY", ""),

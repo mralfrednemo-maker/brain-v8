@@ -1,13 +1,15 @@
-"""Async LLM client supporting OpenRouter, Anthropic, DeepSeek, and Z.AI."""
+"""Async LLM client supporting OpenRouter, Anthropic (OAuth), DeepSeek, and Z.AI."""
 from __future__ import annotations
 
 import time
 
-import anthropic
 import httpx
 
-from thinker.config import BrainConfig, ModelConfig
+from thinker.config import BrainConfig, ModelConfig, MODEL_REGISTRY
 from thinker.types import ModelResponse
+
+# Required for Anthropic Max subscription OAuth
+_CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
 
 
 class LLMClient:
@@ -15,7 +17,7 @@ class LLMClient:
 
     Routes to the correct provider based on ModelConfig.provider:
     - "openrouter" -> OpenRouter (R1, Kimi K2, Sonar Pro)
-    - "anthropic"  -> Anthropic direct (Sonnet)
+    - "anthropic"  -> Anthropic OAuth/Max subscription (Sonnet)
     - "deepseek"   -> DeepSeek direct (Reasoner)
     - "zai"        -> Z.AI direct (GLM-5)
     """
@@ -42,11 +44,25 @@ class LLMClient:
                 "Content-Type": "application/json",
             },
         )
-        self._anthropic = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+        # Anthropic OAuth requires raw HTTP with specific identity headers
+        self._http_anthropic = httpx.AsyncClient(
+            base_url="https://api.anthropic.com/v1",
+            headers={
+                "Authorization": f"Bearer {config.anthropic_oauth_token}",
+                "Content-Type": "application/json",
+                "User-Agent": "claude-cli/2.1.62",
+                "x-app": "cli",
+                "anthropic-version": "2023-06-01",
+                "anthropic-dangerous-direct-browser-access": "true",
+                "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+            },
+        ) if config.anthropic_oauth_token else None
 
-    async def call(self, model_cfg: ModelConfig, prompt: str,
+    async def call(self, model_cfg: ModelConfig | str, prompt: str,
                    system: str = "") -> ModelResponse:
-        """Call a model. Routes based on model_cfg.provider."""
+        """Call a model. Accepts ModelConfig or model name string."""
+        if isinstance(model_cfg, str):
+            model_cfg = MODEL_REGISTRY[model_cfg]
         if model_cfg.provider == "openrouter":
             return await self._call_openai_compat(
                 self._http_openrouter, model_cfg.model_id, prompt,
@@ -97,17 +113,38 @@ class LLMClient:
 
     async def _call_anthropic(self, prompt: str, max_tokens: int,
                                system: str = "") -> ModelResponse:
+        """Call Anthropic via OAuth (Max subscription).
+
+        System prompt MUST be array format with Claude Code identity first.
+        Uses raw HTTP — the SDK's auth_token path doesn't handle OAuth correctly.
+        """
+        if not self._http_anthropic:
+            return ModelResponse(
+                model="claude-sonnet-4-6", ok=False, text="",
+                elapsed_s=0.0, error="No Anthropic OAuth token configured",
+            )
         start = time.monotonic()
         try:
-            kwargs = {
-                "model": "claude-sonnet-4-6",
-                "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-            }
+            # Array format: CC identity first (required), then custom instructions
+            system_blocks = [
+                {"type": "text", "text": _CC_IDENTITY},
+            ]
             if system:
-                kwargs["system"] = system
-            msg = await self._anthropic.messages.create(**kwargs)
-            text = msg.content[0].text
+                system_blocks.append({"type": "text", "text": system})
+
+            resp = await self._http_anthropic.post(
+                "/messages",
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": max_tokens,
+                    "system": system_blocks,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["content"][0]["text"]
             return ModelResponse(
                 model="claude-sonnet-4-6", ok=True, text=text,
                 elapsed_s=time.monotonic() - start,
@@ -122,3 +159,5 @@ class LLMClient:
         await self._http_openrouter.aclose()
         await self._http_deepseek.aclose()
         await self._http_zai.aclose()
+        if self._http_anthropic:
+            await self._http_anthropic.aclose()
