@@ -8,6 +8,8 @@ is appended to the output after the LLM call.
 """
 from __future__ import annotations
 
+from thinker.pipeline import pipeline_stage
+
 SYNTHESIS_PROMPT = """You are the synthesis gate for a multi-model deliberation system.
 
 Your job is to write a clear, honest report summarizing what the models concluded.
@@ -114,6 +116,21 @@ def parse_synthesis_output(text: str) -> tuple[str, dict]:
     return markdown, json_data
 
 
+@pipeline_stage(
+    name="Synthesis Gate",
+    description="Single Sonnet call. Sees ONLY final round views. Produces dual output: markdown (human-readable) + JSON (machine-readable). DO NOT INVENT NEW ARGUMENTS. Deterministic classification label appended after LLM call.",
+    stage_type="synthesis",
+    provider="sonnet",
+    inputs=["brief", "final_views (R3 only)", "blocker_summary", "outcome_class"],
+    outputs=["markdown_report (str)", "json_data (dict)"],
+    prompt=SYNTHESIS_PROMPT,
+    logic="""Rules: ONLY summarize final views. State disagreement honestly. Cite evidence IDs.
+Dual output separated by ---JSON--- line.
+Classification (CONSENSUS/CLOSED_WITH_ACCEPTED_RISKS/etc.) appended deterministically.""",
+    failure_mode="LLM fails: return FAILED status with error details.",
+    cost="1 Sonnet call ($0 on Max subscription)",
+    stage_id="synthesis",
+)
 async def run_synthesis(
     client,
     brief: str,

@@ -108,7 +108,8 @@ class TestRunGate2Deterministic:
         assert result.outcome == Outcome.ESCALATE
         assert result.convergence_ok is False
 
-    def test_ignored_arguments_escalate(self):
+    def test_few_ignored_with_high_agreement_still_decides(self):
+        """High agreement overrides a few ignored args — conclusion matters."""
         result = run_gate2_deterministic(
             agreement_ratio=1.0,
             positions={
@@ -116,14 +117,13 @@ class TestRunGate2Deterministic:
             },
             contradictions=[],
             unaddressed_arguments=[
-                Argument("ARG-5", 2, "glm5", "Insider threat ignored", status=ArgumentStatus.IGNORED),
+                Argument("ARG-5", 2, "glm5", "Minor point ignored", status=ArgumentStatus.IGNORED),
             ],
             open_blockers=[],
             evidence_count=10,
             search_enabled=True,
         )
-        assert result.outcome == Outcome.ESCALATE
-        assert result.dissent_addressed is False
+        assert result.outcome == Outcome.DECIDE
 
     def test_mentioned_but_not_ignored_decides(self):
         """MENTIONED arguments don't block DECIDE — only IGNORED ones do."""

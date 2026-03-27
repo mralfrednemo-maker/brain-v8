@@ -309,7 +309,17 @@ async def main():
     # Save debug outputs
     brain.log.save_log(Path(args.outdir) / "debug.log")
     brain.log.save_events_json(Path(args.outdir) / "events.json")
-    brain.log.generate_html(Path(args.outdir) / "run-report.html", result.proof, result.report)
+
+    # Generate auto-populated diagram from stage registry + run data
+    # Import all tagged modules so the registry is populated
+    import thinker.gate1, thinker.rounds, thinker.argument_tracker  # noqa: F401
+    import thinker.tools.position, thinker.search, thinker.synthesis, thinker.gate2  # noqa: F401
+    from thinker.pipeline import generate_architecture_html
+    events_data = json.loads((Path(args.outdir) / "events.json").read_text())
+    generate_architecture_html(
+        Path(args.outdir) / "run-report.html",
+        run_events=events_data, proof=result.proof, report=result.report,
+    )
 
     print(f"\nOutcome: {result.outcome.value}")
     print(f"Class: {result.proof.get('v3_outcome_class', 'N/A')}")

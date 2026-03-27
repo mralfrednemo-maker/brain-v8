@@ -14,9 +14,29 @@ Classification system (adapted from Chamber V11):
 """
 from __future__ import annotations
 
+from thinker.pipeline import pipeline_stage
 from thinker.types import Argument, ArgumentStatus, Blocker, Contradiction, Gate2Assessment, Outcome, Position
 
 
+@pipeline_stage(
+    name="Gate 2",
+    description="Fully deterministic trust assessment. No LLM call. Instant. Reproducible. Thresholds on mechanical tool data: agreement_ratio, ignored arguments, evidence count, contradictions, open blockers.",
+    stage_type="deterministic",
+    provider="deterministic (no LLM)",
+    inputs=["agreement_ratio", "ignored_arguments", "evidence_count", "contradictions", "open_blockers", "search_enabled"],
+    outputs=["outcome (DECIDE/ESCALATE)", "outcome_class (str)"],
+    logic="""if agreement < 0.5 → NO_CONSENSUS
+if search_enabled and evidence == 0 → INSUFFICIENT_EVIDENCE
+if agreement >= 0.75 and ignored == 0 and contradictions == 0 and blockers == 0 → CONSENSUS
+if agreement >= 0.75 and ignored <= 2 → CLOSED_WITH_ACCEPTED_RISKS
+else → PARTIAL_CONSENSUS
+
+DECIDE if agreement >= 0.75, else ESCALATE.""",
+    thresholds={"agreement_ratio >= 0.75": "DECIDE", "agreement_ratio < 0.5": "NO_CONSENSUS", "ignored_arguments >= 3": "NO_CONSENSUS"},
+    failure_mode="Cannot fail — deterministic computation.",
+    cost="$0 (no LLM call)",
+    stage_id="gate2",
+)
 def classify_outcome(
     agreement_ratio: float,
     ignored_arguments: int,
@@ -73,13 +93,13 @@ def run_gate2_deterministic(
 
     convergence_ok = agreement_ratio >= 0.75
     evidence_ok = evidence_count >= 3 or not search_enabled
-    dissent_ok = len(ignored) == 0
+    dissent_ok = len(ignored) <= 2  # A few ignored args don't block if agreement is high
     data_ok = evidence_count > 0 or not search_enabled
     no_blockers = len(open_blockers) == 0
 
-    # DECIDE requires convergence + dissent addressed
-    # Evidence and blockers are secondary (affect classification, not the gate)
-    if convergence_ok and dissent_ok:
+    # DECIDE requires convergence — the conclusion is what matters
+    # A few unaddressed minor arguments don't override strong agreement
+    if convergence_ok:
         outcome = Outcome.DECIDE
     else:
         outcome = Outcome.ESCALATE

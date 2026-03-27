@@ -15,6 +15,7 @@ import re
 from enum import Enum
 from typing import Callable, Awaitable, Optional
 
+from thinker.pipeline import pipeline_stage
 from thinker.types import Confidence, EvidenceItem, SearchResult
 
 
@@ -155,3 +156,22 @@ class SearchOrchestrator:
             if match:
                 queries.append(match.group(1).strip())
         return queries
+
+
+@pipeline_stage(
+    name="Search Phase",
+    description="Runs after R1 and R2 only. Collects model-requested searches from appendices (0-5 per model, no LLM needed). Sonnet proactive sweep for claims models missed. Dedup. Execute via Brave (primary) or Sonar (repeat topic). Top 10 results in search ranking order. Trust search engine ranking — no re-ranking.",
+    stage_type="search",
+    provider="brave ($0.01/query) + sonar (repeat topics) + sonnet (proactive sweep)",
+    inputs=["model_outputs", "topic_tracker_state"],
+    outputs=["evidence_items (added to ledger)", "queries_executed (int)"],
+    logic="""1. Parse SEARCH_REQUESTS from model output appendices (direct, no LLM).
+2. Sonnet proactive sweep for uncovered claims (1 LLM call).
+3. Deduplicate (case-insensitive).
+4. First-time topic → Brave. Repeat topic → Sonar Pro.
+5. Results kept in search ranking order. Max 10 items in evidence ledger.""",
+    failure_mode="Search fails: empty results, deliberation continues without evidence.",
+    cost="~$0.05 per search phase (Brave) + 1 Sonnet call ($0)",
+    stage_id="search",
+)
+def _register_search(): pass

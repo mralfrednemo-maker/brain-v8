@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from thinker.config import ROUND_TOPOLOGY
+from thinker.pipeline import pipeline_stage
 from thinker.types import ModelResponse, RoundResult
 
 # Evidence framing — makes clear that web-verified evidence outranks model opinions
@@ -86,6 +87,18 @@ def build_round_prompt(
     return "\n".join(parts)
 
 
+@pipeline_stage(
+    name="Deliberation Round",
+    description="Calls all models for a round in parallel. R1: brief only (4 models). R2: brief + R1 views + evidence + unaddressed args (3 models). R3: final convergence (2 models). Models include search request appendix (0-5 queries) in R1 and R2.",
+    stage_type="round",
+    provider="r1, reasoner, glm5, kimi (topology narrows 4→3→2)",
+    inputs=["brief", "prior_views", "evidence_text", "unaddressed_arguments"],
+    outputs=["responses (dict[model, text])", "responded (list)", "failed (list)"],
+    logic="All models called in parallel. Failed models excluded. Zero responses = FATAL ESCALATE.",
+    failure_mode="Individual model failure: excluded from results. All fail: pipeline stops with ESCALATE.",
+    cost="R1: ~$0.40 (4 models) | R2: ~$0.30 (3 models) | R3: ~$0.20 (2 models)",
+    stage_id="round",
+)
 async def execute_round(
     client,
     round_num: int,

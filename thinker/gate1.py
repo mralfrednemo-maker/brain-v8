@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from thinker.pipeline import pipeline_stage
 from thinker.types import Gate1Result, Outcome
 
 GATE1_PROMPT = """You are a question quality assessor for a multi-model deliberation system.
@@ -71,6 +72,22 @@ def parse_gate1_response(text: str) -> Gate1Result:
     return Gate1Result(passed=passed, outcome=outcome, questions=questions, reasoning=reasoning)
 
 
+@pipeline_stage(
+    name="Gate 1",
+    description="One fast Sonnet call checks if the brief has enough context for 4 models to reason independently. If not, pushes back with specific questions. Never guesses, never searches.",
+    stage_type="gate",
+    provider="sonnet",
+    inputs=["brief"],
+    outputs=["passed (bool)", "questions (list)", "reasoning (str)"],
+    prompt=GATE1_PROMPT,
+    logic="""PASS if: question specific, key facts provided (who/what/when/scope), clear deliverable.
+NEED_MORE if: critical context missing, too vague, ambiguous terms.
+MALFORMED response: fail open (PASS).
+LLM failure: fail open (PASS).""",
+    failure_mode="Fail open — don't block the pipeline on infra issues",
+    cost="~$0.01 per call (Anthropic Max subscription = $0)",
+    stage_id="gate1",
+)
 async def run_gate1(client, brief: str) -> Gate1Result:
     """Run Gate 1 assessment.
 

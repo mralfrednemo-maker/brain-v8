@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 
+from thinker.pipeline import pipeline_stage
 from thinker.types import Argument, ArgumentStatus
 
 
@@ -145,3 +146,21 @@ class ArgumentTracker:
             "You MUST engage with each one — agree with reasoning, rebut with evidence, or refine.\n\n"
             + "\n".join(lines)
         )
+
+
+@pipeline_stage(
+    name="Argument Tracker",
+    description="Core V8 innovation. After each round, Sonnet extracts all distinct arguments. After R2+, compares them with current round to identify ADDRESSED/MENTIONED/IGNORED. Unaddressed arguments re-injected into next round's prompt. Arguments can't be silently dropped.",
+    stage_type="track",
+    provider="sonnet (2 calls: extract + compare)",
+    inputs=["model_outputs (dict[model, text])"],
+    outputs=["arguments (list[Argument])", "unaddressed (list)", "reinjection_text (str)"],
+    prompt=EXTRACT_PROMPT,
+    logic="""EXTRACT: Sonnet reads all outputs, extracts ARG-N: [model] text.
+COMPARE (R2+): For each prior arg — ADDRESSED (engaged), MENTIONED (name-dropped), IGNORED (absent).
+RE-INJECT: IGNORED + MENTIONED args added to next round with "You MUST engage".""",
+    failure_mode="Extract fails: empty args. Compare fails: re-inject all (conservative).",
+    cost="2 Sonnet calls per round ($0 on Max subscription)",
+    stage_id="argument_tracker",
+)
+def _register_argument_tracker(): pass

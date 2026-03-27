@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from thinker.pipeline import pipeline_stage
 from thinker.types import Confidence, Position
 
 POSITION_EXTRACT_PROMPT = """Extract each model's position from these round {round_num} outputs.
@@ -87,3 +88,21 @@ class PositionTracker:
                     components=[option], confidence=conf, qualifier=qualifier,
                 )
         return positions
+
+
+@pipeline_stage(
+    name="Position Tracker",
+    description="Extracts each model's position label and confidence from round outputs. Tracks position changes across rounds. Computes agreement_ratio for Gate 2.",
+    stage_type="track",
+    provider="sonnet (1 call per round)",
+    inputs=["model_outputs (dict[model, text])"],
+    outputs=["positions (dict[model, Position])", "agreement_ratio (float)", "position_changes (list)"],
+    prompt=POSITION_EXTRACT_PROMPT,
+    logic="""Sonnet extracts: model: POSITION [CONFIDENCE] — qualifier.
+Parser handles bold (**model:**), multi-word options, compound positions.
+Agreement ratio = count(majority_option) / total_models.""",
+    failure_mode="Extraction fails: empty positions, agreement=0.0.",
+    cost="1 Sonnet call per round ($0 on Max subscription)",
+    stage_id="position_tracker",
+)
+def _register_position_tracker(): pass
