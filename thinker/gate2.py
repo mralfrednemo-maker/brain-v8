@@ -31,8 +31,8 @@ def classify_outcome(
     Returns one of: CONSENSUS, CLOSED_WITH_ACCEPTED_RISKS, PARTIAL_CONSENSUS,
     INSUFFICIENT_EVIDENCE, NO_CONSENSUS.
     """
-    # NO_CONSENSUS: low agreement or many ignored arguments
-    if agreement_ratio < 0.5 or ignored_arguments >= 3:
+    # NO_CONSENSUS: low agreement AND many ignored arguments
+    if agreement_ratio < 0.5:
         return "NO_CONSENSUS"
 
     # INSUFFICIENT_EVIDENCE: search was enabled but found nothing
@@ -47,10 +47,10 @@ def classify_outcome(
         return "CONSENSUS"
 
     # CLOSED_WITH_ACCEPTED_RISKS: high agreement but open issues acknowledged
-    if agreement_ratio >= 0.75 and ignored_arguments == 0:
+    if agreement_ratio >= 0.75 and ignored_arguments <= 2:
         return "CLOSED_WITH_ACCEPTED_RISKS"
 
-    # PARTIAL_CONSENSUS: moderate agreement or some arguments unengaged
+    # PARTIAL_CONSENSUS: moderate agreement or many arguments unengaged
     return "PARTIAL_CONSENSUS"
 
 

@@ -64,7 +64,9 @@ def parse_model_search_requests(model_output: str) -> list[str]:
             else:
                 if queries:
                     break
-    return queries[:5]
+    # Strip surrounding quotes — models often wrap queries in "..." which
+    # causes exact-match search returning 0 results
+    return [q.strip('"\'') for q in queries[:5]]
 
 
 class SearchOrchestrator:
@@ -130,7 +132,8 @@ class SearchOrchestrator:
     async def execute_query(
         self, query: str, phase: SearchPhase,
     ) -> list[SearchResult]:
-        """Execute a single search query. Results in Google's ranking order (top 10)."""
+        """Execute a single search query. Results in ranking order (top 10)."""
+        query = query.strip('"\'')  # Strip quotes that cause exact-match failures
         if self._is_repeat_topic(query) and self._sonar:
             results = await self._sonar(query)
         else:

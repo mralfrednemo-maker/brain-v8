@@ -31,13 +31,15 @@ class TestClassifyOutcome:
         )
         assert result == "NO_CONSENSUS"
 
-    def test_no_consensus_many_ignored(self):
+    def test_many_ignored_with_high_agreement_is_partial(self):
+        """High agreement + many ignored args = PARTIAL_CONSENSUS, not NO_CONSENSUS.
+        Agreement on the conclusion matters — ignored args don't override it."""
         result = classify_outcome(
             agreement_ratio=0.8, ignored_arguments=3, mentioned_arguments=0,
             evidence_count=5, contradictions=0, open_blockers=0,
             search_enabled=True,
         )
-        assert result == "NO_CONSENSUS"
+        assert result == "PARTIAL_CONSENSUS"
 
     def test_insufficient_evidence(self):
         result = classify_outcome(

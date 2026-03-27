@@ -129,7 +129,7 @@ class Brain:
                             total_admitted += 1
 
                 proof.record_research_phase(
-                    phase.value, "playwright", len(queries), total_admitted,
+                    phase.value, "brave", len(queries), total_admitted,
                 )
 
             # Compare arguments (after R2+)
@@ -209,12 +209,25 @@ def EvidenceItem_from_search_result(sr: SearchResult, counter: int):
 def _get_anthropic_token() -> str:
     """Get the Anthropic OAuth token.
 
-    Uses the 1-year setup-token from ANTHROPIC_OAUTH_TOKEN env var (set in .env).
-    This is the long-lived token generated 2026-03-17, NOT the rotating
-    ~/.claude/.credentials.json token which expires every ~8h.
+    Priority:
+    1. ANTHROPIC_OAUTH_TOKEN env var / .env (should be the 1-year setup-token)
+    2. Fall back to ~/.claude/.credentials.json (rotating ~8h token, auto-refreshed by Claude Code)
     """
     import os
-    return os.environ.get("ANTHROPIC_OAUTH_TOKEN", "")
+    token = os.environ.get("ANTHROPIC_OAUTH_TOKEN", "")
+    if token:
+        return token
+    # Fallback: read from Claude Code's credential store
+    import json
+    from pathlib import Path
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    if creds_path.exists():
+        try:
+            creds = json.loads(creds_path.read_text(encoding="utf-8"))
+            return creds.get("claudeAiOauth", {}).get("accessToken", "")
+        except Exception:
+            pass
+    return ""
 
 
 async def main():
@@ -245,10 +258,14 @@ async def main():
     )
 
     from thinker.llm import LLMClient
-    from thinker.playwright_search import google_search
+    from thinker.brave_search import brave_search
+    from functools import partial
     llm = LLMClient(config)
 
-    brain = Brain(config=config, llm_client=llm, search_fn=google_search)
+    # Brave as primary search ($0.01/query, reliable)
+    # Playwright for page content fetching only (done inside search orchestrator)
+    search_fn = partial(brave_search, api_key=config.brave_api_key) if config.brave_api_key else None
+    brain = Brain(config=config, llm_client=llm, search_fn=search_fn)
     result = await brain.run(brief_text)
 
     os.makedirs(args.outdir, exist_ok=True)
