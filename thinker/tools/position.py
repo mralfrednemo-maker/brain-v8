@@ -68,12 +68,18 @@ class PositionTracker:
         positions = {}
         for line in text.strip().split("\n"):
             line = line.strip()
+            # Handle markdown bold (**model:**), backticks (`model:`), or plain
+            # Option text can be multi-word with spaces, parens, slashes
             match = re.match(
-                r"(\w+):\s+(O\d+|[\w_]+)\s+\[(HIGH|MEDIUM|LOW)\]\s*(?:—\s*(.+))?", line,
+                r"[*`]*(\w+)[*`]*:?\s*"         # model name (with optional markdown + colon)
+                r"(.+?)\s*"                      # option (lazy until confidence bracket)
+                r"\[(HIGH|MEDIUM|LOW)\]\s*"      # confidence
+                r"(?:[—-]\s*(.+))?",             # optional qualifier
+                line,
             )
             if match:
                 model = match.group(1)
-                option = match.group(2)
+                option = match.group(2).strip().strip("*`").strip()
                 conf = Confidence[match.group(3)]
                 qualifier = (match.group(4) or "").strip()
                 positions[model] = Position(
