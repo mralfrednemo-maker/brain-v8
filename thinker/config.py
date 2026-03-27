@@ -9,7 +9,7 @@ class ModelConfig:
     """Configuration for a single LLM."""
     name: str
     model_id: str
-    provider: str  # "openrouter" or "anthropic"
+    provider: str  # "openrouter", "anthropic", "deepseek", or "zai"
     max_tokens: int
     timeout_s: int
     is_thinking: bool = False
@@ -18,8 +18,8 @@ class ModelConfig:
 # --- Model roster (V8 spec Section 4) ---
 
 R1_MODEL = ModelConfig("r1", "deepseek/deepseek-r1-0528", "openrouter", 30_000, 720, is_thinking=True)
-REASONER_MODEL = ModelConfig("reasoner", "deepseek-reasoner", "openrouter", 30_000, 720, is_thinking=True)
-GLM5_MODEL = ModelConfig("glm5", "z-ai/glm-5", "openrouter", 16_000, 480)
+REASONER_MODEL = ModelConfig("reasoner", "deepseek-reasoner", "deepseek", 30_000, 720, is_thinking=True)
+GLM5_MODEL = ModelConfig("glm5", "glm-5", "zai", 16_000, 480)
 KIMI_MODEL = ModelConfig("kimi", "moonshotai/kimi-k2", "openrouter", 16_000, 480)
 SONNET_MODEL = ModelConfig("sonnet", "claude-sonnet-4-6", "anthropic", 4_096, 120)
 
@@ -50,5 +50,7 @@ class BrainConfig:
     max_search_queries_per_phase: int = 5
     openrouter_api_key: str = ""
     anthropic_api_key: str = ""
+    deepseek_api_key: str = ""
+    zai_api_key: str = ""
     brave_api_key: str = ""
     outdir: str = "./output"

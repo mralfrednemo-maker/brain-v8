@@ -189,6 +189,8 @@ async def main():
         wall_clock_budget_s=args.budget,
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        zai_api_key=os.environ.get("ZAI_API_KEY", ""),
         brave_api_key=os.environ.get("BRAVE_API_KEY", ""),
         outdir=args.outdir,
     )

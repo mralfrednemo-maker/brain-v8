@@ -1,4 +1,4 @@
-"""Async LLM client supporting OpenRouter and Anthropic direct API."""
+"""Async LLM client supporting OpenRouter, Anthropic, DeepSeek, and Z.AI."""
 from __future__ import annotations
 
 import time
@@ -13,14 +13,32 @@ from thinker.types import ModelResponse
 class LLMClient:
     """Unified async client for all LLM calls.
 
-    Routes to OpenRouter or Anthropic based on ModelConfig.provider.
+    Routes to the correct provider based on ModelConfig.provider:
+    - "openrouter" -> OpenRouter (R1, Kimi K2, Sonar Pro)
+    - "anthropic"  -> Anthropic direct (Sonnet)
+    - "deepseek"   -> DeepSeek direct (Reasoner)
+    - "zai"        -> Z.AI direct (GLM-5)
     """
 
     def __init__(self, config: BrainConfig):
-        self._http = httpx.AsyncClient(
+        self._http_openrouter = httpx.AsyncClient(
             base_url="https://openrouter.ai/api/v1",
             headers={
                 "Authorization": f"Bearer {config.openrouter_api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        self._http_deepseek = httpx.AsyncClient(
+            base_url="https://api.deepseek.com",
+            headers={
+                "Authorization": f"Bearer {config.deepseek_api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        self._http_zai = httpx.AsyncClient(
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            headers={
+                "Authorization": f"Bearer {config.zai_api_key}",
                 "Content-Type": "application/json",
             },
         )
@@ -28,20 +46,34 @@ class LLMClient:
 
     async def call(self, model_cfg: ModelConfig, prompt: str,
                    system: str = "") -> ModelResponse:
+        """Call a model. Routes based on model_cfg.provider."""
         if model_cfg.provider == "openrouter":
-            return await self._call_openrouter(
-                model_cfg.model_id, prompt, model_cfg.max_tokens, model_cfg.timeout_s,
+            return await self._call_openai_compat(
+                self._http_openrouter, model_cfg.model_id, prompt,
+                model_cfg.max_tokens, model_cfg.timeout_s,
+            )
+        elif model_cfg.provider == "deepseek":
+            return await self._call_openai_compat(
+                self._http_deepseek, model_cfg.model_id, prompt,
+                model_cfg.max_tokens, model_cfg.timeout_s,
+            )
+        elif model_cfg.provider == "zai":
+            return await self._call_openai_compat(
+                self._http_zai, model_cfg.model_id, prompt,
+                model_cfg.max_tokens, model_cfg.timeout_s,
             )
         else:
             return await self._call_anthropic(
                 prompt, model_cfg.max_tokens, system,
             )
 
-    async def _call_openrouter(self, model_id: str, prompt: str,
-                                max_tokens: int, timeout_s: int) -> ModelResponse:
+    async def _call_openai_compat(self, client: httpx.AsyncClient, model_id: str,
+                                   prompt: str, max_tokens: int,
+                                   timeout_s: int) -> ModelResponse:
+        """Call any OpenAI-compatible API (OpenRouter, DeepSeek, Z.AI)."""
         start = time.monotonic()
         try:
-            resp = await self._http.post(
+            resp = await client.post(
                 "/chat/completions",
                 json={
                     "model": model_id,
@@ -87,4 +119,6 @@ class LLMClient:
             )
 
     async def close(self):
-        await self._http.aclose()
+        await self._http_openrouter.aclose()
+        await self._http_deepseek.aclose()
+        await self._http_zai.aclose()
