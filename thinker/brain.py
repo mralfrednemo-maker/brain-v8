@@ -170,6 +170,21 @@ class Brain:
         )
 
 
+def _get_anthropic_token() -> str:
+    """Read the current OAuth access token from Claude Code's credentials file.
+
+    Claude Code keeps this file refreshed — the access token rotates every ~8h
+    but the file always has a valid one.
+    """
+    import json
+    from pathlib import Path
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    if creds_path.exists():
+        creds = json.loads(creds_path.read_text(encoding="utf-8"))
+        return creds.get("claudeAiOauth", {}).get("accessToken", "")
+    return ""
+
+
 async def main():
     """CLI entry point for the Brain engine."""
     import argparse
@@ -190,7 +205,7 @@ async def main():
         rounds=args.rounds,
         wall_clock_budget_s=args.budget,
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-        anthropic_oauth_token=os.environ.get("ANTHROPIC_OAUTH_TOKEN", ""),
+        anthropic_oauth_token=_get_anthropic_token(),
         deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         zai_api_key=os.environ.get("ZAI_API_KEY", ""),
         brave_api_key=os.environ.get("BRAVE_API_KEY", ""),
