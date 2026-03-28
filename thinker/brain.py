@@ -204,15 +204,25 @@ class Brain:
             track_stage = f"track{round_num}"
             search_stage = f"search{round_num}"
 
-            if self._stage_done(track_stage) or self._stage_done(search_stage):
-                # Entire round + tracking + search already done
+            # Determine if this round's search phase exists (search runs after R1 and R2, not last round)
+            has_search_phase = not is_last_round and search_orch
+
+            if self._stage_done(search_stage):
+                # Round + tracking + search all done — fully skip
                 log._print(f"  [RESUME] Skipping round {round_num} (already completed)")
                 continue
 
-            if self._stage_done(round_stage):
-                # Round executed but tracking not done — need to re-run tracking
-                log._print(f"  [RESUME] Skipping round {round_num} execution (resuming at tracking)")
-                # Reconstruct a minimal RoundResult from checkpoint state
+            if self._stage_done(track_stage) and not has_search_phase:
+                # Track done, no search phase for this round — fully skip
+                log._print(f"  [RESUME] Skipping round {round_num} (already completed)")
+                continue
+
+            # Need to reconstruct RoundResult if round execution is done
+            round_result = None
+            if self._stage_done(round_stage) or self._stage_done(track_stage):
+                # Round executed — reconstruct from checkpoint for search/compare
+                skip_msg = "resuming at search" if self._stage_done(track_stage) else "resuming at tracking"
+                log._print(f"  [RESUME] Skipping round {round_num} execution ({skip_msg})")
                 from thinker.types import ModelResponse, RoundResult
                 saved_texts = st.round_texts.get(str(round_num), {})
                 saved_responded = st.round_responded.get(str(round_num), [])
@@ -253,33 +263,37 @@ class Brain:
                 if self._checkpoint(f"r{round_num}"):
                     return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT R{round_num}]", gate1=gate1)
 
-            # Extract arguments
-            t0 = time.monotonic()
-            args = await argument_tracker.extract_arguments(round_num, round_result.texts)
-            log.arg_extract(round_num, args, time.monotonic() - t0, argument_tracker.last_raw_response)
-            st.arguments_by_round[str(round_num)] = [
-                {"id": a.argument_id, "model": a.model, "text": a.text[:200]} for a in args
-            ]
+            # --- Tracking phase (skip if already done on resume) ---
+            if not self._stage_done(track_stage):
+                # Extract arguments
+                t0 = time.monotonic()
+                args = await argument_tracker.extract_arguments(round_num, round_result.texts)
+                log.arg_extract(round_num, args, time.monotonic() - t0, argument_tracker.last_raw_response)
+                st.arguments_by_round[str(round_num)] = [
+                    {"id": a.argument_id, "model": a.model, "text": a.text[:200]} for a in args
+                ]
 
-            # Extract positions
-            t0 = time.monotonic()
-            positions = await position_tracker.extract_positions(round_num, round_result.texts)
-            log.pos_extract(round_num, positions, time.monotonic() - t0, position_tracker.last_raw_response)
-            proof.record_positions(round_num, positions)
-            st.positions_by_round[str(round_num)] = {
-                m: {"option": p.primary_option, "confidence": p.confidence.value, "qualifier": p.qualifier}
-                for m, p in positions.items()
-            }
+                # Extract positions
+                t0 = time.monotonic()
+                positions = await position_tracker.extract_positions(round_num, round_result.texts)
+                log.pos_extract(round_num, positions, time.monotonic() - t0, position_tracker.last_raw_response)
+                proof.record_positions(round_num, positions)
+                st.positions_by_round[str(round_num)] = {
+                    m: {"option": p.primary_option, "confidence": p.confidence.value, "qualifier": p.qualifier}
+                    for m, p in positions.items()
+                }
 
-            # Track position changes
-            if round_num > 1:
-                changes = position_tracker.get_position_changes(round_num - 1, round_num)
-                log.pos_changes(round_num - 1, round_num, changes)
-                proof.record_position_changes(changes)
-                st.position_changes.extend(changes)
+                # Track position changes
+                if round_num > 1:
+                    changes = position_tracker.get_position_changes(round_num - 1, round_num)
+                    log.pos_changes(round_num - 1, round_num, changes)
+                    proof.record_position_changes(changes)
+                    st.position_changes.extend(changes)
 
-            if self._checkpoint(f"track{round_num}"):
-                return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT TRACK{round_num}]", gate1=gate1)
+                if self._checkpoint(f"track{round_num}"):
+                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT TRACK{round_num}]", gate1=gate1)
+            else:
+                log._print(f"  [RESUME] Skipping track{round_num} (already completed)")
 
             # Search phase — after R1 and R2 only
             if not is_last_round and search_orch:

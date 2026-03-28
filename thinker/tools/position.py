@@ -161,8 +161,10 @@ class PositionTracker:
         for line in text.strip().split("\n"):
             line = line.strip()
 
-            # Try markdown table row: | `r1/Q1_Enforcement` | position | HIGH | qualifier |
-            table_match = re.match(
+            # Try markdown table row with model/framework
+            # Handles: | `r1/PCI_DSS` | position | HIGH | qualifier |
+            # Also: | 1 | `r1/PCI_DSS` | position | HIGH | qualifier | (leading column)
+            table_match = re.search(
                 r"\|\s*`?(\w+)/(\w+)`?\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
                 line,
             )
@@ -172,22 +174,25 @@ class PositionTracker:
                 option = table_match.group(3).strip().strip("*`").strip()
                 conf = self._parse_confidence(table_match.group(4))
                 qualifier = table_match.group(5).strip()
-                if model not in ("line", "---", ""):
+                skip_words = ("line", "---", "", "dimension", "model", "framework")
+                if model not in skip_words and not option.startswith("---"):
                     framework_components.setdefault(model, []).append(
                         (framework, option, conf, qualifier)
                     )
                 continue
 
             # Also handle: | `model` | position | HIGH | qualifier | (no framework)
-            table_simple = re.match(
+            table_simple = re.search(
                 r"\|\s*`?(\w+)`?\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
                 line,
             )
             if table_simple:
                 model = table_simple.group(1).lower()
-                if model not in ("summary", "note", "here", "both", "all", "the",
-                                 "overall", "example", "line", "---", "model"):
-                    option = table_simple.group(2).strip().strip("*`").strip()
+                option = table_simple.group(2).strip().strip("*`").strip()
+                skip_words = ("summary", "note", "here", "both", "all", "the",
+                              "overall", "example", "line", "---", "model",
+                              "dimension", "framework")
+                if model not in skip_words and not option.startswith("---"):
                     conf = self._parse_confidence(table_simple.group(3))
                     qualifier = table_simple.group(4).strip()
                     positions[model] = Position(
