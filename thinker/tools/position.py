@@ -4,8 +4,12 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from thinker.config import MODEL_REGISTRY
 from thinker.pipeline import pipeline_stage
 from thinker.types import Confidence, Position
+
+# Known model names for validation — only accept these as position sources
+_KNOWN_MODELS = set(MODEL_REGISTRY.keys())
 
 POSITION_EXTRACT_PROMPT = """Extract each model's position from these round {round_num} outputs.
 
@@ -174,8 +178,7 @@ class PositionTracker:
                 option = table_match.group(3).strip().strip("*`").strip()
                 conf = self._parse_confidence(table_match.group(4))
                 qualifier = table_match.group(5).strip()
-                skip_words = ("line", "---", "", "dimension", "model", "framework")
-                if model not in skip_words and not option.startswith("---"):
+                if model in _KNOWN_MODELS and not option.startswith("---"):
                     framework_components.setdefault(model, []).append(
                         (framework, option, conf, qualifier)
                     )
@@ -189,10 +192,7 @@ class PositionTracker:
             if table_simple:
                 model = table_simple.group(1).lower()
                 option = table_simple.group(2).strip().strip("*`").strip()
-                skip_words = ("summary", "note", "here", "both", "all", "the",
-                              "overall", "example", "line", "---", "model",
-                              "dimension", "framework")
-                if model not in skip_words and not option.startswith("---"):
+                if model in _KNOWN_MODELS and not option.startswith("---"):
                     conf = self._parse_confidence(table_simple.group(3))
                     qualifier = table_simple.group(4).strip()
                     positions[model] = Position(
@@ -211,6 +211,8 @@ class PositionTracker:
             )
             if fw_match:
                 model = fw_match.group(1).lower()
+                if model not in _KNOWN_MODELS:
+                    continue
                 framework = fw_match.group(2).upper()
                 option = fw_match.group(3).strip().strip("*`").strip()
                 conf = self._parse_confidence(fw_match.group(4))
@@ -230,8 +232,7 @@ class PositionTracker:
             )
             if match:
                 model = match.group(1).lower()
-                if model in ("summary", "note", "here", "both", "all", "the",
-                             "overall", "example", "dimension", "line", "model"):
+                if model not in _KNOWN_MODELS:
                     continue
                 option = match.group(2).strip().strip("*`").strip()
                 conf = self._parse_confidence(match.group(3))
@@ -243,8 +244,7 @@ class PositionTracker:
 
         # Merge per-framework components into composite positions
         for model, components in framework_components.items():
-            if model in ("summary", "note", "here", "both", "all", "the",
-                         "overall", "example", "dimension", "line", "model"):
+            if model not in _KNOWN_MODELS:
                 continue
             comp_labels = [f"{fw}:{opt}" for fw, opt, _, _ in components]
             primary = " + ".join(comp_labels)
