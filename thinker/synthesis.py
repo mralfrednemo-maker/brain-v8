@@ -120,6 +120,7 @@ def parse_synthesis_output(text: str) -> tuple[str, dict]:
     name="Synthesis Gate",
     description="Single Sonnet call. Sees ONLY final round views. Produces dual output: markdown (human-readable) + JSON (machine-readable). DO NOT INVENT NEW ARGUMENTS. Deterministic classification label appended after LLM call.",
     stage_type="synthesis",
+    order=6,
     provider="sonnet",
     inputs=["brief", "final_views (R3 only)", "blocker_summary", "outcome_class"],
     outputs=["markdown_report (str)", "json_data (dict)"],

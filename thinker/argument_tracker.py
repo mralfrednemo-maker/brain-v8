@@ -152,6 +152,7 @@ class ArgumentTracker:
     name="Argument Tracker",
     description="Core V8 innovation. After each round, Sonnet extracts all distinct arguments. After R2+, compares them with current round to identify ADDRESSED/MENTIONED/IGNORED. Unaddressed arguments re-injected into next round's prompt. Arguments can't be silently dropped.",
     stage_type="track",
+    order=3,
     provider="sonnet (2 calls: extract + compare)",
     inputs=["model_outputs (dict[model, text])"],
     outputs=["arguments (list[Argument])", "unaddressed (list)", "reinjection_text (str)"],

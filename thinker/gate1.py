@@ -76,6 +76,7 @@ def parse_gate1_response(text: str) -> Gate1Result:
     name="Gate 1",
     description="One fast Sonnet call checks if the brief has enough context for 4 models to reason independently. If not, pushes back with specific questions. Never guesses, never searches.",
     stage_type="gate",
+    order=1,
     provider="sonnet",
     inputs=["brief"],
     outputs=["passed (bool)", "questions (list)", "reasoning (str)"],

@@ -8,6 +8,7 @@ Usage:
         name="Gate 1",
         description="Is the brief complete?",
         stage_type="gate",
+        order=1,
         provider="sonnet",
         inputs=["brief"],
         outputs=["passed", "questions", "reasoning"],
@@ -56,6 +57,7 @@ def pipeline_stage(
     name: str,
     description: str,
     stage_type: str,
+    order: int,
     provider: str = "",
     inputs: list[str] | None = None,
     outputs: list[str] | None = None,
@@ -72,15 +74,13 @@ def pipeline_stage(
     def decorator(func):
         nonlocal stage_id
         _id = stage_id or func.__name__
-        global _order_counter
-        _order_counter += 1
 
         info = StageInfo(
             id=_id,
             name=name,
             description=description,
             stage_type=stage_type,
-            order=_order_counter,
+            order=order,
             provider=provider,
             inputs=inputs or [],
             outputs=outputs or [],

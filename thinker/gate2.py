@@ -22,6 +22,7 @@ from thinker.types import Argument, ArgumentStatus, Blocker, Contradiction, Gate
     name="Gate 2",
     description="Fully deterministic trust assessment. No LLM call. Instant. Reproducible. Thresholds on mechanical tool data: agreement_ratio, ignored arguments, evidence count, contradictions, open blockers.",
     stage_type="deterministic",
+    order=7,
     provider="deterministic (no LLM)",
     inputs=["agreement_ratio", "ignored_arguments", "evidence_count", "contradictions", "open_blockers", "search_enabled"],
     outputs=["outcome (DECIDE/ESCALATE)", "outcome_class (str)"],

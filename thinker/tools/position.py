@@ -94,6 +94,7 @@ class PositionTracker:
     name="Position Tracker",
     description="Extracts each model's position label and confidence from round outputs. Tracks position changes across rounds. Computes agreement_ratio for Gate 2.",
     stage_type="track",
+    order=4,
     provider="sonnet (1 call per round)",
     inputs=["model_outputs (dict[model, text])"],
     outputs=["positions (dict[model, Position])", "agreement_ratio (float)", "position_changes (list)"],

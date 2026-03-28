@@ -91,6 +91,7 @@ def build_round_prompt(
     name="Deliberation Round",
     description="Calls all models for a round in parallel. R1: brief only (4 models). R2: brief + R1 views + evidence + unaddressed args (3 models). R3: final convergence (2 models). Models include search request appendix (0-5 queries) in R1 and R2.",
     stage_type="round",
+    order=2,
     provider="r1, reasoner, glm5, kimi (topology narrows 4→3→2)",
     inputs=["brief", "prior_views", "evidence_text", "unaddressed_arguments"],
     outputs=["responses (dict[model, text])", "responded (list)", "failed (list)"],

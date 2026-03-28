@@ -162,6 +162,7 @@ class SearchOrchestrator:
     name="Search Phase",
     description="Runs after R1 and R2 only. Collects model-requested searches from appendices (0-5 per model, no LLM needed). Sonnet proactive sweep for claims models missed. Dedup. Execute via Brave (primary) or Sonar (repeat topic). Top 10 results in search ranking order. Trust search engine ranking — no re-ranking.",
     stage_type="search",
+    order=5,
     provider="brave ($0.01/query) + sonar (repeat topics) + sonnet (proactive sweep)",
     inputs=["model_outputs", "topic_tracker_state"],
     outputs=["evidence_items (added to ledger)", "queries_executed (int)"],
