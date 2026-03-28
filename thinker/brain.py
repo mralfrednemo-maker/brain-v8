@@ -4,12 +4,16 @@ Flow:
   Gate 1 -> R1 -> Search(R1) -> R2 -> Search(R2) -> R3 -> Synthesis Gate -> Deterministic Gate 2
 
 Debug modes:
-  --verbose    : Full logging at each stage
-  --step       : Pause at each stage, inspect data, press Enter to continue
+  --verbose          : Full logging at each stage
+  --stop-after STAGE : Run up to STAGE, save checkpoint, exit
+  --resume FILE      : Resume from a checkpoint file
+
+Stage IDs: gate1, r1, track1, search1, r2, track2, search2, r3, track3, synthesis, gate2
 """
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
 from thinker.argument_tracker import ArgumentTracker
@@ -24,6 +28,7 @@ from thinker.search import SearchOrchestrator, SearchPhase
 from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
+from thinker.checkpoint import PipelineState, should_stop
 from thinker.types import ArgumentStatus, BrainResult, Outcome, SearchResult
 
 
@@ -36,17 +41,38 @@ class Brain:
         llm_client,
         search_fn: Optional[Callable[..., Awaitable[list[SearchResult]]]] = None,
         verbose: bool = False,
-        step: bool = False,
+        stop_after: Optional[str] = None,
+        outdir: str = "./output",
     ):
         self._config = config
         self._llm = llm_client
         self._search_fn = search_fn
-        self.log = RunLog(verbose=verbose, step=step)
+        self._stop_after = stop_after
+        self._outdir = outdir
+        self.log = RunLog(verbose=verbose)
+        self.state = PipelineState()
+
+    def _checkpoint(self, stage_id: str):
+        """Save checkpoint and check if we should stop."""
+        import os
+        self.state.current_stage = stage_id
+        self.state.completed_stages.append(stage_id)
+        os.makedirs(self._outdir, exist_ok=True)
+        self.state.save(Path(self._outdir) / "checkpoint.json")
+        if should_stop(stage_id, self._stop_after):
+            self.log._print(f"\n  [CHECKPOINT] Stopped after {stage_id}. Resume with --resume {self._outdir}/checkpoint.json")
+            return True
+        return False
 
     async def run(self, brief: str) -> BrainResult:
         """Execute a full Brain deliberation."""
         log = self.log
         run_id = f"brain-{int(time.time())}"
+        st = self.state
+        st.brief = brief
+        st.rounds = self._config.rounds
+        st.run_id = run_id
+
         proof = ProofBuilder(run_id, brief, self._config.rounds)
         evidence = EvidenceLedger(max_items=self._config.max_evidence_items)
         argument_tracker = ArgumentTracker(self._llm)
@@ -63,6 +89,9 @@ class Brain:
         t0 = time.monotonic()
         gate1 = await run_gate1(self._llm, brief)
         log.gate1_result(gate1.passed, gate1.reasoning, gate1.questions, time.monotonic() - t0)
+        st.gate1_passed = gate1.passed
+        st.gate1_reasoning = gate1.reasoning
+        st.gate1_questions = gate1.questions
 
         if not gate1.passed:
             proof.set_final_status("GATE1_REJECTED")
@@ -70,6 +99,8 @@ class Brain:
                 outcome=gate1.outcome, proof=proof.build(),
                 report="", gate1=gate1,
             )
+        if self._checkpoint("gate1"):
+            return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT GATE1]", gate1=gate1)
 
         # --- Deliberation Rounds ---
         prior_views: dict[str, str] = {}
@@ -92,6 +123,9 @@ class Brain:
             log.round_result(round_num, round_result.responded, round_result.failed,
                              round_result.texts, time.monotonic() - t0)
             proof.record_round(round_num, round_result.responded, round_result.failed)
+            st.round_texts[str(round_num)] = {m: t[:2000] for m, t in round_result.texts.items()}
+            st.round_responded[str(round_num)] = round_result.responded
+            st.round_failed[str(round_num)] = round_result.failed
 
             if not round_result.responded:
                 proof.set_final_status("FAILED_NO_RESPONSES")
@@ -101,22 +135,36 @@ class Brain:
                     report="", gate1=gate1,
                 )
 
+            if self._checkpoint(f"r{round_num}"):
+                return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT R{round_num}]", gate1=gate1)
+
             # Extract arguments
             t0 = time.monotonic()
             args = await argument_tracker.extract_arguments(round_num, round_result.texts)
             log.arg_extract(round_num, args, time.monotonic() - t0, argument_tracker.last_raw_response)
+            st.arguments_by_round[str(round_num)] = [
+                {"id": a.argument_id, "model": a.model, "text": a.text[:200]} for a in args
+            ]
 
             # Extract positions
             t0 = time.monotonic()
             positions = await position_tracker.extract_positions(round_num, round_result.texts)
             log.pos_extract(round_num, positions, time.monotonic() - t0, position_tracker.last_raw_response)
             proof.record_positions(round_num, positions)
+            st.positions_by_round[str(round_num)] = {
+                m: {"option": p.primary_option, "confidence": p.confidence.value, "qualifier": p.qualifier}
+                for m, p in positions.items()
+            }
 
             # Track position changes
             if round_num > 1:
                 changes = position_tracker.get_position_changes(round_num - 1, round_num)
                 log.pos_changes(round_num - 1, round_num, changes)
                 proof.record_position_changes(changes)
+                st.position_changes.extend(changes)
+
+            if self._checkpoint(f"track{round_num}"):
+                return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT TRACK{round_num}]", gate1=gate1)
 
             # Search phase — after R1 and R2 only
             if not is_last_round and search_orch:
@@ -129,6 +177,7 @@ class Brain:
                 )
                 queries = search_orch.deduplicate(model_requests + proactive)
                 log.search_start(phase.value, model_requests, proactive)
+                st.search_queries[phase.value] = queries
 
                 total_admitted = 0
                 for query in queries[:self._config.max_search_queries_per_phase]:
@@ -142,6 +191,11 @@ class Brain:
                 proof.record_research_phase(
                     phase.value, "brave", len(queries), total_admitted,
                 )
+                st.search_results[phase.value] = total_admitted
+                st.evidence_count = len(evidence.items)
+
+                if self._checkpoint(f"search{round_num}"):
+                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT SEARCH{round_num}]", gate1=gate1)
 
             # Compare arguments (after R2+)
             if round_num > 1:
@@ -155,6 +209,7 @@ class Brain:
                 log.arg_compare(round_num - 1, addressed, len(mentioned), len(ignored),
                                 time.monotonic() - t0, unaddressed)
                 unaddressed_text = argument_tracker.format_reinjection(unaddressed)
+                st.unaddressed_text = unaddressed_text
 
             prior_views = round_result.texts
 
@@ -175,6 +230,8 @@ class Brain:
             open_blockers=len(blocker_ledger.open_blockers()),
             search_enabled=search_enabled,
         )
+        st.agreement_ratio = agreement
+        st.outcome_class = outcome_class
 
         # --- Synthesis Gate ---
         t0 = time.monotonic()
@@ -186,6 +243,11 @@ class Brain:
         )
         log.synthesis_result(len(report), bool(report_json), time.monotonic() - t0)
         proof.set_synthesis_status("COMPLETE" if report else "FAILED")
+        st.report = report[:5000]
+        st.report_json = report_json
+
+        if self._checkpoint("synthesis"):
+            return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=report, gate1=gate1)
 
         # --- Gate 2 (deterministic) ---
         gate2 = run_gate2_deterministic(
@@ -202,6 +264,8 @@ class Brain:
             len(all_ignored), len(evidence.items),
             len(evidence.contradictions), len(blocker_ledger.open_blockers()),
         )
+        st.outcome = gate2.outcome.value
+        self._checkpoint("gate2")
 
         # --- Final ---
         outcome = gate2.outcome
@@ -270,7 +334,8 @@ async def main():
     parser.add_argument("--budget", type=int, default=3600, help="Wall clock budget in seconds")
     parser.add_argument("--outdir", default="./output", help="Output directory")
     parser.add_argument("--verbose", action="store_true", help="Full logging at each stage")
-    parser.add_argument("--step", action="store_true", help="Pause at each stage (implies --verbose)")
+    parser.add_argument("--stop-after", default=None,
+                        help="Stop after STAGE, save checkpoint (gate1,r1,track1,search1,r2,...)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -290,10 +355,12 @@ async def main():
     from functools import partial
     llm = LLMClient(config)
 
+    # --stop-after implies --verbose
+    verbose = args.verbose or args.stop_after is not None
     search_fn = partial(brave_search, api_key=config.brave_api_key) if config.brave_api_key else None
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,
-        verbose=args.verbose, step=args.step,
+        verbose=verbose, stop_after=args.stop_after, outdir=args.outdir,
     )
     result = await brain.run(brief_text)
 
