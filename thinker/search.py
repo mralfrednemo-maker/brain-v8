@@ -166,6 +166,7 @@ class SearchOrchestrator:
     provider="brave ($0.01/query) + sonar (repeat topics) + sonnet (proactive sweep)",
     inputs=["model_outputs", "topic_tracker_state"],
     outputs=["evidence_items (added to ledger)", "queries_executed (int)"],
+    prompt=PROACTIVE_PROMPT,
     logic="""1. Parse SEARCH_REQUESTS from model output appendices (direct, no LLM).
 2. Sonnet proactive sweep for uncovered claims (1 LLM call).
 3. Deduplicate (case-insensitive).

@@ -95,6 +95,31 @@ def build_round_prompt(
     provider="r1, reasoner, glm5, kimi (topology narrows 4→3→2)",
     inputs=["brief", "prior_views", "evidence_text", "unaddressed_arguments"],
     outputs=["responses (dict[model, text])", "responded (list)", "failed (list)"],
+    prompt="""R1 PROMPT:
+You are participating in a multi-model deliberation.
+Analyze the following brief independently and thoroughly.
+
+## Brief
+{brief}
+
+## Your Analysis
+1. Key findings
+2. Your position (with confidence: HIGH/MEDIUM/LOW)
+3. Key arguments supporting your position
+4. Risks or uncertainties
+
+## Search Requests (optional, 0-5)
+SEARCH_REQUESTS:
+1. [specific, searchable query]
+(or NONE)
+
+---
+R2+ PROMPT adds:
+## Prior Round Views (all models from previous round)
+## Web-Verified Evidence (AUTHORITATIVE — outranks model opinions)
+## Unaddressed Arguments (You MUST engage with each one)
+
+R3 (final round): no search request section.""",
     logic="All models called in parallel. Failed models excluded. Zero responses = FATAL ESCALATE.",
     failure_mode="Individual model failure: excluded from results. All fail: pipeline stops with ESCALATE.",
     cost="R1: ~$0.40 (4 models) | R2: ~$0.30 (3 models) | R3: ~$0.20 (2 models)",
