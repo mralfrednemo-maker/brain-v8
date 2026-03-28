@@ -31,7 +31,18 @@ cd C:\Users\chris\PROJECTS\_audit_thinker\thinker-v8
 python -m thinker.brain --brief path/to/brief.md --outdir output/run-name --verbose
 ```
 
-### Step-by-step execution
+### Debug step-by-step (recommended during development)
+```bash
+# Pauses after EVERY stage — shows analysis, waits for Enter
+python -m thinker.brain --brief brief.md --outdir output/test --debug-step
+```
+
+At each pause you see:
+- Stage completed and pipeline progress
+- Stage-specific metrics (positions, arguments, evidence, agreement)
+- Press **Enter** to continue, **q** to stop
+
+### Manual step-by-step (with checkpoint files)
 ```bash
 # Stop after Gate 1
 python -m thinker.brain --brief brief.md --outdir output/test --stop-after gate1
@@ -62,6 +73,7 @@ gate1 → r1 → track1 → search1 → r2 → track2 → search2 → r3 → tra
 | `--verbose` | Full logging at each stage |
 | `--stop-after STAGE` | Run up to STAGE, save checkpoint, exit |
 | `--resume FILE` | Resume from checkpoint JSON (skips completed stages) |
+| `--debug-step` | Pause after every stage for analysis (implies --verbose). Press Enter to continue, 'q' to stop. |
 
 ## Output Files
 

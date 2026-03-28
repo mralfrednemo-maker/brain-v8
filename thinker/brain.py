@@ -45,6 +45,7 @@ class Brain:
         stop_after: Optional[str] = None,
         outdir: str = "./output",
         resume_state: Optional[PipelineState] = None,
+        debug_step: bool = False,
     ):
         self._config = config
         self._llm = llm_client
@@ -52,6 +53,7 @@ class Brain:
         self._sonar_fn = sonar_fn
         self._stop_after = stop_after
         self._outdir = outdir
+        self._debug_step = debug_step
         self.log = RunLog(verbose=verbose)
         self.state = resume_state if resume_state else PipelineState()
 
@@ -65,7 +67,68 @@ class Brain:
         if should_stop(stage_id, self._stop_after):
             self.log._print(f"\n  [CHECKPOINT] Stopped after {stage_id}. Resume with --resume {self._outdir}/checkpoint.json")
             return True
+        if self._debug_step:
+            self._debug_pause(stage_id)
         return False
+
+    def _debug_pause(self, stage_id: str):
+        """Print stage analysis and wait for user confirmation."""
+        st = self.state
+        self.log._print(f"\n{'='*60}")
+        self.log._print(f"  [DEBUG-STEP] Completed: {stage_id}")
+        self.log._print(f"  Pipeline so far: {' → '.join(st.completed_stages)}")
+
+        # Stage-specific analysis
+        if stage_id == "gate1":
+            self.log._print(f"  Gate 1: {'PASS' if st.gate1_passed else 'FAIL'}")
+            if st.gate1_questions:
+                self.log._print(f"  Questions: {st.gate1_questions}")
+
+        elif stage_id.startswith("r"):
+            rnd = stage_id[1:]
+            texts = st.round_texts.get(rnd, {})
+            responded = st.round_responded.get(rnd, [])
+            failed = st.round_failed.get(rnd, [])
+            self.log._print(f"  Round {rnd}: {len(responded)} responded, {len(failed)} failed")
+            for m in responded:
+                chars = len(texts.get(m, ""))
+                self.log._print(f"    {m}: {chars} chars")
+            if failed:
+                self.log._print(f"    FAILED: {', '.join(failed)}")
+
+        elif stage_id.startswith("track"):
+            rnd = stage_id[5:]
+            positions = st.positions_by_round.get(rnd, {})
+            args = st.arguments_by_round.get(rnd, [])
+            self.log._print(f"  Track R{rnd}: {len(positions)} positions, {len(args)} arguments")
+            for m, p in positions.items():
+                self.log._print(f"    {m}: {p.get('option','')} [{p.get('confidence','')}]")
+
+        elif stage_id.startswith("search"):
+            rnd = stage_id[6:]
+            phase = "R1_R2" if rnd == "1" else f"R{rnd}_R{int(rnd)+1}"
+            results = st.search_results.get(phase, 0)
+            queries = st.search_queries.get(phase, [])
+            self.log._print(f"  Search R{rnd}: {len(queries)} queries → {results} evidence items")
+            self.log._print(f"  Total evidence: {st.evidence_count}")
+
+        elif stage_id == "synthesis":
+            self.log._print(f"  Synthesis complete")
+
+        elif stage_id == "gate2":
+            self.log._print(f"  Outcome: {st.outcome}")
+            self.log._print(f"  Class: {st.outcome_class}")
+            self.log._print(f"  Agreement: {st.agreement_ratio:.2f}")
+
+        self.log._print(f"  Checkpoint: {self._outdir}/checkpoint.json")
+        self.log._print(f"{'='*60}")
+        try:
+            resp = input("  Press Enter to continue, 'q' to stop → ").strip().lower()
+        except EOFError:
+            resp = ""
+        if resp == "q":
+            self.log._print("  [DEBUG-STEP] Stopped by user.")
+            raise SystemExit(0)
 
     def _stage_done(self, stage_id: str) -> bool:
         """Check if a stage was already completed (for resume)."""
@@ -467,6 +530,8 @@ async def main():
                         help="Stop after STAGE, save checkpoint (gate1,r1,track1,search1,r2,...)")
     parser.add_argument("--resume", default=None,
                         help="Resume from a checkpoint JSON file (skips completed stages)")
+    parser.add_argument("--debug-step", action="store_true",
+                        help="Pause after each stage for analysis (implies --verbose)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -495,8 +560,9 @@ async def main():
     from functools import partial
     llm = LLMClient(config)
 
-    # --stop-after or --resume implies --verbose
-    verbose = args.verbose or args.stop_after is not None or args.resume is not None
+    # --stop-after, --resume, or --debug-step implies --verbose
+    debug_step = args.debug_step
+    verbose = args.verbose or args.stop_after is not None or args.resume is not None or debug_step
 
     # Search priority: Playwright (free) > Brave (fallback, $0.01/query)
     search_fn = None
@@ -518,7 +584,7 @@ async def main():
         config=config, llm_client=llm, search_fn=search_fn,
         sonar_fn=sonar_fn,
         verbose=verbose, stop_after=args.stop_after, outdir=args.outdir,
-        resume_state=resume_state,
+        resume_state=resume_state, debug_step=debug_step,
     )
     result = await brain.run(brief_text)
 
