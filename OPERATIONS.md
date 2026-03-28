@@ -96,11 +96,12 @@ Every run generates in `--outdir`:
 
 ## Search System
 
-Search providers are selected automatically at startup:
+Search providers:
 
-1. **Playwright** (primary, free) — Google via headless Chromium
-2. **Brave API** (fallback, $0.01/query) — used if Playwright not installed
-3. **Sonar Pro** (repeat topics only) — Perplexity via OpenRouter, triggered when topic tracker detects a repeat search across rounds
+1. **Brave API** (primary, $0.01/query) — requires BRAVE_API_KEY in .env
+2. **Sonar Pro** (repeat topics only) — Perplexity via OpenRouter, triggered when topic tracker detects a repeat search across rounds
+
+Playwright was tested but all search engines (Google, Bing, DuckDuckGo) block headless browsers with CAPTCHA. Brave API is reliable and cheap.
 
 If no search provider is available, deliberation continues without evidence.
 

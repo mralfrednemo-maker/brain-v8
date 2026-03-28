@@ -564,21 +564,15 @@ async def main():
     debug_step = args.debug_step
     verbose = args.verbose or args.stop_after is not None or args.resume is not None or debug_step
 
-    # Search priority: Playwright (free) > Brave (fallback, $0.01/query)
+    # Search: Brave API (primary, $0.01/query) — Playwright blocked by CAPTCHA on all engines
     search_fn = None
-    try:
-        from thinker.playwright_search import google_search
-        search_fn = google_search
+    if config.brave_api_key:
+        search_fn = partial(brave_search, api_key=config.brave_api_key)
         if verbose:
-            print("  [SEARCH] Using Playwright (Google, free)")
-    except ImportError:
-        if config.brave_api_key:
-            search_fn = partial(brave_search, api_key=config.brave_api_key)
-            if verbose:
-                print("  [SEARCH] Playwright not available, using Brave API")
-        else:
-            if verbose:
-                print("  [SEARCH] No search provider available")
+            print("  [SEARCH] Using Brave API")
+    else:
+        if verbose:
+            print("  [SEARCH] No BRAVE_API_KEY — search disabled")
     sonar_fn = partial(sonar_search, api_key=config.openrouter_api_key) if config.openrouter_api_key else None
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,
