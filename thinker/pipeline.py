@@ -124,13 +124,35 @@ def generate_architecture_html(path: Path, run_events: list | None = None, proof
         for e in run_events:
             run_data[e.get("stage", "")] = e
 
-    # Pipeline bar
+    # Pipeline bar — shows actual execution flow, not just stage types
+    # The real flow repeats stages across rounds:
+    # Gate1 → R1 → Track → Search → R2 → Track → Search → R3 → Track → Synthesis → Gate2
+    _FLOW = [
+        ("gate1", "Gate 1"),
+        ("round", "R1 (4)"),
+        ("argument_tracker", "Args"),
+        ("position_tracker", "Pos"),
+        ("search", "Search"),
+        ("round", "R2 (3)"),
+        ("argument_tracker", "Args"),
+        ("position_tracker", "Pos"),
+        ("search", "Search"),
+        ("round", "R3 (2)"),
+        ("argument_tracker", "Args"),
+        ("position_tracker", "Pos"),
+        ("synthesis", "Synthesis"),
+        ("gate2", "Gate 2"),
+    ]
     pipeline_nodes = []
-    for s in stages:
-        bg, fg = _TYPE_COLORS.get(s.stage_type, ("#64748b", "#fff"))
+    for stage_id, label in _FLOW:
+        s = STAGE_REGISTRY.get(stage_id)
+        if s:
+            bg, fg = _TYPE_COLORS.get(s.stage_type, ("#64748b", "#fff"))
+        else:
+            bg, fg = "#64748b", "#fff"
         pipeline_nodes.append(
             f'<div class="pipe-node" style="background:{bg};color:{fg}" '
-            f'onclick="show(\'{s.id}\')">{s.name}</div>'
+            f'onclick="show(\'{stage_id}\')">{label}</div>'
         )
     pipeline_html = '<span class="pipe-arrow">→</span>'.join(pipeline_nodes)
 
