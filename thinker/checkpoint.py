@@ -46,7 +46,7 @@ class PipelineState:
     # Arguments
     arguments_by_round: dict[str, list[dict]] = field(default_factory=dict)
     unaddressed_text: str = ""
-    all_unaddressed: list[dict] = field(default_factory=dict)
+    all_unaddressed: list[dict] = field(default_factory=list)
 
     # Positions
     positions_by_round: dict[str, dict[str, dict]] = field(default_factory=dict)

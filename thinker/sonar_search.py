@@ -1,6 +1,8 @@
 """Sonar Pro deep search for repeat topics.
 
-V8 spec Section 6: Sonar Pro via OpenRouter for repeat searches. ~$0.01/query.
+V8 spec Section 6: When the topic tracker detects a repeat topic (same subject
+searched twice across rounds), Sonar Pro is used instead of Brave for deeper results.
+Sonar Pro returns synthesized answers with source citations.
 """
 from __future__ import annotations
 
@@ -9,8 +11,14 @@ import httpx
 from thinker.types import SearchResult
 
 
-async def sonar_search(query: str, api_key: str) -> list[SearchResult]:
-    """Search via Sonar Pro (Perplexity) through OpenRouter."""
+async def sonar_search(query: str, api_key: str, max_results: int = 10) -> list[SearchResult]:
+    """Search via Sonar Pro (Perplexity) through OpenRouter.
+
+    Returns SearchResult items with citations extracted from Sonar's response.
+    """
+    if not api_key:
+        return []
+
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(
@@ -21,7 +29,16 @@ async def sonar_search(query: str, api_key: str) -> list[SearchResult]:
                 },
                 json={
                     "model": "perplexity/sonar-pro",
-                    "messages": [{"role": "user", "content": query}],
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a research assistant. Answer the query with specific, "
+                                "verifiable facts. Include source URLs for each fact. Be concise."
+                            ),
+                        },
+                        {"role": "user", "content": query},
+                    ],
                     "max_tokens": 4096,
                 },
                 timeout=30,
@@ -29,6 +46,28 @@ async def sonar_search(query: str, api_key: str) -> list[SearchResult]:
             resp.raise_for_status()
             data = resp.json()
             text = data["choices"][0]["message"]["content"]
-            return [SearchResult(url="sonar-pro", title=query, snippet=text, full_content=text)]
+
+            # Extract citations if provided by OpenRouter
+            citations = data.get("citations", [])
+
+            results = []
+            if citations:
+                for i, url in enumerate(citations[:max_results]):
+                    url_str = url if isinstance(url, str) else url.get("url", "")
+                    results.append(SearchResult(
+                        url=url_str,
+                        title=f"Sonar: {query[:60]}",
+                        snippet="",
+                        full_content=text if i == 0 else "",
+                    ))
+            else:
+                results.append(SearchResult(
+                    url="sonar-pro-synthesis",
+                    title=f"Sonar Pro: {query[:80]}",
+                    snippet=text[:300],
+                    full_content=text,
+                ))
+
+            return results[:max_results]
         except Exception:
             return []

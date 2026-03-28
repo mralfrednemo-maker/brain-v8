@@ -29,7 +29,7 @@ from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BrainResult, Outcome, SearchResult
+from thinker.types import ArgumentStatus, BrainResult, EvidenceItem, Gate1Result, Outcome, SearchResult
 
 
 class Brain:
@@ -40,17 +40,20 @@ class Brain:
         config: BrainConfig,
         llm_client,
         search_fn: Optional[Callable[..., Awaitable[list[SearchResult]]]] = None,
+        sonar_fn: Optional[Callable[..., Awaitable[list[SearchResult]]]] = None,
         verbose: bool = False,
         stop_after: Optional[str] = None,
         outdir: str = "./output",
+        resume_state: Optional[PipelineState] = None,
     ):
         self._config = config
         self._llm = llm_client
         self._search_fn = search_fn
+        self._sonar_fn = sonar_fn
         self._stop_after = stop_after
         self._outdir = outdir
         self.log = RunLog(verbose=verbose)
-        self.state = PipelineState()
+        self.state = resume_state if resume_state else PipelineState()
 
     def _checkpoint(self, stage_id: str):
         """Save checkpoint and check if we should stop."""
@@ -64,14 +67,80 @@ class Brain:
             return True
         return False
 
+    def _stage_done(self, stage_id: str) -> bool:
+        """Check if a stage was already completed (for resume)."""
+        return stage_id in self.state.completed_stages
+
+    def _restore_trackers(self, argument_tracker: ArgumentTracker,
+                          position_tracker: PositionTracker,
+                          evidence: EvidenceLedger) -> tuple[dict[str, str], str]:
+        """Restore tracker state from checkpoint. Returns (prior_views, unaddressed_text)."""
+        from thinker.types import Argument, Confidence, Position
+        st = self.state
+
+        # Restore arguments by round
+        for rnd_str, args_data in st.arguments_by_round.items():
+            rnd = int(rnd_str)
+            argument_tracker.arguments_by_round[rnd] = [
+                Argument(
+                    argument_id=a["id"], round_num=rnd,
+                    model=a["model"], text=a["text"],
+                )
+                for a in args_data
+            ]
+
+        # Restore positions by round
+        for rnd_str, pos_data in st.positions_by_round.items():
+            rnd = int(rnd_str)
+            positions = {}
+            for model, p in pos_data.items():
+                conf = Confidence[p.get("confidence", "MEDIUM")]
+                positions[model] = Position(
+                    model=model, round_num=rnd,
+                    primary_option=p.get("option", ""),
+                    components=[p.get("option", "")],
+                    confidence=conf,
+                    qualifier=p.get("qualifier", ""),
+                )
+            position_tracker.positions_by_round[rnd] = positions
+
+        # Restore evidence items
+        for ev_data in st.evidence_items:
+            item = EvidenceItem(
+                evidence_id=ev_data.get("evidence_id", ""),
+                topic=ev_data.get("topic", ""),
+                fact=ev_data.get("fact", ""),
+                url=ev_data.get("url", ""),
+                confidence=Confidence.MEDIUM,
+            )
+            evidence.add(item)
+
+        # Find the last completed round to restore prior_views
+        prior_views: dict[str, str] = {}
+        last_round = 0
+        for rnd_str in st.round_texts:
+            rnd = int(rnd_str)
+            if rnd > last_round:
+                last_round = rnd
+        if last_round > 0:
+            prior_views = st.round_texts.get(str(last_round), {})
+
+        unaddressed_text = st.unaddressed_text
+        return prior_views, unaddressed_text
+
     async def run(self, brief: str) -> BrainResult:
         """Execute a full Brain deliberation."""
         log = self.log
-        run_id = f"brain-{int(time.time())}"
         st = self.state
+        resuming = len(st.completed_stages) > 0
+        run_id = st.run_id if resuming else f"brain-{int(time.time())}"
         st.brief = brief
         st.rounds = self._config.rounds
         st.run_id = run_id
+
+        if resuming:
+            log._print(f"\n  [RESUME] Resuming from stage: {st.current_stage}")
+            log._print(f"  [RESUME] Completed stages: {' → '.join(st.completed_stages)}")
 
         proof = ProofBuilder(run_id, brief, self._config.rounds)
         evidence = EvidenceLedger(max_items=self._config.max_evidence_items)
@@ -81,62 +150,108 @@ class Brain:
         search_enabled = self._search_fn is not None
         search_orch = SearchOrchestrator(
             self._llm, search_fn=self._search_fn,
+            sonar_fn=self._sonar_fn,
         ) if search_enabled else None
         proof.set_blocker_ledger(blocker_ledger)
 
-        # --- Gate 1 ---
-        log.gate1_start(len(brief))
-        t0 = time.monotonic()
-        gate1 = await run_gate1(self._llm, brief)
-        log.gate1_result(gate1.passed, gate1.reasoning, gate1.questions, time.monotonic() - t0)
-        st.gate1_passed = gate1.passed
-        st.gate1_reasoning = gate1.reasoning
-        st.gate1_questions = gate1.questions
-
-        if not gate1.passed:
-            proof.set_final_status("GATE1_REJECTED")
-            return BrainResult(
-                outcome=gate1.outcome, proof=proof.build(),
-                report="", gate1=gate1,
+        # Restore tracker state if resuming
+        if resuming:
+            prior_views, unaddressed_text = self._restore_trackers(
+                argument_tracker, position_tracker, evidence,
             )
-        if self._checkpoint("gate1"):
-            return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT GATE1]", gate1=gate1)
+        else:
+            prior_views = {}
+            unaddressed_text = ""
+
+        # --- Gate 1 ---
+        if self._stage_done("gate1"):
+            log._print("  [RESUME] Skipping gate1 (already completed)")
+            gate1 = Gate1Result(
+                passed=st.gate1_passed,
+                outcome=Outcome.DECIDE if st.gate1_passed else Outcome.NEED_MORE,
+                questions=st.gate1_questions,
+                reasoning=st.gate1_reasoning,
+            )
+        else:
+            log.gate1_start(len(brief))
+            t0 = time.monotonic()
+            gate1 = await run_gate1(self._llm, brief)
+            log.gate1_result(gate1.passed, gate1.reasoning, gate1.questions, time.monotonic() - t0)
+            st.gate1_passed = gate1.passed
+            st.gate1_reasoning = gate1.reasoning
+            st.gate1_questions = gate1.questions
+
+            if not gate1.passed:
+                proof.set_final_status("GATE1_REJECTED")
+                return BrainResult(
+                    outcome=gate1.outcome, proof=proof.build(),
+                    report="", gate1=gate1,
+                )
+            if self._checkpoint("gate1"):
+                return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT GATE1]", gate1=gate1)
 
         # --- Deliberation Rounds ---
-        prior_views: dict[str, str] = {}
-        unaddressed_text = ""
+        if not resuming:
+            prior_views = {}
+            unaddressed_text = ""
 
         for round_num in range(1, self._config.rounds + 1):
             is_last_round = round_num == self._config.rounds
             models = ROUND_TOPOLOGY[round_num]
-            log.round_start(round_num, models, is_last_round)
 
-            # Execute round
-            t0 = time.monotonic()
-            round_result = await execute_round(
-                self._llm, round_num=round_num, brief=brief,
-                prior_views=prior_views if round_num > 1 else None,
-                evidence_text=evidence.format_for_prompt() if round_num > 1 else "",
-                unaddressed_arguments=unaddressed_text if round_num > 1 else "",
-                is_last_round=is_last_round,
-            )
-            log.round_result(round_num, round_result.responded, round_result.failed,
-                             round_result.texts, time.monotonic() - t0)
-            proof.record_round(round_num, round_result.responded, round_result.failed)
-            st.round_texts[str(round_num)] = {m: t[:2000] for m, t in round_result.texts.items()}
-            st.round_responded[str(round_num)] = round_result.responded
-            st.round_failed[str(round_num)] = round_result.failed
+            # --- Skip completed round stages on resume ---
+            round_stage = f"r{round_num}"
+            track_stage = f"track{round_num}"
+            search_stage = f"search{round_num}"
 
-            if not round_result.responded:
-                proof.set_final_status("FAILED_NO_RESPONSES")
-                proof.add_violation("BV1", "FATAL", f"No models responded in round {round_num}")
-                return BrainResult(
-                    outcome=Outcome.ESCALATE, proof=proof.build(),
-                    report="", gate1=gate1,
+            if self._stage_done(track_stage) or self._stage_done(search_stage):
+                # Entire round + tracking + search already done
+                log._print(f"  [RESUME] Skipping round {round_num} (already completed)")
+                continue
+
+            if self._stage_done(round_stage):
+                # Round executed but tracking not done — need to re-run tracking
+                log._print(f"  [RESUME] Skipping round {round_num} execution (resuming at tracking)")
+                # Reconstruct a minimal RoundResult from checkpoint state
+                from thinker.types import ModelResponse, RoundResult
+                saved_texts = st.round_texts.get(str(round_num), {})
+                saved_responded = st.round_responded.get(str(round_num), [])
+                saved_failed = st.round_failed.get(str(round_num), [])
+                responses = {}
+                for m in saved_responded:
+                    responses[m] = ModelResponse(model=m, ok=True, text=saved_texts.get(m, ""), elapsed_s=0.0)
+                for m in saved_failed:
+                    responses[m] = ModelResponse(model=m, ok=False, text="", elapsed_s=0.0, error="failed in prior run")
+                round_result = RoundResult(round_num=round_num, responses=responses, failed=saved_failed)
+            else:
+                # Execute round normally
+                log.round_start(round_num, models, is_last_round)
+
+                t0 = time.monotonic()
+                round_result = await execute_round(
+                    self._llm, round_num=round_num, brief=brief,
+                    prior_views=prior_views if round_num > 1 else None,
+                    evidence_text=evidence.format_for_prompt() if round_num > 1 else "",
+                    unaddressed_arguments=unaddressed_text if round_num > 1 else "",
+                    is_last_round=is_last_round,
                 )
+                log.round_result(round_num, round_result.responded, round_result.failed,
+                                 round_result.texts, time.monotonic() - t0)
+                proof.record_round(round_num, round_result.responded, round_result.failed)
+                st.round_texts[str(round_num)] = {m: t[:2000] for m, t in round_result.texts.items()}
+                st.round_responded[str(round_num)] = round_result.responded
+                st.round_failed[str(round_num)] = round_result.failed
 
-            if self._checkpoint(f"r{round_num}"):
-                return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT R{round_num}]", gate1=gate1)
+                if not round_result.responded:
+                    proof.set_final_status("FAILED_NO_RESPONSES")
+                    proof.add_violation("BV1", "FATAL", f"No models responded in round {round_num}")
+                    return BrainResult(
+                        outcome=Outcome.ESCALATE, proof=proof.build(),
+                        report="", gate1=gate1,
+                    )
+
+                if self._checkpoint(f"r{round_num}"):
+                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT R{round_num}]", gate1=gate1)
 
             # Extract arguments
             t0 = time.monotonic()
@@ -283,7 +398,7 @@ class Brain:
 
 def EvidenceItem_from_search_result(sr: SearchResult, counter: int):
     """Convert a SearchResult to an EvidenceItem for the ledger."""
-    from thinker.types import Confidence, EvidenceItem
+    from thinker.types import Confidence
     content = sr.full_content or sr.snippet
     if not content:
         return None
@@ -336,6 +451,8 @@ async def main():
     parser.add_argument("--verbose", action="store_true", help="Full logging at each stage")
     parser.add_argument("--stop-after", default=None,
                         help="Stop after STAGE, save checkpoint (gate1,r1,track1,search1,r2,...)")
+    parser.add_argument("--resume", default=None,
+                        help="Resume from a checkpoint JSON file (skips completed stages)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -350,17 +467,44 @@ async def main():
         outdir=args.outdir,
     )
 
+    # Load checkpoint if resuming
+    resume_state = None
+    if args.resume:
+        resume_state = PipelineState.load(Path(args.resume))
+        print(f"Resuming from checkpoint: {args.resume}")
+        print(f"  Last stage: {resume_state.current_stage}")
+        print(f"  Completed: {' → '.join(resume_state.completed_stages)}")
+
     from thinker.llm import LLMClient
     from thinker.brave_search import brave_search
+    from thinker.sonar_search import sonar_search
     from functools import partial
     llm = LLMClient(config)
 
-    # --stop-after implies --verbose
-    verbose = args.verbose or args.stop_after is not None
-    search_fn = partial(brave_search, api_key=config.brave_api_key) if config.brave_api_key else None
+    # --stop-after or --resume implies --verbose
+    verbose = args.verbose or args.stop_after is not None or args.resume is not None
+
+    # Search priority: Playwright (free) > Brave (fallback, $0.01/query)
+    search_fn = None
+    try:
+        from thinker.playwright_search import google_search
+        search_fn = google_search
+        if verbose:
+            print("  [SEARCH] Using Playwright (Google, free)")
+    except ImportError:
+        if config.brave_api_key:
+            search_fn = partial(brave_search, api_key=config.brave_api_key)
+            if verbose:
+                print("  [SEARCH] Playwright not available, using Brave API")
+        else:
+            if verbose:
+                print("  [SEARCH] No search provider available")
+    sonar_fn = partial(sonar_search, api_key=config.openrouter_api_key) if config.openrouter_api_key else None
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,
+        sonar_fn=sonar_fn,
         verbose=verbose, stop_after=args.stop_after, outdir=args.outdir,
+        resume_state=resume_state,
     )
     result = await brain.run(brief_text)
 

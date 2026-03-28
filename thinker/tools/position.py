@@ -17,20 +17,45 @@ For each model, identify:
 - Their confidence (HIGH, MEDIUM, LOW)
 - Brief qualifier (one sentence summary of their stance)
 
-Format:
-model_name: OPTION [CONFIDENCE] — qualifier"""
+IMPORTANT: If a model gives a compound position covering multiple frameworks, standards, or
+dimensions (e.g., "GDPR-reportable + SOC 2-reportable + HIPAA-not-reportable"), break it into
+separate per-framework lines. This lets us detect partial agreement (e.g., all models agree on
+GDPR but split on SOC 2).
+
+Format for single-dimension positions:
+model_name: OPTION [CONFIDENCE] — qualifier
+
+Format for multi-framework positions (one line per framework):
+model_name/FRAMEWORK: POSITION [CONFIDENCE] — qualifier
+
+Example:
+r1/GDPR: reportable [HIGH] — 72-hour notification required
+r1/SOC_2: documentation-required [MEDIUM] — depends on BAA scope
+r1/HIPAA: not-reportable [HIGH] — no PHI exposed"""
 
 
 def _normalize_position(option: str) -> str:
     """Normalize a position label for agreement comparison.
 
     Strips parenthetical qualifiers, trailing whitespace, and lowercases.
+    Also normalizes option variants: 'O3-modified', 'Enhanced Option 3',
+    'Modified/Accelerated Option 3' all become 'o3'.
+
     'GDPR-reportable + SOC 2-reportable + HIPAA-not-reportable (BAA review required)'
     becomes 'gdpr-reportable + soc 2-reportable + hipaa-not-reportable'
     """
     # Remove parenthetical qualifiers
     normalized = re.sub(r"\s*\([^)]*\)", "", option)
-    return normalized.strip().lower()
+    normalized = normalized.strip().lower()
+
+    # Normalize option variants: extract core option number
+    # Matches: "o3", "o3-modified", "option 3", "enhanced option 3",
+    # "modified/accelerated option 3", "option 3 (enhanced)", etc.
+    core_match = re.search(r"(?:option\s*|o)(\d+)", normalized)
+    if core_match:
+        return f"o{core_match.group(1)}"
+
+    return normalized
 
 
 class PositionTracker:
@@ -59,16 +84,59 @@ class PositionTracker:
     def agreement_ratio(self, round_num: int) -> float:
         """What fraction of models agree on the core position?
 
-        Normalizes positions before comparison — strips parenthetical
-        qualifiers so 'X (with caveat)' matches 'X'.
+        For single-dimension positions: majority count / total models.
+        For per-framework positions: average agreement across frameworks.
+        Normalizes positions before comparison.
         """
         positions = self.positions_by_round.get(round_num, {})
         if not positions:
             return 0.0
+
+        # Check if any positions are per-framework (kind="sequence")
+        has_frameworks = any(p.kind == "sequence" for p in positions.values())
+
+        if has_frameworks:
+            return self._framework_agreement_ratio(positions)
+
         options = [_normalize_position(p.primary_option) for p in positions.values()]
         counts = Counter(options)
         majority_count = counts.most_common(1)[0][1]
         return majority_count / len(options)
+
+    def _framework_agreement_ratio(self, positions: dict[str, Position]) -> float:
+        """Compute agreement across per-framework components.
+
+        For each framework, compute what fraction of models agree.
+        Return the average across all frameworks.
+        """
+        # Collect {framework: [position_label, ...]} across all models
+        framework_positions: dict[str, list[str]] = {}
+        for p in positions.values():
+            if p.kind == "sequence" and p.components:
+                for comp in p.components:
+                    if ":" in comp:
+                        fw, label = comp.split(":", 1)
+                        framework_positions.setdefault(fw.strip(), []).append(
+                            label.strip().lower()
+                        )
+                    else:
+                        framework_positions.setdefault("default", []).append(
+                            comp.strip().lower()
+                        )
+            else:
+                framework_positions.setdefault("default", []).append(
+                    _normalize_position(p.primary_option)
+                )
+
+        if not framework_positions:
+            return 0.0
+
+        ratios = []
+        for fw, labels in framework_positions.items():
+            counts = Counter(labels)
+            majority = counts.most_common(1)[0][1]
+            ratios.append(majority / len(labels))
+        return sum(ratios) / len(ratios)
 
     def get_position_changes(self, from_round: int, to_round: int) -> list[dict]:
         from_pos = self.positions_by_round.get(from_round, {})
@@ -87,39 +155,117 @@ class PositionTracker:
 
     def _parse_positions(self, text: str, round_num: int) -> dict[str, Position]:
         positions = {}
+        # Collect per-framework components: {model: [(framework, option, conf, qualifier)]}
+        framework_components: dict[str, list[tuple[str, str, Confidence, str]]] = {}
+
         for line in text.strip().split("\n"):
             line = line.strip()
-            # Skip preamble/summary lines — only parse lines starting with a model name
-            # Handle markdown bold (**model:**), backticks (`model:`), or plain
+
+            # Try markdown table row: | `r1/Q1_Enforcement` | position | HIGH | qualifier |
+            table_match = re.match(
+                r"\|\s*`?(\w+)/(\w+)`?\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
+                line,
+            )
+            if table_match:
+                model = table_match.group(1).lower()
+                framework = table_match.group(2).upper()
+                option = table_match.group(3).strip().strip("*`").strip()
+                conf = self._parse_confidence(table_match.group(4))
+                qualifier = table_match.group(5).strip()
+                if model not in ("line", "---", ""):
+                    framework_components.setdefault(model, []).append(
+                        (framework, option, conf, qualifier)
+                    )
+                continue
+
+            # Also handle: | `model` | position | HIGH | qualifier | (no framework)
+            table_simple = re.match(
+                r"\|\s*`?(\w+)`?\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
+                line,
+            )
+            if table_simple:
+                model = table_simple.group(1).lower()
+                if model not in ("summary", "note", "here", "both", "all", "the",
+                                 "overall", "example", "line", "---", "model"):
+                    option = table_simple.group(2).strip().strip("*`").strip()
+                    conf = self._parse_confidence(table_simple.group(3))
+                    qualifier = table_simple.group(4).strip()
+                    positions[model] = Position(
+                        model=model, round_num=round_num, primary_option=option,
+                        components=[option], confidence=conf, qualifier=qualifier,
+                    )
+                continue
+
+            # Try per-framework format: model/FRAMEWORK: POSITION [CONFIDENCE] — qualifier
+            fw_match = re.match(
+                r"[*`]*(\w+)/(\w+)[*`]*:?\s*"   # model/framework
+                r"(.+?)\s*"                      # option
+                r"\[([^\]]+)\]\s*"               # confidence bracket
+                r"(?:[—-]\s*(.+))?",             # optional qualifier
+                line,
+            )
+            if fw_match:
+                model = fw_match.group(1).lower()
+                framework = fw_match.group(2).upper()
+                option = fw_match.group(3).strip().strip("*`").strip()
+                conf = self._parse_confidence(fw_match.group(4))
+                qualifier = (fw_match.group(5) or "").strip()
+                framework_components.setdefault(model, []).append(
+                    (framework, option, conf, qualifier)
+                )
+                continue
+
+            # Standard format: model: OPTION [CONFIDENCE] — qualifier
             match = re.match(
                 r"[*`]*(\w+)[*`]*:?\s*"         # model name (with optional markdown + colon)
                 r"(.+?)\s*"                      # option (lazy until confidence bracket)
-                r"\[([^\]]+)\]\s*"               # confidence bracket (flexible — captures full content)
+                r"\[([^\]]+)\]\s*"               # confidence bracket
                 r"(?:[—-]\s*(.+))?",             # optional qualifier
                 line,
             )
             if match:
                 model = match.group(1).lower()
-                # Skip non-model lines (Summary, Note, etc.)
-                if model in ("summary", "note", "here", "both", "all", "the", "overall"):
+                if model in ("summary", "note", "here", "both", "all", "the",
+                             "overall", "example", "dimension", "line", "model"):
                     continue
                 option = match.group(2).strip().strip("*`").strip()
-                # Parse confidence — take first HIGH/MEDIUM/LOW from bracket content
-                conf_text = match.group(3).upper()
-                if "HIGH" in conf_text:
-                    conf = Confidence.HIGH
-                elif "MEDIUM" in conf_text:
-                    conf = Confidence.MEDIUM
-                elif "LOW" in conf_text:
-                    conf = Confidence.LOW
-                else:
-                    conf = Confidence.MEDIUM  # default
+                conf = self._parse_confidence(match.group(3))
                 qualifier = (match.group(4) or "").strip()
                 positions[model] = Position(
                     model=model, round_num=round_num, primary_option=option,
                     components=[option], confidence=conf, qualifier=qualifier,
                 )
+
+        # Merge per-framework components into composite positions
+        for model, components in framework_components.items():
+            if model in ("summary", "note", "here", "both", "all", "the",
+                         "overall", "example", "dimension", "line", "model"):
+                continue
+            comp_labels = [f"{fw}:{opt}" for fw, opt, _, _ in components]
+            primary = " + ".join(comp_labels)
+            # Use the lowest confidence across frameworks
+            confs = [c for _, _, c, _ in components]
+            min_conf = min(confs, key=lambda c: {"HIGH": 2, "MEDIUM": 1, "LOW": 0}[c.value])
+            qualifiers = [q for _, _, _, q in components if q]
+            positions[model] = Position(
+                model=model, round_num=round_num, primary_option=primary,
+                components=comp_labels, confidence=min_conf,
+                qualifier="; ".join(qualifiers),
+                kind="sequence",
+            )
+
         return positions
+
+    @staticmethod
+    def _parse_confidence(conf_text: str) -> Confidence:
+        conf_text = conf_text.upper()
+        if "HIGH" in conf_text:
+            return Confidence.HIGH
+        elif "MEDIUM" in conf_text:
+            return Confidence.MEDIUM
+        elif "LOW" in conf_text:
+            return Confidence.LOW
+        return Confidence.MEDIUM
 
 
 @pipeline_stage(
