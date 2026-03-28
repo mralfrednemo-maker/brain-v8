@@ -49,16 +49,33 @@ ARG-N: ADDRESSED | MENTIONED | IGNORED"""
 
 
 def parse_arguments(text: str, round_num: int) -> list[Argument]:
-    """Parse extracted arguments from Sonnet's response."""
+    """Parse extracted arguments from Sonnet's response.
+
+    Handles multiple formats Sonnet may use:
+      ARG-1: [r1] argument text
+      ARG-1: r1 - argument text
+      ARG-1: **r1** argument text
+    """
     args = []
     for line in text.strip().split("\n"):
         line = line.strip()
+        # Try bracket format first: ARG-1: [model] text
         match = re.match(r"(ARG-\d+):\s+\[(\w+)\]\s+(.+)", line)
+        if not match:
+            # Try dash format: ARG-1: model - text
+            match = re.match(r"(ARG-\d+):\s+[*]*(\w+)[*]*\s*[-–—]\s*(.+)", line)
+        if not match:
+            # Try bare format: ARG-1: model text (model is first word)
+            match = re.match(r"(ARG-\d+):\s+[*]*(\w+)[*]*\s+(.+)", line)
         if match:
+            model = match.group(2).lower()
+            # Skip non-model words
+            if model in ("the", "this", "that", "both", "all", "note"):
+                continue
             args.append(Argument(
                 argument_id=match.group(1),
                 round_num=round_num,
-                model=match.group(2),
+                model=model,
                 text=match.group(3).strip(),
             ))
     return args
