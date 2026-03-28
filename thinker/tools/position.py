@@ -89,19 +89,31 @@ class PositionTracker:
         positions = {}
         for line in text.strip().split("\n"):
             line = line.strip()
+            # Skip preamble/summary lines — only parse lines starting with a model name
             # Handle markdown bold (**model:**), backticks (`model:`), or plain
-            # Option text can be multi-word with spaces, parens, slashes
             match = re.match(
                 r"[*`]*(\w+)[*`]*:?\s*"         # model name (with optional markdown + colon)
                 r"(.+?)\s*"                      # option (lazy until confidence bracket)
-                r"\[(HIGH|MEDIUM|LOW)\]\s*"      # confidence
+                r"\[([^\]]+)\]\s*"               # confidence bracket (flexible — captures full content)
                 r"(?:[—-]\s*(.+))?",             # optional qualifier
                 line,
             )
             if match:
-                model = match.group(1)
+                model = match.group(1).lower()
+                # Skip non-model lines (Summary, Note, etc.)
+                if model in ("summary", "note", "here", "both", "all", "the", "overall"):
+                    continue
                 option = match.group(2).strip().strip("*`").strip()
-                conf = Confidence[match.group(3)]
+                # Parse confidence — take first HIGH/MEDIUM/LOW from bracket content
+                conf_text = match.group(3).upper()
+                if "HIGH" in conf_text:
+                    conf = Confidence.HIGH
+                elif "MEDIUM" in conf_text:
+                    conf = Confidence.MEDIUM
+                elif "LOW" in conf_text:
+                    conf = Confidence.LOW
+                else:
+                    conf = Confidence.MEDIUM  # default
                 qualifier = (match.group(4) or "").strip()
                 positions[model] = Position(
                     model=model, round_num=round_num, primary_option=option,
