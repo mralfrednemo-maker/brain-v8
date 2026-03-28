@@ -21,10 +21,23 @@ Format:
 model_name: OPTION [CONFIDENCE] — qualifier"""
 
 
+def _normalize_position(option: str) -> str:
+    """Normalize a position label for agreement comparison.
+
+    Strips parenthetical qualifiers, trailing whitespace, and lowercases.
+    'GDPR-reportable + SOC 2-reportable + HIPAA-not-reportable (BAA review required)'
+    becomes 'gdpr-reportable + soc 2-reportable + hipaa-not-reportable'
+    """
+    # Remove parenthetical qualifiers
+    normalized = re.sub(r"\s*\([^)]*\)", "", option)
+    return normalized.strip().lower()
+
+
 class PositionTracker:
     def __init__(self, llm_client):
         self._llm = llm_client
         self.positions_by_round: dict[int, dict[str, Position]] = {}
+        self.last_raw_response: str = ""  # For debug logging
 
     async def extract_positions(
         self, round_num: int, model_outputs: dict[str, str],
@@ -35,17 +48,24 @@ class PositionTracker:
             POSITION_EXTRACT_PROMPT.format(round_num=round_num, outputs=combined),
         )
         if not resp.ok:
+            self.last_raw_response = resp.error or ""
             return {}
+        self.last_raw_response = resp.text
 
         positions = self._parse_positions(resp.text, round_num)
         self.positions_by_round[round_num] = positions
         return positions
 
     def agreement_ratio(self, round_num: int) -> float:
+        """What fraction of models agree on the core position?
+
+        Normalizes positions before comparison — strips parenthetical
+        qualifiers so 'X (with caveat)' matches 'X'.
+        """
         positions = self.positions_by_round.get(round_num, {})
         if not positions:
             return 0.0
-        options = [p.primary_option for p in positions.values()]
+        options = [_normalize_position(p.primary_option) for p in positions.values()]
         counts = Counter(options)
         majority_count = counts.most_common(1)[0][1]
         return majority_count / len(options)

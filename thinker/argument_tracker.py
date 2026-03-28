@@ -82,6 +82,7 @@ class ArgumentTracker:
         self._llm = llm_client
         self.arguments_by_round: dict[int, list[Argument]] = {}
         self.all_unaddressed: list[Argument] = []
+        self.last_raw_response: str = ""  # For debug logging
 
     async def extract_arguments(
         self, round_num: int, model_outputs: dict[str, str],
@@ -92,7 +93,9 @@ class ArgumentTracker:
             EXTRACT_PROMPT.format(round_num=round_num, outputs=combined),
         )
         if not resp.ok:
+            self.last_raw_response = resp.error or ""
             return []
+        self.last_raw_response = resp.text
         args = parse_arguments(resp.text, round_num)
         self.arguments_by_round[round_num] = args
         return args

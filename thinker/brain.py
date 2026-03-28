@@ -104,12 +104,12 @@ class Brain:
             # Extract arguments
             t0 = time.monotonic()
             args = await argument_tracker.extract_arguments(round_num, round_result.texts)
-            log.arg_extract(round_num, args, time.monotonic() - t0)
+            log.arg_extract(round_num, args, time.monotonic() - t0, argument_tracker.last_raw_response)
 
             # Extract positions
             t0 = time.monotonic()
             positions = await position_tracker.extract_positions(round_num, round_result.texts)
-            log.pos_extract(round_num, positions, time.monotonic() - t0)
+            log.pos_extract(round_num, positions, time.monotonic() - t0, position_tracker.last_raw_response)
             proof.record_positions(round_num, positions)
 
             # Track position changes

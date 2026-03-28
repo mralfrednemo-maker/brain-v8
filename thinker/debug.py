@@ -120,9 +120,13 @@ class RunLog:
         self.events.append(event)
         self._pause(f"r{round_num}")
 
-    def arg_extract(self, round_num: int, args: list, elapsed: float):
+    def arg_extract(self, round_num: int, args: list, elapsed: float, raw_response: str = ""):
         self._print(f"\n  --- Argument Extraction (R{round_num}) ---")
         self._print(f"  {len(args)} arguments extracted ({elapsed:.1f}s)")
+        if len(args) == 0 and raw_response:
+            self._print(f"  [RAW RESPONSE - 0 args parsed]:")
+            for line in raw_response[:500].split('\n'):
+                self._print(f"    | {line}")
         for a in args[:6]:
             self._print(f"    {a.argument_id}: [{a.model}] {a.text[:80]}...")
         if len(args) > 6:
@@ -130,21 +134,27 @@ class RunLog:
         self.events.append(StageEvent(
             stage=f"arg_extract_r{round_num}", label=f"Arg Extract R{round_num}",
             timestamp=time.monotonic(), elapsed_s=elapsed,
-            data={"count": len(args), "args": [
+            data={"count": len(args), "raw_response": raw_response[:2000],
+                  "args": [
                 {"id": a.argument_id, "model": a.model, "text": a.text[:200]}
                 for a in args
             ]},
         ))
 
-    def pos_extract(self, round_num: int, positions: dict, elapsed: float):
+    def pos_extract(self, round_num: int, positions: dict, elapsed: float, raw_response: str = ""):
         self._print(f"\n  --- Position Extraction (R{round_num}) ---")
         self._print(f"  {len(positions)} positions extracted ({elapsed:.1f}s)")
+        if len(positions) == 0 and raw_response:
+            self._print(f"  [RAW RESPONSE - 0 positions parsed]:")
+            for line in raw_response[:500].split('\n'):
+                self._print(f"    | {line}")
         for model, pos in positions.items():
             self._print(f"    {model}: {pos.primary_option} [{pos.confidence.value}]")
         self.events.append(StageEvent(
             stage=f"pos_extract_r{round_num}", label=f"Pos Extract R{round_num}",
             timestamp=time.monotonic(), elapsed_s=elapsed,
-            data={"positions": {
+            data={"raw_response": raw_response[:2000],
+                  "positions": {
                 m: {"option": p.primary_option, "confidence": p.confidence.value, "qualifier": p.qualifier}
                 for m, p in positions.items()
             }},

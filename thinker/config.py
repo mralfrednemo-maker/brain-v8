@@ -21,7 +21,7 @@ R1_MODEL = ModelConfig("r1", "deepseek/deepseek-r1-0528", "openrouter", 30_000, 
 REASONER_MODEL = ModelConfig("reasoner", "deepseek-reasoner", "deepseek", 30_000, 720, is_thinking=True)
 GLM5_MODEL = ModelConfig("glm5", "glm-5", "zai", 16_000, 480)
 KIMI_MODEL = ModelConfig("kimi", "moonshotai/kimi-k2", "openrouter", 16_000, 480)
-SONNET_MODEL = ModelConfig("sonnet", "claude-sonnet-4-6", "anthropic", 4_096, 120)
+SONNET_MODEL = ModelConfig("sonnet", "claude-sonnet-4-6", "anthropic", 16_000, 120)
 
 # --- Round topology (V8 spec: 4 -> 3 -> 2 -> 2) ---
 
