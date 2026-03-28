@@ -31,9 +31,15 @@ cd C:\Users\chris\PROJECTS\_audit_thinker\thinker-v8
 python -m thinker.brain --brief path/to/brief.md --outdir output/run-name --verbose
 ```
 
-### Debug step-by-step (recommended during development)
+### Debug step-by-step (DEFAULT during development)
 ```bash
-# Pauses after EVERY stage — shows analysis, waits for Enter
+# Use the wrapper — --debug-step is ON by default
+./brain-debug.sh --brief brief.md --outdir output/test
+
+# Full run (no pausing) — pass --no-step
+./brain-debug.sh --brief brief.md --outdir output/test --no-step
+
+# Or call directly with the flag
 python -m thinker.brain --brief brief.md --outdir output/test --debug-step
 ```
 
