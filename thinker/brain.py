@@ -460,6 +460,11 @@ class Brain:
                     phase.value, "brave", len(queries), total_admitted,
                 )
                 st.search_results[phase.value] = total_admitted
+                st.evidence_items = [
+                    {"evidence_id": e.evidence_id, "topic": e.topic,
+                     "fact": e.fact, "url": e.url, "score": e.score}
+                    for e in evidence.items
+                ]
                 st.evidence_count = len(evidence.items)
 
                 if self._checkpoint(f"search{round_num}"):
