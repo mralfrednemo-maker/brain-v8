@@ -160,9 +160,10 @@ class ArgumentTracker:
 
         # Accumulate: add newly unaddressed args, remove any that were addressed
         addressed_ids = {a.argument_id for a in prev_args if a.status == ArgumentStatus.ADDRESSED}
+        existing_ids = {a.argument_id for a in self.all_unaddressed}
         self.all_unaddressed = [
             a for a in self.all_unaddressed if a.argument_id not in addressed_ids
-        ] + [a for a in unaddressed if a not in self.all_unaddressed]
+        ] + [a for a in unaddressed if a.argument_id not in existing_ids]
         return unaddressed
 
     def format_reinjection(self, unaddressed: list[Argument]) -> str:

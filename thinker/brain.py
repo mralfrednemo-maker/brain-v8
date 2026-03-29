@@ -122,6 +122,10 @@ class Brain:
 
         self.log._print(f"  Checkpoint: {self._outdir}/checkpoint.json")
         self.log._print(f"{'='*60}")
+        import sys
+        if not sys.stdin.isatty():
+            self.log._print("  [DEBUG-STEP] Non-interactive mode (no TTY) — skipping pause. Use --full-run for cron/CI.")
+            return
         try:
             resp = input("  Press Enter to continue, 'q' to stop → ").strip().lower()
         except EOFError:
@@ -500,12 +504,12 @@ class Brain:
 def EvidenceItem_from_search_result(sr: SearchResult, counter: int):
     """Convert a SearchResult to an EvidenceItem for the ledger."""
     from thinker.types import Confidence
-    content = sr.full_content or sr.snippet
+    content = sr.full_content or sr.snippet or sr.title
     if not content:
         return None
     return EvidenceItem(
         evidence_id=f"E{counter + 1:03d}",
-        topic=sr.title[:100],
+        topic=sr.title[:100] if sr.title else sr.url[:100],
         fact=content[:500],
         url=sr.url,
         confidence=Confidence.MEDIUM,
@@ -588,21 +592,21 @@ async def main():
     debug_step = not args.full_run
     verbose = args.verbose or args.stop_after is not None or args.resume is not None or debug_step
 
-    # Search: Brave API (primary) > Bing free via curl_cffi (fallback)
+    # Search: Bing free (primary, $0) > Brave API (fallback, $0.01/query)
     search_fn = None
-    if config.brave_api_key:
-        search_fn = partial(brave_search, api_key=config.brave_api_key)
+    try:
+        from thinker.bing_search import bing_search
+        search_fn = bing_search
         if verbose:
-            print("  [SEARCH] Using Brave API ($0.01/query)")
-    else:
-        try:
-            from thinker.bing_search import bing_search
-            search_fn = bing_search
+            print("  [SEARCH] Using Bing free (curl_cffi, $0)")
+    except ImportError:
+        if config.brave_api_key:
+            search_fn = partial(brave_search, api_key=config.brave_api_key)
             if verbose:
-                print("  [SEARCH] Using Bing free (curl_cffi, results may be geo-localized)")
-        except ImportError:
+                print("  [SEARCH] Bing unavailable (install curl_cffi), using Brave API ($0.01/query)")
+        else:
             if verbose:
-                print("  [SEARCH] No search provider (install curl_cffi for free Bing)")
+                print("  [SEARCH] No search provider available")
     sonar_fn = partial(sonar_search, api_key=config.openrouter_api_key) if config.openrouter_api_key else None
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,
