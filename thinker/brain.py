@@ -704,21 +704,16 @@ async def main():
     debug_step = not args.full_run
     verbose = args.verbose or args.stop_after is not None or args.resume is not None or debug_step
 
-    # Search: Bing free (primary, $0) > Brave API (fallback, $0.01/query)
+    # Search: Bing via Playwright (headful, $0). Error if unavailable.
     search_fn = None
     try:
         from thinker.bing_search import bing_search
         search_fn = bing_search
         if verbose:
-            print("  [SEARCH] Using Bing free (curl_cffi, $0)")
+            print("  [SEARCH] Using Bing via Playwright (headful, $0)")
     except ImportError:
-        if config.brave_api_key:
-            search_fn = partial(brave_search, api_key=config.brave_api_key)
-            if verbose:
-                print("  [SEARCH] Bing unavailable (install curl_cffi), using Brave API ($0.01/query)")
-        else:
-            if verbose:
-                print("  [SEARCH] No search provider available")
+        print("  [SEARCH ERROR] Bing search requires playwright: pip install playwright && playwright install chromium")
+        raise SystemExit(1)
     sonar_fn = partial(sonar_search, api_key=config.openrouter_api_key) if config.openrouter_api_key else None
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,

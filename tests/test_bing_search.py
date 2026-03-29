@@ -1,26 +1,25 @@
-"""Tests for Bing search — HTML parsing, redirect resolution."""
-from thinker.bing_search import _resolve_bing_redirect
+"""Tests for Bing search — cite-to-URL conversion."""
+from thinker.bing_search import _cite_to_url
 
 
-class TestResolveBingRedirect:
+class TestCiteToUrl:
 
-    def test_extracts_real_url(self):
-        redirect = "https://www.bing.com/ck/a?!&&p=abc&u=a1https%3A%2F%2Fexample.com%2Fpage&ntb=1"
-        assert _resolve_bing_redirect(redirect) == "https://example.com/page"
+    def test_standard_cite(self):
+        assert _cite_to_url("https://www.example.com › path › page") == "https://www.example.com/path/page"
 
-    def test_non_redirect_unchanged(self):
-        url = "https://example.com/page"
-        assert _resolve_bing_redirect(url) == url
+    def test_cite_without_scheme(self):
+        result = _cite_to_url("www.example.com › docs › api")
+        assert result == "https://www.example.com/docs/api"
 
-    def test_malformed_redirect_returns_original(self):
-        url = "https://www.bing.com/ck/a?broken"
-        assert _resolve_bing_redirect(url) == url
+    def test_cite_single_path(self):
+        assert _cite_to_url("https://nvd.nist.gov › vuln") == "https://nvd.nist.gov/vuln"
 
-    def test_double_encoded_url(self):
-        redirect = "https://www.bing.com/ck/a?u=a1https%3A%2F%2Fnvd.nist.gov%2Fvuln%2Fdetail%2FCVE-2026-1234&ntb=1"
-        result = _resolve_bing_redirect(redirect)
-        assert "nvd.nist.gov" in result
+    def test_empty_cite(self):
+        assert _cite_to_url("") == ""
 
-    def test_non_bing_url_passthrough(self):
-        url = "https://google.com/search?q=test"
-        assert _resolve_bing_redirect(url) == url
+    def test_cite_no_separator(self):
+        assert _cite_to_url("https://example.com") == "https://example.com"
+
+    def test_cite_with_tight_separator(self):
+        """Some cites don't have spaces around ›."""
+        assert _cite_to_url("https://example.com›path") == "https://example.com/path"

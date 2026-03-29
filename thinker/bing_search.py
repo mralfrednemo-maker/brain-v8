@@ -1,131 +1,102 @@
-"""Free Bing search via curl_cffi (PRIMARY search provider, no API key needed).
+"""Primary search via Playwright Bing (headful browser).
 
-Uses curl_cffi to impersonate a real browser's TLS fingerprint, bypassing
-Bing's CAPTCHA detection. The scope=web&FORM=HDRSC1 parameters force
-English web results regardless of IP geolocation.
+Uses a real browser to search Bing, extracting results from the rendered DOM.
+This is resilient to HTML structure changes and avoids CAPTCHA blocks that
+affect curl_cffi/httpx approaches.
 
-NOTE: curl_cffi is synchronous — we wrap it in asyncio.to_thread() to
-avoid blocking the async event loop.
+Headful mode is required — headless Chromium gets fingerprinted by Bing.
 """
 from __future__ import annotations
 
 import asyncio
-import re
-from html import unescape
-from urllib.parse import unquote
+from urllib.parse import quote_plus
 
 from thinker.types import SearchResult
 
 
-def _resolve_bing_redirect(href: str) -> str:
-    """Extract real URL from Bing redirect: bing.com/ck/a?...&u=a1ENCODED_URL...
+def _cite_to_url(cite_text: str) -> str:
+    """Convert Bing cite text to a real URL.
 
-    The 'u' parameter contains the real URL with 'a1' prefix, URL-encoded.
-    Falls back to the raw href if extraction fails.
+    Bing cite tags show: 'https://www.example.com › path › page'
+    Convert to: 'https://www.example.com/path/page'
     """
-    if "bing.com/ck/" not in href:
-        return href
-
-    # Extract u= parameter
-    u_match = re.search(r'[?&]u=a1(.*?)(?:&|$)', href)
-    if u_match:
-        try:
-            decoded = unquote(u_match.group(1))
-            if decoded.startswith("http"):
-                return decoded
-        except Exception:
-            pass
-
-    return href
-
-
-def _bing_search_sync(query: str) -> str:
-    """Synchronous Bing HTTP request. Runs in a thread to avoid blocking async loop."""
-    from curl_cffi import requests as curl_requests
-    resp = curl_requests.get(
-        "https://www.bing.com/search",
-        params={"q": query, "scope": "web", "FORM": "HDRSC1"},
-        headers={"Accept-Language": "en-US,en;q=0.9"},
-        impersonate="chrome131",
-        timeout=15,
-    )
-    return resp.text
+    if not cite_text:
+        return ""
+    # Replace ' › ' separators with '/'
+    url = cite_text.replace(" › ", "/").replace("›", "/").strip()
+    # Ensure it starts with https://
+    if not url.startswith("http"):
+        url = "https://" + url
+    return url
 
 
 async def bing_search(query: str, max_results: int = 10) -> list[SearchResult]:
-    """Search Bing via curl_cffi — free, no API key, bypasses CAPTCHA.
+    """Search Bing via Playwright headful browser.
 
-    Uses scope=web&FORM=HDRSC1 to force English web results regardless
-    of IP geolocation (tested from EU IP, returns English results).
-    curl_cffi is synchronous — runs in a thread to not block the event loop.
+    Returns up to max_results SearchResult items with titles and snippets
+    in Bing's ranking order. Raises SearchError on failure.
     """
     from thinker.brave_search import SearchError
 
     try:
-        from curl_cffi import requests as curl_requests  # noqa: F401 — import check
+        from playwright.async_api import async_playwright
     except ImportError:
-        raise SearchError("Bing search requires curl_cffi: pip install curl_cffi")
+        raise SearchError("Bing search requires playwright: pip install playwright && playwright install chromium")
 
     try:
-        html = await asyncio.to_thread(_bing_search_sync, query)
-
-        # Hard block: CAPTCHA with no results behind it
-        if "captcha" in html.lower() and "b_algo" not in html.lower():
-            raise SearchError(f"Bing CAPTCHA block (no results) for: {query[:50]}")
-
-        # Strategy 1: Extract from data-url attributes (most reliable on modern Bing)
-        results = []
-        seen_urls = set()
-
-        data_urls = re.findall(r'data-(?:url|href)="(https?://[^"]+)"', html)
-        for url in data_urls:
-            url = unescape(url)
-            if "bing.com" in url or "microsoft.com" in url:
-                continue
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
-            results.append(SearchResult(url=url, title="", snippet=""))
-
-        # Strategy 2: Extract from <h2><a href> blocks (classic Bing HTML)
-        algos = re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', html, re.DOTALL)
-        for block in algos:
-            a_match = re.search(
-                r'<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=False)
+            page = await browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
             )
-            if not a_match:
-                continue
-            raw_href = unescape(a_match.group(1))
-            url = _resolve_bing_redirect(raw_href)
-            if "bing.com" in url or "microsoft.com" in url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            title = re.sub(r'<[^>]+>', '', a_match.group(2)).strip()
-            title = unescape(title)
-            snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
-            snippet = ""
-            if snippet_match:
-                snippet = re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip()
-                snippet = unescape(snippet)
-            results.append(SearchResult(url=url, title=title[:200], snippet=snippet[:500]))
 
-        # Enrich results with titles/snippets from cite tags
-        cites = re.findall(r'<cite[^>]*>(.*?)</cite>', html)
-        cite_titles = re.findall(
-            r'<a[^>]+(?:data-url|href)="(https?://[^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL
-        )
-        title_map = {}
-        for href, title_html in cite_titles:
-            href = unescape(href)
-            title = re.sub(r'<[^>]+>', '', title_html).strip()
-            if title and "bing.com" not in href:
-                title_map[href] = unescape(title)
+            url = f"https://www.bing.com/search?q={quote_plus(query)}&scope=web&FORM=HDRSC1"
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
 
-        for r in results:
-            if not r.title and r.url in title_map:
-                r.title = title_map[r.url][:200]
+            # Check for CAPTCHA
+            page_content = await page.content()
+            if "captcha" in page_content.lower() and "b_algo" not in page_content.lower():
+                await browser.close()
+                raise SearchError(f"Bing CAPTCHA block for: {query[:50]}")
 
-        return results[:max_results]
+            # Extract results from rendered DOM
+            raw_results = await page.evaluate("""() => {
+                const items = document.querySelectorAll('li.b_algo');
+                return Array.from(items).map(item => {
+                    const a = item.querySelector('h2 a');
+                    const cite = item.querySelector('cite');
+                    const snippet = item.querySelector('.b_caption p, .b_lineclamp2, .b_paractl');
+                    return {
+                        title: a ? a.innerText : '',
+                        cite: cite ? cite.innerText : '',
+                        snippet: snippet ? snippet.innerText : '',
+                    };
+                });
+            }""")
+
+            await browser.close()
+
+            # Build results using cite-based URLs (real URLs, not redirects)
+            results: list[SearchResult] = []
+            seen_urls: set[str] = set()
+            for item in raw_results:
+                real_url = _cite_to_url(item.get("cite", ""))
+                if not real_url or real_url in seen_urls:
+                    continue
+                seen_urls.add(real_url)
+                results.append(SearchResult(
+                    url=real_url,
+                    title=item.get("title", "")[:200],
+                    snippet=item.get("snippet", "")[:500],
+                ))
+                if len(results) >= max_results:
+                    break
+
+            return results
 
     except SearchError:
         raise
