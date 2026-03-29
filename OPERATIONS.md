@@ -31,16 +31,16 @@ cd C:\Users\chris\PROJECTS\_audit_thinker\thinker-v8
 python -m thinker.brain --brief path/to/brief.md --outdir output/run-name --verbose
 ```
 
-### Debug step-by-step (DEFAULT during development)
+### Default: step-by-step (pauses after every stage)
 ```bash
-# Use the wrapper — --debug-step is ON by default
+# Step-by-step is the DEFAULT — no extra flag needed
+python -m thinker.brain --brief brief.md --outdir output/test
+
+# Or use the wrapper
 ./brain-debug.sh --brief brief.md --outdir output/test
 
-# Full run (no pausing) — pass --no-step
-./brain-debug.sh --brief brief.md --outdir output/test --no-step
-
-# Or call directly with the flag
-python -m thinker.brain --brief brief.md --outdir output/test --debug-step
+# Full run (no pausing) — must explicitly override
+python -m thinker.brain --brief brief.md --outdir output/test --full-run
 ```
 
 At each pause you see:
@@ -79,7 +79,7 @@ gate1 → r1 → track1 → search1 → r2 → track2 → search2 → r3 → tra
 | `--verbose` | Full logging at each stage |
 | `--stop-after STAGE` | Run up to STAGE, save checkpoint, exit |
 | `--resume FILE` | Resume from checkpoint JSON (skips completed stages) |
-| `--debug-step` | Pause after every stage for analysis (implies --verbose). Press Enter to continue, 'q' to stop. |
+| `--full-run` | Run all stages without pausing (overrides default step-by-step mode) |
 
 ## Output Files
 

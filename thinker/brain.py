@@ -530,8 +530,8 @@ async def main():
                         help="Stop after STAGE, save checkpoint (gate1,r1,track1,search1,r2,...)")
     parser.add_argument("--resume", default=None,
                         help="Resume from a checkpoint JSON file (skips completed stages)")
-    parser.add_argument("--debug-step", action="store_true",
-                        help="Pause after each stage for analysis (implies --verbose)")
+    parser.add_argument("--full-run", action="store_true",
+                        help="Run all stages without pausing (overrides default step-by-step mode)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -560,8 +560,8 @@ async def main():
     from functools import partial
     llm = LLMClient(config)
 
-    # --stop-after, --resume, or --debug-step implies --verbose
-    debug_step = args.debug_step
+    # Step-by-step is the DEFAULT. --full-run disables it.
+    debug_step = not args.full_run
     verbose = args.verbose or args.stop_after is not None or args.resume is not None or debug_step
 
     # Search: Brave API (primary) > Bing free via curl_cffi (fallback)
