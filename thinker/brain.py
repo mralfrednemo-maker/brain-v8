@@ -50,6 +50,7 @@ class Brain:
         outdir: str = "./output",
         resume_state: Optional[PipelineState] = None,
         debug_step: bool = False,
+        search_override: Optional[bool] = None,
     ):
         self._config = config
         self._llm = llm_client
@@ -58,6 +59,7 @@ class Brain:
         self._stop_after = stop_after
         self._outdir = outdir
         self._debug_step = debug_step
+        self._search_override = search_override  # None=gate1 decides, True=force on, False=force off
         self.log = RunLog(verbose=verbose)
         self.state = resume_state if resume_state else PipelineState()
 
@@ -226,11 +228,9 @@ class Brain:
         argument_tracker = ArgumentTracker(self._llm)
         position_tracker = PositionTracker(self._llm)
         blocker_ledger = BlockerLedger()
-        search_enabled = self._search_fn is not None
-        search_orch = SearchOrchestrator(
-            self._llm, search_fn=self._search_fn,
-            sonar_fn=self._sonar_fn,
-        ) if search_enabled else None
+        # Search decision deferred until after Gate 1 (needs recommendation)
+        search_enabled = False
+        search_orch = None
         proof.set_blocker_ledger(blocker_ledger)
 
         # Restore tracker state if resuming
@@ -250,6 +250,7 @@ class Brain:
                 outcome=Outcome.DECIDE if st.gate1_passed else Outcome.NEED_MORE,
                 questions=st.gate1_questions,
                 reasoning=st.gate1_reasoning,
+                search_recommended=st.gate1_search_recommended,
             )
         else:
             log.gate1_start(len(brief))
@@ -259,6 +260,7 @@ class Brain:
             st.gate1_passed = gate1.passed
             st.gate1_reasoning = gate1.reasoning
             st.gate1_questions = gate1.questions
+            st.gate1_search_recommended = gate1.search_recommended
 
             if not gate1.passed:
                 proof.set_final_status("GATE1_REJECTED")
@@ -268,6 +270,37 @@ class Brain:
                 )
             if self._checkpoint("gate1"):
                 return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT GATE1]", gate1=gate1)
+
+        # --- Search Decision ---
+        # CLI override > Gate 1 recommendation > default (on if provider available)
+        has_search_provider = self._search_fn is not None
+        if self._search_override is not None:
+            # CLI override
+            search_enabled = self._search_override and has_search_provider
+            source = "cli_override"
+            if self._search_override:
+                reasoning = "Forced on via --search"
+            else:
+                reasoning = "Forced off via --no-search"
+            proof.set_search_decision(
+                source=source, value=search_enabled, reasoning=reasoning,
+                gate1_recommended=gate1.search_recommended,
+            )
+            log._print(f"  [SEARCH DECISION] {source}: {'ON' if search_enabled else 'OFF'} (Gate 1 recommended: {'YES' if gate1.search_recommended else 'NO'})")
+        else:
+            # Gate 1 decides
+            search_enabled = gate1.search_recommended and has_search_provider
+            proof.set_search_decision(
+                source="gate1", value=search_enabled,
+                reasoning=gate1.reasoning,
+            )
+            log._print(f"  [SEARCH DECISION] gate1: {'ON' if search_enabled else 'OFF'}")
+
+        if search_enabled:
+            search_orch = SearchOrchestrator(
+                self._llm, search_fn=self._search_fn,
+                sonar_fn=self._sonar_fn,
+            )
 
         # --- Deliberation Rounds ---
         if not resuming:
@@ -673,6 +706,11 @@ async def main():
                         help="Resume from a checkpoint JSON file (skips completed stages)")
     parser.add_argument("--full-run", action="store_true",
                         help="Run all stages without pausing (overrides default step-by-step mode)")
+    search_group = parser.add_mutually_exclusive_group()
+    search_group.add_argument("--search", action="store_true", default=None,
+                              help="Force search on (overrides Gate 1 recommendation)")
+    search_group.add_argument("--no-search", action="store_true", default=None,
+                              help="Force search off (overrides Gate 1 recommendation)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -715,11 +753,19 @@ async def main():
         print("  [SEARCH ERROR] Bing search requires playwright: pip install playwright && playwright install chromium")
         raise SystemExit(1)
     sonar_fn = partial(sonar_search, api_key=config.openrouter_api_key) if config.openrouter_api_key else None
+    # Resolve search override from CLI flags
+    search_override = None
+    if args.search:
+        search_override = True
+    elif args.no_search:
+        search_override = False
+
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,
         sonar_fn=sonar_fn,
         verbose=verbose, stop_after=args.stop_after, outdir=args.outdir,
         resume_state=resume_state, debug_step=debug_step,
+        search_override=search_override,
     )
     try:
         result = await brain.run(brief_text)

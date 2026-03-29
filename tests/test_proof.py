@@ -107,3 +107,31 @@ class TestAcceptanceStatus:
         pb.compute_acceptance_status()
         proof = pb.build()
         assert proof["acceptance_status"] in ("ACCEPTED", "ACCEPTED_WITH_WARNINGS")
+
+
+class TestSearchDecision:
+
+    def test_gate1_decision_recorded(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
+        pb.set_search_decision(source="gate1", value=True, reasoning="Regulatory facts need verification")
+        proof = pb.build()
+        assert proof["search_decision"]["source"] == "gate1"
+        assert proof["search_decision"]["value"] is True
+
+    def test_cli_override_recorded(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
+        pb.set_search_decision(
+            source="cli_override", value=False, reasoning="Forced off via --no-search",
+            gate1_recommended=True,
+        )
+        proof = pb.build()
+        sd = proof["search_decision"]
+        assert sd["source"] == "cli_override"
+        assert sd["value"] is False
+        assert sd["gate1_recommended"] is True
+
+    def test_no_gate1_recommended_when_not_overridden(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
+        pb.set_search_decision(source="gate1", value=True, reasoning="needs search")
+        proof = pb.build()
+        assert "gate1_recommended" not in proof["search_decision"]

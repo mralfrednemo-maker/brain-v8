@@ -39,6 +39,36 @@ class TestGate1Parsing:
         assert result.passed is True
         assert result.outcome == Outcome.DECIDE
 
+    def test_parse_search_yes(self):
+        text = (
+            "VERDICT: PASS\n"
+            "SEARCH: YES\n"
+            "QUESTIONS:\n"
+            "REASONING: Regulatory claims need verification."
+        )
+        result = parse_gate1_response(text)
+        assert result.search_recommended is True
+
+    def test_parse_search_no(self):
+        text = (
+            "VERDICT: PASS\n"
+            "SEARCH: NO\n"
+            "QUESTIONS:\n"
+            "REASONING: Pure logic question, no factual claims to verify."
+        )
+        result = parse_gate1_response(text)
+        assert result.search_recommended is False
+
+    def test_parse_missing_search_defaults_yes(self):
+        """If SEARCH line missing, default to YES (conservative)."""
+        text = (
+            "VERDICT: PASS\n"
+            "QUESTIONS:\n"
+            "REASONING: Fine."
+        )
+        result = parse_gate1_response(text)
+        assert result.search_recommended is True
+
 
 class TestGate1Execution:
     """Gate 1 end-to-end with mock LLM."""

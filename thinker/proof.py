@@ -33,6 +33,7 @@ class ProofBuilder:
         self._invariant_violations: list[dict] = []
         self._acceptance_status: Optional[str] = None
         self._synthesis_residue_omissions: list[dict] = []
+        self._search_decision: Optional[dict] = None
         self._v3_outcome_class: str = "not applicable"
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
@@ -106,6 +107,22 @@ class ProofBuilder:
     def set_synthesis_residue(self, omissions: list[dict]):
         self._synthesis_residue_omissions = omissions
 
+    def set_search_decision(self, source: str, value: bool, reasoning: str,
+                            gate1_recommended: Optional[bool] = None):
+        """Record who decided search on/off and why.
+
+        source: "gate1" | "cli_override"
+        value: True (search on) or False (search off)
+        gate1_recommended: Gate 1's original recommendation (if overridden)
+        """
+        self._search_decision = {
+            "source": source,
+            "value": value,
+            "reasoning": reasoning,
+        }
+        if gate1_recommended is not None and source == "cli_override":
+            self._search_decision["gate1_recommended"] = gate1_recommended
+
     def add_violation(self, violation_id: str, severity: str, detail: str):
         self._invariant_violations.append({
             "id": violation_id, "severity": severity, "detail": detail,
@@ -140,6 +157,7 @@ class ProofBuilder:
             "final_status": self._final_status,
             "synthesis_status": self._synthesis_status,
             "acceptance_status": self._acceptance_status,
+            "search_decision": self._search_decision,
             "v3_outcome_class": self._v3_outcome_class,
             "rounds": self._rounds,
             "evidence_items": self._evidence_items,

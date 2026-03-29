@@ -143,6 +143,7 @@ class Gate1Result:
     outcome: Outcome
     questions: list[str] = field(default_factory=list)
     reasoning: str = ""
+    search_recommended: bool = True  # Default to YES (conservative)
 
 
 @dataclass

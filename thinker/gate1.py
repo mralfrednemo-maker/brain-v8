@@ -16,7 +16,9 @@ from thinker.types import Gate1Result, Outcome
 
 GATE1_PROMPT = """You are a question quality assessor for a multi-model deliberation system.
 
-Read the following brief and determine whether it provides enough context for 4 AI models to reason about independently and produce a useful answer.
+Read the following brief and determine:
+1. Whether it provides enough context for 4 AI models to reason about independently
+2. Whether web search would improve the deliberation quality
 
 A brief PASSES if:
 - The question is specific enough that a smart human would start working on it
@@ -28,17 +30,29 @@ A brief NEEDS MORE if:
 - The question is so vague that models would have to guess
 - Key terms are ambiguous without clarification
 
+SEARCH is YES if the brief contains:
+- Specific regulatory/legal references that should be verified (GDPR articles, CFR sections, etc.)
+- Numeric claims, statistics, or benchmarks that could be fact-checked
+- References to specific products, versions, CVEs, or standards
+- Questions where current/recent information matters
+
+SEARCH is NO if:
+- The brief is a pure reasoning/logic/strategy question with no factual claims to verify
+- All necessary facts are already provided in the brief
+- The question is about internal architecture or design choices, not external facts
+
 IMPORTANT: You are NOT searching for information. You are NOT filling in blanks.
-You are ONLY assessing whether the brief is complete enough to reason about.
+You are ONLY assessing the brief and recommending whether search would help.
 
 Brief:
 {brief}
 
 Respond in this exact format:
 VERDICT: PASS | NEED_MORE
+SEARCH: YES | NO
 QUESTIONS:
 - (list specific questions if NEED_MORE, leave blank if PASS)
-REASONING: (one paragraph)"""
+REASONING: (one paragraph covering both the verdict and search recommendation)"""
 
 
 def parse_gate1_response(text: str) -> Gate1Result:
@@ -53,6 +67,12 @@ def parse_gate1_response(text: str) -> Gate1Result:
     verdict = verdict_match.group(1).upper()
     passed = verdict == "PASS"
     outcome = Outcome.DECIDE if passed else Outcome.NEED_MORE
+
+    # Extract search recommendation (default YES if missing — conservative)
+    search_match = re.search(r"SEARCH:\s*(YES|NO)", text, re.IGNORECASE)
+    search_recommended = True  # Default: search
+    if search_match:
+        search_recommended = search_match.group(1).upper() == "YES"
 
     # Extract questions
     questions = []
@@ -69,7 +89,8 @@ def parse_gate1_response(text: str) -> Gate1Result:
     if reasoning_match:
         reasoning = reasoning_match.group(1).strip()
 
-    return Gate1Result(passed=passed, outcome=outcome, questions=questions, reasoning=reasoning)
+    return Gate1Result(passed=passed, outcome=outcome, questions=questions,
+                       reasoning=reasoning, search_recommended=search_recommended)
 
 
 @pipeline_stage(

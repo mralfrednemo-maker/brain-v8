@@ -40,6 +40,7 @@ class PipelineState:
     gate1_passed: bool = False
     gate1_reasoning: str = ""
     gate1_questions: list[str] = field(default_factory=list)
+    gate1_search_recommended: bool = True
 
     # Round outputs
     round_texts: dict[str, dict[str, str]] = field(default_factory=dict)  # {round_num: {model: text}}
