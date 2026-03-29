@@ -6,6 +6,19 @@ from enum import Enum
 from typing import Optional
 
 
+class BrainError(Exception):
+    """Fatal pipeline error — zero tolerance for silent failures.
+
+    Raised when a critical component fails: LLM call, position extraction,
+    argument tracking, synthesis. The pipeline must stop immediately.
+    """
+    def __init__(self, stage: str, message: str, detail: str = ""):
+        self.stage = stage
+        self.message = message
+        self.detail = detail
+        super().__init__(f"[{stage}] {message}")
+
+
 class Outcome(Enum):
     """The three possible outcomes of a Brain deliberation."""
     DECIDE = "DECIDE"

@@ -9,8 +9,13 @@ import httpx
 from thinker.types import SearchResult
 
 
+class SearchError(Exception):
+    """Search provider failed — surfaces to the pipeline for explicit handling."""
+    pass
+
+
 async def brave_search(query: str, api_key: str, max_results: int = 10) -> list[SearchResult]:
-    """Search via Brave Search API."""
+    """Search via Brave Search API. Raises SearchError on failure."""
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(
@@ -29,5 +34,9 @@ async def brave_search(query: str, api_key: str, max_results: int = 10) -> list[
                     snippet=item.get("description", ""),
                 ))
             return results
-        except Exception:
-            return []
+        except httpx.TimeoutException:
+            raise SearchError(f"Brave search timed out for query: {query[:60]}")
+        except httpx.HTTPStatusError as e:
+            raise SearchError(f"Brave search HTTP {e.response.status_code}: {query[:60]}")
+        except Exception as e:
+            raise SearchError(f"Brave search failed: {e}")

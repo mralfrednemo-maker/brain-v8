@@ -102,10 +102,8 @@ async def run_gate1(client, brief: str) -> Gate1Result:
     resp = await client.call("sonnet", GATE1_PROMPT.format(brief=brief))
 
     if not resp.ok:
-        # LLM failure → fail open (don't block on infra issues)
-        return Gate1Result(
-            passed=True, outcome=Outcome.DECIDE,
-            reasoning=f"Gate 1 LLM failed ({resp.error}) — passing through",
-        )
+        from thinker.types import BrainError
+        raise BrainError("gate1", f"Sonnet LLM call failed: {resp.error}",
+                         detail="Gate 1 cannot assess brief quality without a working LLM.")
 
     return parse_gate1_response(resp.text)

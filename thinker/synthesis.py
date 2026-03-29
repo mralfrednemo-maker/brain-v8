@@ -75,12 +75,21 @@ def build_synthesis_prompt(
     brief: str,
     final_views: dict[str, str],
     blocker_summary: dict,
+    evidence_text: str = "",
 ) -> str:
     views_text = "\n\n".join(f"### {m}\n{v}" for m, v in final_views.items())
     blocker_text = "\n".join(f"- {k}: {v}" for k, v in blocker_summary.items()) if blocker_summary else "None"
-    return SYNTHESIS_PROMPT.format(
+    prompt = SYNTHESIS_PROMPT.format(
         brief=brief, views=views_text, blocker_summary=blocker_text,
     )
+    if evidence_text:
+        prompt += (
+            "\n\n## Web-Verified Evidence (AUTHORITATIVE)\n\n"
+            "The following evidence was retrieved from web sources during deliberation. "
+            "Cite evidence IDs when referencing specific facts.\n\n"
+            f"{evidence_text}\n"
+        )
+    return prompt
 
 
 def parse_synthesis_output(text: str) -> tuple[str, dict]:
@@ -138,20 +147,19 @@ async def run_synthesis(
     final_views: dict[str, str],
     blocker_summary: dict,
     outcome_class: str = "",
+    evidence_text: str = "",
 ) -> tuple[str, dict]:
     """Run the Synthesis Gate. Returns (markdown_report, json_data).
 
     The outcome_class is appended to both outputs after the LLM call.
     """
-    prompt = build_synthesis_prompt(brief, final_views, blocker_summary)
+    prompt = build_synthesis_prompt(brief, final_views, blocker_summary, evidence_text=evidence_text)
     resp = await client.call("sonnet", prompt)
 
     if not resp.ok:
-        markdown = (
-            f"# Synthesis Failed\n\nSynthesis gate failed: {resp.error}\n"
-        )
-        json_data = {"status": "FAILED", "error": resp.error}
-        return markdown, json_data
+        from thinker.types import BrainError
+        raise BrainError("synthesis", f"Synthesis gate LLM call failed: {resp.error}",
+                         detail="Cannot produce deliberation report without a working Sonnet call.")
 
     markdown, json_data = parse_synthesis_output(resp.text)
 

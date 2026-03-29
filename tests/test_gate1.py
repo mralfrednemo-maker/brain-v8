@@ -2,7 +2,7 @@
 import pytest
 
 from thinker.gate1 import run_gate1, parse_gate1_response
-from thinker.types import Outcome
+from thinker.types import BrainError, Outcome
 
 
 class TestGate1Parsing:
@@ -66,11 +66,11 @@ class TestGate1Execution:
         assert result.outcome == Outcome.NEED_MORE
         assert len(result.questions) >= 1
 
-    async def test_llm_failure_passes_through(self, mock_llm):
-        """If Sonnet fails, don't block the brief — pass it through."""
-        result = await run_gate1(mock_llm, "Any brief")
-        # No mock response queued → LLM "fails"
-        assert result.passed is True
+    async def test_llm_failure_raises_brain_error(self, mock_llm):
+        """If Sonnet fails, raise BrainError — zero tolerance for silent failures."""
+        with pytest.raises(BrainError) as exc_info:
+            await run_gate1(mock_llm, "Any brief")
+        assert exc_info.value.stage == "gate1"
 
     async def test_prompt_contains_brief(self, mock_llm):
         mock_llm.add_response("sonnet", "VERDICT: PASS\nQUESTIONS:\nREASONING: Fine.")

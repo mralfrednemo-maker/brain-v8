@@ -19,10 +19,12 @@ async def bing_search(query: str, max_results: int = 10) -> list[SearchResult]:
     Uses scope=web&FORM=HDRSC1 to force English web results regardless
     of IP geolocation (tested from EU IP, returns English results).
     """
+    from thinker.brave_search import SearchError
+
     try:
         from curl_cffi import requests as curl_requests
     except ImportError:
-        return []
+        raise SearchError("Bing search requires curl_cffi: pip install curl_cffi")
 
     try:
         resp = curl_requests.get(
@@ -89,5 +91,5 @@ async def bing_search(query: str, max_results: int = 10) -> list[SearchResult]:
 
         return results
 
-    except Exception:
-        return []
+    except Exception as e:
+        raise SearchError(f"Bing search failed: {e}")

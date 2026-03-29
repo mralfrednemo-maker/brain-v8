@@ -98,28 +98,33 @@ class ArgumentTracker:
     def __init__(self, llm_client):
         self._llm = llm_client
         self.arguments_by_round: dict[int, list[Argument]] = {}
-        self.all_unaddressed: list[Argument] = []
+        self.all_unaddressed: list[Argument] = []  # Cumulative across all rounds
         self.last_raw_response: str = ""  # For debug logging
 
     async def extract_arguments(
         self, round_num: int, model_outputs: dict[str, str],
     ) -> list[Argument]:
+        from thinker.types import BrainError
         combined = "\n\n".join(f"### {m}\n{t}" for m, t in model_outputs.items())
         resp = await self._llm.call(
             "sonnet",
             EXTRACT_PROMPT.format(round_num=round_num, outputs=combined),
         )
         if not resp.ok:
-            self.last_raw_response = resp.error or ""
-            return []
+            raise BrainError(f"track{round_num}", f"Argument extraction failed: {resp.error}",
+                             detail="Sonnet could not extract arguments from round outputs.")
         self.last_raw_response = resp.text
         args = parse_arguments(resp.text, round_num)
+        if not args:
+            raise BrainError(f"track{round_num}", "Argument extraction returned 0 arguments",
+                             detail=f"Raw response: {resp.text[:300]}")
         self.arguments_by_round[round_num] = args
         return args
 
     async def compare_with_round(
         self, prev_round: int, curr_outputs: dict[str, str],
     ) -> list[Argument]:
+        from thinker.types import BrainError
         prev_args = self.arguments_by_round.get(prev_round, [])
         if not prev_args:
             return []
@@ -138,7 +143,9 @@ class ArgumentTracker:
             ),
         )
         if not resp.ok:
-            return prev_args
+            raise BrainError(f"track{curr_round}",
+                             f"Argument comparison failed: {resp.error}",
+                             detail=f"Could not compare R{prev_round} args against R{curr_round} outputs.")
 
         statuses = parse_comparison(resp.text)
         unaddressed = []
@@ -151,7 +158,11 @@ class ArgumentTracker:
             else:
                 arg.addressed_in_round = curr_round
 
-        self.all_unaddressed = unaddressed
+        # Accumulate: add newly unaddressed args, remove any that were addressed
+        addressed_ids = {a.argument_id for a in prev_args if a.status == ArgumentStatus.ADDRESSED}
+        self.all_unaddressed = [
+            a for a in self.all_unaddressed if a.argument_id not in addressed_ids
+        ] + [a for a in unaddressed if a not in self.all_unaddressed]
         return unaddressed
 
     def format_reinjection(self, unaddressed: list[Argument]) -> str:

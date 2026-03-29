@@ -48,6 +48,7 @@ class BrainConfig:
     wall_clock_budget_s: int = 3600
     max_evidence_items: int = 10
     max_search_queries_per_phase: int = 5
+    search_after_rounds: int = 2  # Search runs after rounds 1..N (default: after R1 and R2)
     openrouter_api_key: str = ""
     anthropic_oauth_token: str = ""
     deepseek_api_key: str = ""

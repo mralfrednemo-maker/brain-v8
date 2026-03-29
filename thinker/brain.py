@@ -29,7 +29,7 @@ from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BrainResult, EvidenceItem, Gate1Result, Outcome, SearchResult
+from thinker.types import ArgumentStatus, BrainError, BrainResult, EvidenceItem, Gate1Result, Outcome, SearchResult
 
 
 class Brain:
@@ -268,7 +268,8 @@ class Brain:
             search_stage = f"search{round_num}"
 
             # Determine if this round's search phase exists (search runs after R1 and R2, not last round)
-            has_search_phase = not is_last_round and search_orch
+            has_search_phase = (round_num <= self._config.search_after_rounds
+                                and not is_last_round and search_orch)
 
             if self._stage_done(search_stage):
                 # Round + tracking + search all done — fully skip
@@ -311,7 +312,8 @@ class Brain:
                 log.round_result(round_num, round_result.responded, round_result.failed,
                                  round_result.texts, time.monotonic() - t0)
                 proof.record_round(round_num, round_result.responded, round_result.failed)
-                st.round_texts[str(round_num)] = {m: t[:2000] for m, t in round_result.texts.items()}
+                # Store full text for resume — truncation loses SEARCH_REQUESTS appendix
+                st.round_texts[str(round_num)] = round_result.texts
                 st.round_responded[str(round_num)] = round_result.responded
                 st.round_failed[str(round_num)] = round_result.failed
 
@@ -333,7 +335,7 @@ class Brain:
                 args = await argument_tracker.extract_arguments(round_num, round_result.texts)
                 log.arg_extract(round_num, args, time.monotonic() - t0, argument_tracker.last_raw_response)
                 st.arguments_by_round[str(round_num)] = [
-                    {"id": a.argument_id, "model": a.model, "text": a.text[:200]} for a in args
+                    {"id": a.argument_id, "model": a.model, "text": a.text} for a in args
                 ]
 
                 # Extract positions
@@ -359,7 +361,7 @@ class Brain:
                 log._print(f"  [RESUME] Skipping track{round_num} (already completed)")
 
             # Search phase — after R1 and R2 only
-            if not is_last_round and search_orch:
+            if has_search_phase:
                 phase = SearchPhase.R1_R2 if round_num == 1 else SearchPhase.R2_R3
                 t0 = time.monotonic()
 
@@ -372,12 +374,33 @@ class Brain:
                 st.search_queries[phase.value] = queries
 
                 total_admitted = 0
+                search_errors = 0
                 for query in queries[:self._config.max_search_queries_per_phase]:
-                    results = await search_orch.execute_query(query, phase)
+                    try:
+                        results = await search_orch.execute_query(query, phase)
+                    except Exception as e:
+                        log._print(f"  [SEARCH ERROR] {query[:50]}: {e}")
+                        search_errors += 1
+                        continue
                     for sr in results:
-                        ev = EvidenceItem_from_search_result(sr, total_admitted)
+                        ev = EvidenceItem_from_search_result(sr, len(evidence.items))
                         if ev and evidence.add(ev):
                             total_admitted += 1
+
+                if search_errors > 0:
+                    log._print(f"  [SEARCH WARNING] {search_errors}/{len(queries)} queries failed")
+
+                # Wire evidence contradictions into blocker ledger
+                from thinker.types import BlockerKind
+                for ctr in evidence.contradictions:
+                    if not any(b.detail == ctr.contradiction_id for b in blocker_ledger.blockers):
+                        blocker_ledger.add(
+                            kind=BlockerKind.CONTRADICTION,
+                            source="evidence_ledger",
+                            detected_round=round_num,
+                            detail=ctr.contradiction_id,
+                            models=[],
+                        )
 
                 log.search_result(phase.value, len(queries), total_admitted, time.monotonic() - t0)
                 proof.record_research_phase(
@@ -432,6 +455,7 @@ class Brain:
             self._llm, brief=brief, final_views=final_views,
             blocker_summary=blocker_ledger.summary(),
             outcome_class=outcome_class,
+            evidence_text=evidence.format_for_prompt(),
         )
         log.synthesis_result(len(report), bool(report_json), time.monotonic() - t0)
         proof.set_synthesis_status("COMPLETE" if report else "FAILED")
@@ -586,7 +610,24 @@ async def main():
         verbose=verbose, stop_after=args.stop_after, outdir=args.outdir,
         resume_state=resume_state, debug_step=debug_step,
     )
-    result = await brain.run(brief_text)
+    try:
+        result = await brain.run(brief_text)
+    except BrainError as e:
+        print(f"\n{'='*60}")
+        print(f"  SYSTEM ERROR — Pipeline halted")
+        print(f"{'='*60}")
+        print(f"  Stage:   {e.stage}")
+        print(f"  Error:   {e.message}")
+        if e.detail:
+            print(f"  Detail:  {e.detail}")
+        print(f"  Checkpoint: {os.path.join(args.outdir, 'checkpoint.json')}")
+        print(f"{'='*60}")
+        # Save what we have so far
+        os.makedirs(args.outdir, exist_ok=True)
+        brain.log.save_log(Path(args.outdir) / "debug.log")
+        brain.log.save_events_json(Path(args.outdir) / "events.json")
+        await llm.close()
+        raise SystemExit(1)
 
     # Save outputs
     os.makedirs(args.outdir, exist_ok=True)

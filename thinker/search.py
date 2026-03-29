@@ -117,7 +117,9 @@ class SearchOrchestrator:
             PROACTIVE_PROMPT.format(outputs=combined, already_queued=queued_text),
         )
         if not resp.ok:
-            return []
+            from thinker.types import BrainError
+            raise BrainError("search", f"Proactive query generation failed: {resp.error}",
+                             detail="Sonnet could not scan model outputs for unsearched claims.")
         return self._parse_queries(resp.text)
 
     def deduplicate(self, queries: list[str]) -> list[str]:

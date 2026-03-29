@@ -2,6 +2,7 @@
 import pytest
 
 from thinker.synthesis import run_synthesis, build_synthesis_prompt
+from thinker.types import BrainError
 
 
 class TestSynthesisPrompt:
@@ -62,14 +63,14 @@ class TestSynthesisExecution:
         assert "# Deliberation Report" in markdown
         assert isinstance(json_data, dict)
 
-    async def test_synthesis_failure_returns_degraded_tuple(self, mock_llm):
-        """If Hermes fails, return a degraded (markdown, json_data) tuple."""
-        markdown, json_data = await run_synthesis(
-            mock_llm, brief="Brief", final_views={"r1": "v"},
-            blocker_summary={},
-        )
-        assert "Failed" in markdown or "failed" in markdown.lower()
-        assert json_data.get("status") == "FAILED"
+    async def test_synthesis_failure_raises_brain_error(self, mock_llm):
+        """If Sonnet fails during synthesis, raise BrainError — zero tolerance."""
+        with pytest.raises(BrainError) as exc_info:
+            await run_synthesis(
+                mock_llm, brief="Brief", final_views={"r1": "v"},
+                blocker_summary={},
+            )
+        assert exc_info.value.stage == "synthesis"
 
     async def test_outcome_class_appended(self, mock_llm):
         """outcome_class is appended to markdown and json_data."""

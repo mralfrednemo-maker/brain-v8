@@ -77,11 +77,17 @@ class PositionTracker:
             POSITION_EXTRACT_PROMPT.format(round_num=round_num, outputs=combined),
         )
         if not resp.ok:
-            self.last_raw_response = resp.error or ""
-            return {}
+            from thinker.types import BrainError
+            raise BrainError(f"track{round_num}", f"Position extraction failed: {resp.error}",
+                             detail="Sonnet could not extract positions from round outputs.")
         self.last_raw_response = resp.text
 
         positions = self._parse_positions(resp.text, round_num)
+        if not positions:
+            from thinker.types import BrainError
+            raise BrainError(f"track{round_num}",
+                             f"Position extraction returned 0 positions (expected {len(model_outputs)})",
+                             detail=f"Raw response:\n{resp.text[:500]}")
         self.positions_by_round[round_num] = positions
         return positions
 

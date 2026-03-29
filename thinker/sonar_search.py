@@ -16,8 +16,10 @@ async def sonar_search(query: str, api_key: str, max_results: int = 10) -> list[
 
     Returns SearchResult items with citations extracted from Sonar's response.
     """
+    from thinker.brave_search import SearchError
+
     if not api_key:
-        return []
+        raise SearchError("Sonar search: no OpenRouter API key configured")
 
     async with httpx.AsyncClient() as client:
         try:
@@ -69,5 +71,9 @@ async def sonar_search(query: str, api_key: str, max_results: int = 10) -> list[
                 ))
 
             return results[:max_results]
-        except Exception:
-            return []
+        except httpx.TimeoutException:
+            raise SearchError(f"Sonar search timed out: {query[:60]}")
+        except httpx.HTTPStatusError as e:
+            raise SearchError(f"Sonar search HTTP {e.response.status_code}: {query[:60]}")
+        except Exception as e:
+            raise SearchError(f"Sonar search failed: {e}")

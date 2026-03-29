@@ -6,3 +6,6 @@ dist/
 build/
 output/
 .env
+.browser-profile/
+debug_*.png
+debug_*.html
