@@ -33,7 +33,7 @@ from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, SearchResult
+from thinker.types import ArgumentStatus, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, Position, SearchResult
 
 
 class Brain:
@@ -290,11 +290,42 @@ class Brain:
             if self._stage_done(search_stage):
                 # Round + tracking + search all done — fully skip
                 log._print(f"  [RESUME] Skipping round {round_num} (already completed)")
+                # Repopulate proof from checkpoint so skipped rounds appear in proof.json
+                saved_responded = st.round_responded.get(str(round_num), [])
+                saved_failed = st.round_failed.get(str(round_num), [])
+                proof.record_round(round_num, saved_responded, saved_failed)
+                if str(round_num) in st.positions_by_round:
+                    _pos = {}
+                    for _m, _p in st.positions_by_round[str(round_num)].items():
+                        _pos[_m] = Position(
+                            model=_m, round_num=round_num,
+                            primary_option=_p.get("option", ""),
+                            components=_p.get("components", [_p.get("option", "")]),
+                            confidence=Confidence[_p.get("confidence", "MEDIUM")],
+                            qualifier=_p.get("qualifier", ""),
+                            kind=_p.get("kind", "single"),
+                        )
+                    proof.record_positions(round_num, _pos)
                 continue
 
             if self._stage_done(track_stage) and not has_search_phase:
                 # Track done, no search phase for this round — fully skip
                 log._print(f"  [RESUME] Skipping round {round_num} (already completed)")
+                saved_responded = st.round_responded.get(str(round_num), [])
+                saved_failed = st.round_failed.get(str(round_num), [])
+                proof.record_round(round_num, saved_responded, saved_failed)
+                if str(round_num) in st.positions_by_round:
+                    _pos = {}
+                    for _m, _p in st.positions_by_round[str(round_num)].items():
+                        _pos[_m] = Position(
+                            model=_m, round_num=round_num,
+                            primary_option=_p.get("option", ""),
+                            components=_p.get("components", [_p.get("option", "")]),
+                            confidence=Confidence[_p.get("confidence", "MEDIUM")],
+                            qualifier=_p.get("qualifier", ""),
+                            kind=_p.get("kind", "single"),
+                        )
+                    proof.record_positions(round_num, _pos)
                 continue
 
             # Need to reconstruct RoundResult if round execution is done
