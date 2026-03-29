@@ -19,7 +19,7 @@ class TestArgumentExtraction:
             model_outputs={"r1": "JWT bypass analysis...", "glm5": "Automated attack...", "kimi": "GDPR..."},
         )
         assert len(args) == 4
-        assert args[0].argument_id == "ARG-1"
+        assert args[0].argument_id == "R1-ARG-1"
         assert args[0].model == "r1"
         assert args[2].model == "glm5"
 
@@ -38,15 +38,15 @@ class TestArgumentExtraction:
 class TestArgumentComparison:
     async def test_identifies_addressed_arguments(self, mock_llm):
         mock_llm.add_response("sonnet", (
-            "ARG-1: ADDRESSED\n"
-            "ARG-2: IGNORED\n"
-            "ARG-3: MENTIONED\n"
+            "R1-ARG-1: ADDRESSED\n"
+            "R1-ARG-2: IGNORED\n"
+            "R1-ARG-3: MENTIONED\n"
         ))
         tracker = ArgumentTracker(mock_llm)
         tracker.arguments_by_round[1] = [
-            Argument("ARG-1", 1, "r1", "JWT affects multi-tenant"),
-            Argument("ARG-2", 1, "glm5", "Automated exploitation"),
-            Argument("ARG-3", 1, "kimi", "GDPR 72 hours"),
+            Argument("R1-ARG-1", 1, "r1", "JWT affects multi-tenant"),
+            Argument("R1-ARG-2", 1, "glm5", "Automated exploitation"),
+            Argument("R1-ARG-3", 1, "kimi", "GDPR 72 hours"),
         ]
         unaddressed = await tracker.compare_with_round(
             prev_round=1,
@@ -54,14 +54,14 @@ class TestArgumentComparison:
         )
         assert len(unaddressed) >= 1
         ignored_ids = {a.argument_id for a in unaddressed if a.status == ArgumentStatus.IGNORED}
-        assert "ARG-2" in ignored_ids
+        assert "R1-ARG-2" in ignored_ids
 
     async def test_no_unaddressed_when_all_addressed(self, mock_llm):
-        mock_llm.add_response("sonnet", "ARG-1: ADDRESSED\nARG-2: ADDRESSED\n")
+        mock_llm.add_response("sonnet", "R1-ARG-1: ADDRESSED\nR1-ARG-2: ADDRESSED\n")
         tracker = ArgumentTracker(mock_llm)
         tracker.arguments_by_round[1] = [
-            Argument("ARG-1", 1, "r1", "Point A"),
-            Argument("ARG-2", 1, "glm5", "Point B"),
+            Argument("R1-ARG-1", 1, "r1", "Point A"),
+            Argument("R1-ARG-2", 1, "glm5", "Point B"),
         ]
         unaddressed = await tracker.compare_with_round(prev_round=1, curr_outputs={"r1": "..."})
         ignored = [a for a in unaddressed if a.status == ArgumentStatus.IGNORED]
@@ -93,14 +93,23 @@ class TestArgumentParsing:
             "ARG-1: [r1] First argument\n"
             "ARG-2: [glm5] Second argument\n"
         )
-        args = parse_arguments(text, round_num=1)
+        args = parse_arguments(text, round_num=2)
         assert len(args) == 2
+        assert args[0].argument_id == "R2-ARG-1"
         assert args[0].model == "r1"
         assert args[1].text == "Second argument"
 
-    def test_parse_comparison(self):
-        text = "ARG-1: ADDRESSED\nARG-2: IGNORED\nARG-3: MENTIONED\n"
-        statuses = parse_comparison(text)
-        assert statuses["ARG-1"] == ArgumentStatus.ADDRESSED
-        assert statuses["ARG-2"] == ArgumentStatus.IGNORED
-        assert statuses["ARG-3"] == ArgumentStatus.MENTIONED
+    def test_parse_comparison_prefixed(self):
+        """Comparison handles round-prefixed IDs."""
+        text = "R1-ARG-1: ADDRESSED\nR1-ARG-2: IGNORED\nR1-ARG-3: MENTIONED\n"
+        statuses = parse_comparison(text, prev_round=1)
+        assert statuses["R1-ARG-1"] == ArgumentStatus.ADDRESSED
+        assert statuses["R1-ARG-2"] == ArgumentStatus.IGNORED
+        assert statuses["R1-ARG-3"] == ArgumentStatus.MENTIONED
+
+    def test_parse_comparison_unprefixed(self):
+        """Comparison auto-prefixes unprefixed ARG-IDs from Sonnet."""
+        text = "ARG-1: ADDRESSED\nARG-2: IGNORED\n"
+        statuses = parse_comparison(text, prev_round=2)
+        assert statuses["R2-ARG-1"] == ArgumentStatus.ADDRESSED
+        assert statuses["R2-ARG-2"] == ArgumentStatus.IGNORED

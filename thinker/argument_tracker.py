@@ -72,8 +72,12 @@ def parse_arguments(text: str, round_num: int) -> list[Argument]:
             # Skip non-model words
             if model in ("the", "this", "that", "both", "all", "note"):
                 continue
+            # Prefix ARG-ID with round number to prevent cross-round collisions
+            # LLM outputs ARG-1..ARG-N each round; R1-ARG-1 != R3-ARG-1
+            raw_id = match.group(1)
+            unique_id = f"R{round_num}-{raw_id}"
             args.append(Argument(
-                argument_id=match.group(1),
+                argument_id=unique_id,
                 round_num=round_num,
                 model=model,
                 text=match.group(3).strip(),
@@ -81,14 +85,25 @@ def parse_arguments(text: str, round_num: int) -> list[Argument]:
     return args
 
 
-def parse_comparison(text: str) -> dict[str, ArgumentStatus]:
-    """Parse argument comparison from Sonnet's response."""
+def parse_comparison(text: str, prev_round: int = 0) -> dict[str, ArgumentStatus]:
+    """Parse argument comparison from Sonnet's response.
+
+    Handles both prefixed (R1-ARG-1) and unprefixed (ARG-1) IDs.
+    When unprefixed, adds the R{prev_round} prefix to match stored IDs.
+    """
     statuses: dict[str, ArgumentStatus] = {}
     for line in text.strip().split("\n"):
         line = line.strip()
-        match = re.match(r"(ARG-\d+):\s+(ADDRESSED|MENTIONED|IGNORED)", line)
+        # Try prefixed format first: R1-ARG-1: ADDRESSED
+        match = re.match(r"(R\d+-ARG-\d+):\s+(ADDRESSED|MENTIONED|IGNORED)", line)
         if match:
             statuses[match.group(1)] = ArgumentStatus[match.group(2)]
+            continue
+        # Unprefixed format: ARG-1: ADDRESSED — add round prefix
+        match = re.match(r"(ARG-\d+):\s+(ADDRESSED|MENTIONED|IGNORED)", line)
+        if match:
+            arg_id = f"R{prev_round}-{match.group(1)}" if prev_round else match.group(1)
+            statuses[arg_id] = ArgumentStatus[match.group(2)]
     return statuses
 
 
@@ -147,7 +162,7 @@ class ArgumentTracker:
                              f"Argument comparison failed: {resp.error}",
                              detail=f"Could not compare R{prev_round} args against R{curr_round} outputs.")
 
-        statuses = parse_comparison(resp.text)
+        statuses = parse_comparison(resp.text, prev_round=prev_round)
         unaddressed = []
         for arg in prev_args:
             status = statuses.get(arg.argument_id, ArgumentStatus.IGNORED)

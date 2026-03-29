@@ -47,9 +47,13 @@ async def sonar_search(query: str, api_key: str, max_results: int = 10) -> list[
             )
             resp.raise_for_status()
             data = resp.json()
-            text = data["choices"][0]["message"]["content"]
 
-            # Extract citations if provided by OpenRouter
+            # Guard against malformed API responses
+            try:
+                text = data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError) as e:
+                raise SearchError(f"Sonar returned unexpected response structure: {e}")
+
             citations = data.get("citations", [])
 
             results = []

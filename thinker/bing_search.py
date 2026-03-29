@@ -3,9 +3,13 @@
 Uses curl_cffi to impersonate a real browser's TLS fingerprint, bypassing
 Bing's CAPTCHA detection. The scope=web&FORM=HDRSC1 parameters force
 English web results regardless of IP geolocation.
+
+NOTE: curl_cffi is synchronous — we wrap it in asyncio.to_thread() to
+avoid blocking the async event loop.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from html import unescape
 from urllib.parse import unquote
@@ -35,29 +39,35 @@ def _resolve_bing_redirect(href: str) -> str:
     return href
 
 
+def _bing_search_sync(query: str) -> str:
+    """Synchronous Bing HTTP request. Runs in a thread to avoid blocking async loop."""
+    from curl_cffi import requests as curl_requests
+    resp = curl_requests.get(
+        "https://www.bing.com/search",
+        params={"q": query, "scope": "web", "FORM": "HDRSC1"},
+        headers={"Accept-Language": "en-US,en;q=0.9"},
+        impersonate="chrome131",
+        timeout=15,
+    )
+    return resp.text
+
+
 async def bing_search(query: str, max_results: int = 10) -> list[SearchResult]:
     """Search Bing via curl_cffi — free, no API key, bypasses CAPTCHA.
 
     Uses scope=web&FORM=HDRSC1 to force English web results regardless
     of IP geolocation (tested from EU IP, returns English results).
+    curl_cffi is synchronous — runs in a thread to not block the event loop.
     """
     from thinker.brave_search import SearchError
 
     try:
-        from curl_cffi import requests as curl_requests
+        from curl_cffi import requests as curl_requests  # noqa: F401 — import check
     except ImportError:
         raise SearchError("Bing search requires curl_cffi: pip install curl_cffi")
 
     try:
-        resp = curl_requests.get(
-            "https://www.bing.com/search",
-            params={"q": query, "scope": "web", "FORM": "HDRSC1"},
-            headers={"Accept-Language": "en-US,en;q=0.9"},
-            impersonate="chrome131",
-            timeout=15,
-        )
-
-        html = resp.text
+        html = await asyncio.to_thread(_bing_search_sync, query)
 
         # Hard block: CAPTCHA with no results behind it
         if "captcha" in html.lower() and "b_algo" not in html.lower():
