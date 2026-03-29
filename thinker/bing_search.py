@@ -1,10 +1,8 @@
 """Free Bing search via curl_cffi (no API key needed).
 
 Uses curl_cffi to impersonate a real browser's TLS fingerprint, bypassing
-Bing's CAPTCHA detection. Results may be geo-localized based on IP.
-
-Fallback for when Brave API key is unavailable. Brave API is preferred
-for English-language results regardless of IP location.
+Bing's CAPTCHA detection. The scope=web&FORM=HDRSC1 parameters force
+English web results regardless of IP geolocation.
 """
 from __future__ import annotations
 
@@ -16,7 +14,11 @@ from thinker.types import SearchResult
 
 
 async def bing_search(query: str, max_results: int = 10) -> list[SearchResult]:
-    """Search Bing via curl_cffi — free, no API key, bypasses CAPTCHA."""
+    """Search Bing via curl_cffi — free, no API key, bypasses CAPTCHA.
+
+    Uses scope=web&FORM=HDRSC1 to force English web results regardless
+    of IP geolocation (tested from EU IP, returns English results).
+    """
     try:
         from curl_cffi import requests as curl_requests
     except ImportError:
@@ -25,7 +27,7 @@ async def bing_search(query: str, max_results: int = 10) -> list[SearchResult]:
     try:
         resp = curl_requests.get(
             "https://www.bing.com/search",
-            params={"q": query, "ensearch": "1"},
+            params={"q": query, "scope": "web", "FORM": "HDRSC1"},
             headers={"Accept-Language": "en-US,en;q=0.9"},
             impersonate="chrome131",
             timeout=15,
