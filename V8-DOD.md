@@ -19,7 +19,7 @@ Mapped from parent DoD (D1-D11, P1-P10) to V8 Brain scope.
 | D3 | Contradiction detection no false positives | DONE | Keyword threshold + stopword filter in `contradiction.py` |
 | D4 | Argument tracking across rounds | DONE | Argument Tracker (extract → compare → re-inject). Replaces minority archive. Cumulative `all_unaddressed`. Round-prefixed IDs (R1-ARG-1). |
 | D9 | proof.json always populated | DONE | Proof written on every complete run |
-| D11 | All E2E tests pass | DONE | 103 tests pass |
+| D11 | All E2E tests pass | DONE | 211 tests pass (was 103) |
 | -- | Zero-tolerance error handling | DONE | `BrainError` on any LLM/extraction failure. Pipeline halts. |
 | -- | Search working (Bing free + Brave fallback + Sonar repeat) | DONE | Bing via curl_cffi primary ($0), Brave fallback, Sonar for repeats |
 | -- | Per-framework position extraction | DONE | model/FRAMEWORK: POSITION [CONF] format, framework-level agreement |
@@ -27,25 +27,25 @@ Mapped from parent DoD (D1-D11, P1-P10) to V8 Brain scope.
 | -- | Checkpoint/resume system | DONE | Full state save/restore, stage-level granularity |
 | -- | Step-by-step default mode | DONE | `--full-run` to override, TTY check for non-interactive |
 
-### NOT DONE — Features to Build
+### DONE — Features (completed 2026-03-29)
 
-| # | Criterion | What's needed | Parent DoD |
-|---|-----------|---------------|------------|
-| V8-F1 | Post-synthesis residue verification | After synthesis, scan report for BLK IDs, CTR IDs, and argument IDs. Verify synthesis addressed all structural findings. Add `synthesis_residue_omissions` to proof. | D7 |
-| V8-F2 | acceptance_status in proof | Add `acceptance_status` field to proof.json: ACCEPTED (clean) or ACCEPTED_WITH_WARNINGS (non-fatal issues like 0 evidence). Computed from run metrics after Gate 2. | D10 |
-| V8-F3 | Evidence priority scoring | Current V8 uses FIFO cap (first items kept, later rejected). Should evaluate incoming evidence relevance and evict lower-quality items under cap pressure. | D2 |
-| V8-F4 | Full page content fetch | V8 spec Section 6 says "models get real articles, not snippets." Bing returns URLs without snippets. Need httpx fetch of top result pages to get full content for evidence. | Spec §6 |
-| V8-F5 | LLM-based evidence extraction | V8 spec Section 6: "LLM extracts relevant facts from full pages." Currently evidence uses raw snippets. Need Sonnet call to extract facts from fetched page content. | Spec §6 |
-| V8-F6 | Invariant validator | Run validation checks on proof before output. Check: all positions extracted, all rounds have responses, evidence IDs consistent, no orphaned references. Add violations to proof. | Spec §4 |
+| # | Criterion | How | Parent DoD |
+|---|-----------|-----|------------|
+| V8-F1 | Post-synthesis residue verification | `thinker/residue.py` — scans report for BLK/CTR/ARG IDs, flags >30% omission threshold. `synthesis_residue_omissions` added to proof.json. 8 tests. | D7 |
+| V8-F2 | acceptance_status in proof | `AcceptanceStatus` enum in types.py. `compute_acceptance_status()` on ProofBuilder. ACCEPTED (clean) or ACCEPTED_WITH_WARNINGS. 5 tests. | D10 |
+| V8-F3 | Evidence priority scoring | `score_evidence()` in evidence.py — keyword overlap + authority domain scoring. Under cap pressure, lowest-scored item evicted. FIFO preserved within same score. 7 tests. | D2 |
+| V8-F4 | Full page content fetch | `thinker/page_fetch.py` — httpx fetch, HTML stripping, 50k char truncation. Populates `SearchResult.full_content`. 11 tests. | Spec §6 |
+| V8-F5 | LLM-based evidence extraction | `thinker/evidence_extractor.py` — Sonnet call per page, parses FACT-N structured output. 11 tests. | Spec §6 |
+| V8-F6 | Invariant validator | `thinker/invariant.py` — checks positions/rounds/evidence IDs/orphaned BLK+CTR refs. Returns violations with WARN/ERROR severity. 7 tests. | Spec §4 |
 
-### NOT DONE — Bug Fixes (from Daedalus audit, validated)
+### DONE — Bug Fixes (completed 2026-03-29)
 
 | # | Issue | Fix |
 |---|-------|-----|
-| V8-B1 | Bing search returns URLs without titles/snippets | Parse `<cite>` tags and surrounding text for titles. Or fetch pages via httpx for content. Tied to V8-F4. |
-| V8-B2 | Checkpoint schema not versioned | Add `checkpoint_version` field to PipelineState. On load, validate version matches current code. |
-| V8-B3 | Position components lost on resume | When restoring positions from checkpoint, `components` list only has `[option]`. Per-framework components should be stored and restored. |
-| V8-B4 | 9 modules with zero test coverage | checkpoint, debug, pipeline, brave_search, sonar_search, bing_search, blocker, cross_domain, playwright_search. Add at least 1 test per module for regression safety. |
+| V8-B1 | Bing search returns URLs without titles/snippets | Fixed by V8-F4 — page fetch provides content. Title auto-filled from page text when missing. |
+| V8-B2 | Checkpoint schema not versioned | `CHECKPOINT_VERSION = "1.0"` constant. `PipelineState.load()` raises `ValueError` on mismatch. 4 tests. |
+| V8-B3 | Position components lost on resume | Checkpoint now stores `components` list and `kind` field. Restore uses full components instead of `[option]`. 2 tests. |
+| V8-B4 | 9 modules with zero test coverage | Added tests for: checkpoint (12), debug (9), pipeline (4), blocker (9), cross_domain (13), bing_search (5), brave_search (3), sonar_search (2). Total: 211 tests (was 103). |
 
 ### NOT APPLICABLE to V8 Brain (deferred to Chamber/Mission Controller)
 

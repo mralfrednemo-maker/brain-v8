@@ -31,6 +31,8 @@ class ProofBuilder:
         self._research_phases: list[dict] = []
         self._blocker_ledger: Optional[BlockerLedger] = None
         self._invariant_violations: list[dict] = []
+        self._acceptance_status: Optional[str] = None
+        self._synthesis_residue_omissions: list[dict] = []
         self._v3_outcome_class: str = "not applicable"
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
@@ -83,6 +85,27 @@ class ProofBuilder:
     def set_blocker_ledger(self, ledger: BlockerLedger):
         self._blocker_ledger = ledger
 
+    def compute_acceptance_status(self):
+        """Compute acceptance_status from run metrics.
+
+        ACCEPTED: clean run — DECIDE outcome, CONSENSUS class, no violations.
+        ACCEPTED_WITH_WARNINGS: anything else (non-fatal issues).
+        Never REJECTED — if fatal, BrainError stops the pipeline before proof.
+        """
+        from thinker.types import AcceptanceStatus
+        is_clean = (
+            self._outcome.get("verdict") == "DECIDE"
+            and self._outcome.get("outcome_class") == "CONSENSUS"
+            and len(self._invariant_violations) == 0
+        )
+        if is_clean:
+            self._acceptance_status = AcceptanceStatus.ACCEPTED.value
+        else:
+            self._acceptance_status = AcceptanceStatus.ACCEPTED_WITH_WARNINGS.value
+
+    def set_synthesis_residue(self, omissions: list[dict]):
+        self._synthesis_residue_omissions = omissions
+
     def add_violation(self, violation_id: str, severity: str, detail: str):
         self._invariant_violations.append({
             "id": violation_id, "severity": severity, "detail": detail,
@@ -116,6 +139,7 @@ class ProofBuilder:
             "rounds_requested": self._rounds_requested,
             "final_status": self._final_status,
             "synthesis_status": self._synthesis_status,
+            "acceptance_status": self._acceptance_status,
             "v3_outcome_class": self._v3_outcome_class,
             "rounds": self._rounds,
             "evidence_items": self._evidence_items,
@@ -126,4 +150,5 @@ class ProofBuilder:
             "blocker_ledger": blocker_list,
             "blocker_summary": blocker_summary,
             "invariant_violations": self._invariant_violations,
+            "synthesis_residue_omissions": self._synthesis_residue_omissions,
         }

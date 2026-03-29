@@ -52,6 +52,11 @@ class ArgumentStatus(Enum):
     IGNORED = "IGNORED"
 
 
+class AcceptanceStatus(Enum):
+    ACCEPTED = "ACCEPTED"
+    ACCEPTED_WITH_WARNINGS = "ACCEPTED_WITH_WARNINGS"
+
+
 @dataclass
 class ModelResponse:
     """Raw response from a single LLM call."""
@@ -71,6 +76,7 @@ class EvidenceItem:
     url: str
     confidence: Confidence
     content_hash: str = ""
+    score: float = 0.0
 
 
 @dataclass

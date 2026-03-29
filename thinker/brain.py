@@ -20,16 +20,20 @@ from thinker.argument_tracker import ArgumentTracker
 from thinker.config import BrainConfig, ROUND_TOPOLOGY
 from thinker.debug import RunLog
 from thinker.evidence import EvidenceLedger
+from thinker.evidence_extractor import extract_evidence_from_page
 from thinker.gate1 import run_gate1
 from thinker.gate2 import run_gate2_deterministic, classify_outcome
+from thinker.invariant import validate_invariants
+from thinker.page_fetch import fetch_pages_for_results
 from thinker.proof import ProofBuilder
+from thinker.residue import check_synthesis_residue
 from thinker.rounds import execute_round
 from thinker.search import SearchOrchestrator, SearchPhase
 from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BrainError, BrainResult, EvidenceItem, Gate1Result, Outcome, SearchResult
+from thinker.types import ArgumentStatus, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, SearchResult
 
 
 class Brain:
@@ -162,12 +166,16 @@ class Brain:
             positions = {}
             for model, p in pos_data.items():
                 conf = Confidence[p.get("confidence", "MEDIUM")]
+                option = p.get("option", "")
+                components = p.get("components", [option])
+                kind = p.get("kind", "single")
                 positions[model] = Position(
                     model=model, round_num=rnd,
-                    primary_option=p.get("option", ""),
-                    components=[p.get("option", "")],
+                    primary_option=option,
+                    components=components,
                     confidence=conf,
                     qualifier=p.get("qualifier", ""),
+                    kind=kind,
                 )
             position_tracker.positions_by_round[rnd] = positions
 
@@ -210,7 +218,11 @@ class Brain:
             log._print(f"  [RESUME] Completed stages: {' → '.join(st.completed_stages)}")
 
         proof = ProofBuilder(run_id, brief, self._config.rounds)
-        evidence = EvidenceLedger(max_items=self._config.max_evidence_items)
+        brief_keywords = {w.lower() for w in brief.split() if len(w) >= 4}
+        evidence = EvidenceLedger(
+            max_items=self._config.max_evidence_items,
+            brief_keywords=brief_keywords,
+        )
         argument_tracker = ArgumentTracker(self._llm)
         position_tracker = PositionTracker(self._llm)
         blocker_ledger = BlockerLedger()
@@ -348,7 +360,13 @@ class Brain:
                 log.pos_extract(round_num, positions, time.monotonic() - t0, position_tracker.last_raw_response)
                 proof.record_positions(round_num, positions)
                 st.positions_by_round[str(round_num)] = {
-                    m: {"option": p.primary_option, "confidence": p.confidence.value, "qualifier": p.qualifier}
+                    m: {
+                        "option": p.primary_option,
+                        "confidence": p.confidence.value,
+                        "qualifier": p.qualifier,
+                        "components": p.components,
+                        "kind": p.kind,
+                    }
                     for m, p in positions.items()
                 }
 
@@ -379,6 +397,7 @@ class Brain:
 
                 total_admitted = 0
                 search_errors = 0
+                all_search_results: list[SearchResult] = []
                 for query in queries[:self._config.max_search_queries_per_phase]:
                     try:
                         results = await search_orch.execute_query(query, phase)
@@ -386,13 +405,43 @@ class Brain:
                         log._print(f"  [SEARCH ERROR] {query[:50]}: {e}")
                         search_errors += 1
                         continue
-                    for sr in results:
-                        ev = EvidenceItem_from_search_result(sr, len(evidence.items))
-                        if ev and evidence.add(ev):
-                            total_admitted += 1
+                    all_search_results.extend(results)
 
                 if search_errors > 0:
                     log._print(f"  [SEARCH WARNING] {search_errors}/{len(queries)} queries failed")
+
+                # F4: Fetch full page content for top results
+                try:
+                    await fetch_pages_for_results(all_search_results, max_pages=5)
+                except Exception as e:
+                    log._print(f"  [PAGE FETCH WARNING] {e}")
+
+                # F5: LLM-based extraction from fetched pages, fallback to snippets
+                for sr in all_search_results:
+                    if sr.full_content:
+                        try:
+                            extracted_facts = await extract_evidence_from_page(
+                                self._llm, sr.url, sr.full_content,
+                            )
+                            for fact_data in extracted_facts:
+                                ev = EvidenceItem(
+                                    evidence_id=f"E{len(evidence.items) + 1:03d}",
+                                    topic=sr.title[:100] if sr.title else sr.url[:100],
+                                    fact=fact_data["fact"][:500],
+                                    url=sr.url,
+                                    confidence=Confidence.MEDIUM,
+                                )
+                                if evidence.add(ev):
+                                    total_admitted += 1
+                        except BrainError:
+                            raise  # Zero tolerance
+                        except Exception as e:
+                            log._print(f"  [EXTRACT WARNING] {sr.url[:50]}: {e}")
+                    else:
+                        # Fallback: use snippet/title as before
+                        ev = EvidenceItem_from_search_result(sr, len(evidence.items))
+                        if ev and evidence.add(ev):
+                            total_admitted += 1
 
                 # Wire evidence contradictions into blocker ledger
                 from thinker.types import BlockerKind
@@ -487,11 +536,40 @@ class Brain:
         st.outcome = gate2.outcome.value
         self._checkpoint("gate2")
 
+        # --- Invariant validation (F6) ---
+        round_responded_ints = {int(k): v for k, v in st.round_responded.items()}
+        inv_violations = validate_invariants(
+            positions_by_round=position_tracker.positions_by_round,
+            round_responded=round_responded_ints,
+            evidence=evidence,
+            blocker_ledger=blocker_ledger,
+            rounds_completed=self._config.rounds,
+        )
+        for v in inv_violations:
+            proof.add_violation(v["id"], v["severity"], v["detail"])
+
+        # --- Post-synthesis residue verification (F1) ---
+        residue_omissions = check_synthesis_residue(
+            report=report,
+            blockers=blocker_ledger.blockers,
+            contradictions=evidence.contradictions,
+            unaddressed_arguments=argument_tracker.all_unaddressed,
+        )
+        proof.set_synthesis_residue(residue_omissions)
+        if any(o.get("threshold_violation") for o in residue_omissions):
+            proof.add_violation(
+                "RESIDUE-THRESHOLD", "WARN",
+                f"Synthesis omitted >30% of structural findings ({len(residue_omissions)} omissions)",
+            )
+
         # --- Final ---
         outcome = gate2.outcome
         proof.set_outcome(outcome, agreement, outcome_class)
         proof.set_final_status("COMPLETE")
         proof.set_evidence_count(len(evidence.items))
+
+        # --- Acceptance status (F2) — must be computed last, after all violations ---
+        proof.compute_acceptance_status()
 
         log.run_complete(outcome.value, outcome_class)
 

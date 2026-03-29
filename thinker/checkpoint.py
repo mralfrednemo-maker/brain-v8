@@ -23,10 +23,13 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+CHECKPOINT_VERSION = "1.0"
+
 
 @dataclass
 class PipelineState:
     """Serializable pipeline state for checkpointing."""
+    checkpoint_version: str = CHECKPOINT_VERSION
     brief: str = ""
     rounds: int = 3
     run_id: str = ""
@@ -77,6 +80,13 @@ class PipelineState:
     @classmethod
     def load(cls, path: Path) -> "PipelineState":
         data = json.loads(path.read_text(encoding="utf-8"))
+        saved_version = data.get("checkpoint_version", "0.0")
+        if saved_version != CHECKPOINT_VERSION:
+            raise ValueError(
+                f"Checkpoint version mismatch: file has {saved_version}, "
+                f"code expects {CHECKPOINT_VERSION}. "
+                f"Delete the checkpoint and re-run from scratch."
+            )
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
