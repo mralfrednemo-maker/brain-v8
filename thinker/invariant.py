@@ -7,6 +7,7 @@ BLK/CTR references. Returns violations with severity (WARN or ERROR).
 from __future__ import annotations
 
 from thinker.evidence import EvidenceLedger
+from thinker.pipeline import pipeline_stage
 from thinker.tools.blocker import BlockerLedger
 from thinker.types import Position
 
@@ -82,3 +83,23 @@ def validate_invariants(
                 })
 
     return violations
+
+
+@pipeline_stage(
+    name="Invariant Validator",
+    description="Structural integrity checks after Gate 2. Verifies positions exist for every round, all rounds have responses, evidence IDs are sequential, no orphaned blocker or contradiction references. Returns violations with WARN/ERROR severity.",
+    stage_type="deterministic",
+    order=8,
+    provider="deterministic (no LLM)",
+    inputs=["positions_by_round", "round_responded", "evidence", "blocker_ledger", "rounds_completed"],
+    outputs=["violations (list[dict]) — each with id, severity, detail"],
+    logic="""1. For each round 1..N: positions extracted? If not → INV-POS-MISSING (ERROR)
+2. For each round 1..N: at least one response? If not → INV-ROUND-EMPTY (ERROR)
+3. Evidence IDs sequential (E001, E002, ...)? If gap → INV-EVIDENCE-SEQ (WARN)
+4. Blocker detected_round <= rounds_completed? If not → INV-BLK-ORPHAN (WARN)
+5. Contradiction evidence_ids all exist in ledger? If not → INV-CTR-ORPHAN (WARN)""",
+    failure_mode="Cannot fail — deterministic computation.",
+    cost="$0 (no LLM call)",
+    stage_id="invariant_validator",
+)
+def _register_invariant_validator(): pass

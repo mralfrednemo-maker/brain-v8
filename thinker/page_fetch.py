@@ -14,6 +14,7 @@ from html import unescape
 
 import httpx
 
+from thinker.pipeline import pipeline_stage
 from thinker.types import SearchResult
 
 
@@ -82,3 +83,26 @@ async def fetch_pages_for_results(
             if not sr.title:
                 # Use first sentence as title approximation
                 sr.title = content[:100].split('.')[0].strip()[:200]
+
+
+@pipeline_stage(
+    name="Page Fetch",
+    description="After search returns URLs, fetches top N pages via httpx. Strips HTML (scripts, styles, tags), decodes entities, truncates to 50k chars. Populates SearchResult.full_content. Also backfills empty titles from page text (fixes Bing B1).",
+    stage_type="search",
+    order=5.1,
+    provider="httpx (async HTTP, $0)",
+    inputs=["search_results (list[SearchResult])", "max_pages (default 5)"],
+    outputs=["SearchResult.full_content populated in-place", "SearchResult.title backfilled if empty"],
+    logic="""For each of top N results (default 5):
+  1. Skip if full_content already set
+  2. httpx GET with 15s timeout, follow redirects
+  3. Strip <script>, <style>, HTML tags
+  4. Decode HTML entities, collapse whitespace
+  5. Truncate to 50k chars
+  6. If title empty, use first sentence of content
+Returns empty string on any error — does not raise.""",
+    failure_mode="Individual page errors return empty string. Pipeline continues.",
+    cost="$0 (direct HTTP fetch)",
+    stage_id="page_fetch",
+)
+def _register_page_fetch(): pass

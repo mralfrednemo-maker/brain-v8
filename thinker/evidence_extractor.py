@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from thinker.pipeline import pipeline_stage
+
 EXTRACTION_PROMPT = """Extract specific, verifiable facts from this web page content.
 
 URL: {url}
@@ -85,3 +87,24 @@ async def extract_evidence_from_page(
         )
 
     return parse_extracted_facts(resp.text)
+
+
+@pipeline_stage(
+    name="Evidence Extractor",
+    description="LLM-based fact extraction from fetched page content. One Sonnet call per page extracts specific numbers, dates, percentages, versions, regulatory references, and statistics. Replaces raw snippet injection with curated, structured facts.",
+    stage_type="search",
+    order=5.2,
+    provider="sonnet (1 call per page, $0 on Max subscription)",
+    inputs=["url", "full_content (from page fetch)"],
+    outputs=["facts (list[dict]) — each with 'fact' key"],
+    prompt=EXTRACTION_PROMPT,
+    logic="""1. Truncate page content to 30k chars
+2. Sonnet extracts FACT-N: lines (concrete, verifiable facts only)
+3. Parser handles FACT-N:, numbered (1.), and bullet (-) formats
+4. NONE response = no extractable facts
+5. Short fragments (<10 chars) skipped""",
+    failure_mode="BrainError if Sonnet call fails (zero tolerance). Empty content returns empty list.",
+    cost="1 Sonnet call per page ($0 on Max subscription)",
+    stage_id="evidence_extractor",
+)
+def _register_evidence_extractor(): pass

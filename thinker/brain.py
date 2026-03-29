@@ -757,6 +757,7 @@ async def main():
     # Import all tagged modules so the registry is populated
     import thinker.gate1, thinker.rounds, thinker.argument_tracker  # noqa: F401
     import thinker.tools.position, thinker.search, thinker.synthesis, thinker.gate2  # noqa: F401
+    import thinker.invariant, thinker.residue, thinker.page_fetch, thinker.evidence_extractor  # noqa: F401
     from thinker.pipeline import generate_architecture_html
     events_data = json.loads((Path(args.outdir) / "events.json").read_text())
     generate_architecture_html(
