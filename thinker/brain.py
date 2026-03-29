@@ -551,7 +551,6 @@ async def main():
     parser = argparse.ArgumentParser(description="Thinker V8 Brain Engine")
     parser.add_argument("--brief", required=True, help="Path to brief markdown file")
     parser.add_argument("--rounds", type=int, default=4, help="Number of rounds (1-4)")
-    parser.add_argument("--budget", type=int, default=3600, help="Wall clock budget in seconds")
     parser.add_argument("--outdir", default="./output", help="Output directory")
     parser.add_argument("--verbose", action="store_true", help="Full logging at each stage")
     parser.add_argument("--stop-after", default=None,
@@ -565,7 +564,6 @@ async def main():
     brief_text = open(args.brief, encoding="utf-8").read()
     config = BrainConfig(
         rounds=args.rounds,
-        wall_clock_budget_s=args.budget,
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         anthropic_oauth_token=_get_anthropic_token(),
         deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
