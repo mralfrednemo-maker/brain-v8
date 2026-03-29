@@ -564,15 +564,21 @@ async def main():
     debug_step = args.debug_step
     verbose = args.verbose or args.stop_after is not None or args.resume is not None or debug_step
 
-    # Search: Brave API (primary, $0.01/query) — Playwright blocked by CAPTCHA on all engines
+    # Search: Brave API (primary) > Bing free via curl_cffi (fallback)
     search_fn = None
     if config.brave_api_key:
         search_fn = partial(brave_search, api_key=config.brave_api_key)
         if verbose:
-            print("  [SEARCH] Using Brave API")
+            print("  [SEARCH] Using Brave API ($0.01/query)")
     else:
-        if verbose:
-            print("  [SEARCH] No BRAVE_API_KEY — search disabled")
+        try:
+            from thinker.bing_search import bing_search
+            search_fn = bing_search
+            if verbose:
+                print("  [SEARCH] Using Bing free (curl_cffi, results may be geo-localized)")
+        except ImportError:
+            if verbose:
+                print("  [SEARCH] No search provider (install curl_cffi for free Bing)")
     sonar_fn = partial(sonar_search, api_key=config.openrouter_api_key) if config.openrouter_api_key else None
     brain = Brain(
         config=config, llm_client=llm, search_fn=search_fn,
