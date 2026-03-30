@@ -251,6 +251,7 @@ class Brain:
                 questions=st.gate1_questions,
                 reasoning=st.gate1_reasoning,
                 search_recommended=st.gate1_search_recommended,
+                search_reasoning=st.gate1_search_reasoning,
             )
         else:
             log.gate1_start(len(brief))
@@ -261,6 +262,7 @@ class Brain:
             st.gate1_reasoning = gate1.reasoning
             st.gate1_questions = gate1.questions
             st.gate1_search_recommended = gate1.search_recommended
+            st.gate1_search_reasoning = gate1.search_reasoning
 
             if not gate1.passed:
                 proof.set_final_status("GATE1_REJECTED")
@@ -279,22 +281,25 @@ class Brain:
             search_enabled = self._search_override and has_search_provider
             source = "cli_override"
             if self._search_override:
-                reasoning = "Forced on via --search"
+                override_reasoning = "Forced on via --search"
             else:
-                reasoning = "Forced off via --no-search"
+                override_reasoning = "Forced off via --no-search"
             proof.set_search_decision(
-                source=source, value=search_enabled, reasoning=reasoning,
+                source=source, value=search_enabled,
+                reasoning=override_reasoning,
                 gate1_recommended=gate1.search_recommended,
+                gate1_search_reasoning=gate1.search_reasoning,
             )
-            log._print(f"  [SEARCH DECISION] {source}: {'ON' if search_enabled else 'OFF'} (Gate 1 recommended: {'YES' if gate1.search_recommended else 'NO'})")
+            log._print(f"  [SEARCH DECISION] {source}: {'ON' if search_enabled else 'OFF'} "
+                        f"(Gate 1 recommended: {'YES' if gate1.search_recommended else 'NO'} — {gate1.search_reasoning})")
         else:
             # Gate 1 decides
             search_enabled = gate1.search_recommended and has_search_provider
             proof.set_search_decision(
                 source="gate1", value=search_enabled,
-                reasoning=gate1.reasoning,
+                reasoning=gate1.search_reasoning,
             )
-            log._print(f"  [SEARCH DECISION] gate1: {'ON' if search_enabled else 'OFF'}")
+            log._print(f"  [SEARCH DECISION] gate1: {'ON' if search_enabled else 'OFF'} — {gate1.search_reasoning}")
 
         if search_enabled:
             search_orch = SearchOrchestrator(

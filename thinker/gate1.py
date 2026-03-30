@@ -50,9 +50,10 @@ Brief:
 Respond in this exact format:
 VERDICT: PASS | NEED_MORE
 SEARCH: YES | NO
+SEARCH_REASONING: (one sentence explaining why search is or isn't needed)
 QUESTIONS:
 - (list specific questions if NEED_MORE, leave blank if PASS)
-REASONING: (one paragraph covering both the verdict and search recommendation)"""
+REASONING: (one paragraph on the verdict)"""
 
 
 def parse_gate1_response(text: str) -> Gate1Result:
@@ -74,6 +75,12 @@ def parse_gate1_response(text: str) -> Gate1Result:
     if search_match:
         search_recommended = search_match.group(1).upper() == "YES"
 
+    # Extract search reasoning
+    search_reasoning = ""
+    sr_match = re.search(r"SEARCH_REASONING:\s*(.+?)(?:\n|$)", text)
+    if sr_match:
+        search_reasoning = sr_match.group(1).strip()
+
     # Extract questions
     questions = []
     questions_match = re.search(r"QUESTIONS:\s*\n((?:- .+\n?)*)", text)
@@ -90,7 +97,8 @@ def parse_gate1_response(text: str) -> Gate1Result:
         reasoning = reasoning_match.group(1).strip()
 
     return Gate1Result(passed=passed, outcome=outcome, questions=questions,
-                       reasoning=reasoning, search_recommended=search_recommended)
+                       reasoning=reasoning, search_recommended=search_recommended,
+                       search_reasoning=search_reasoning)
 
 
 @pipeline_stage(

@@ -41,6 +41,7 @@ class PipelineState:
     gate1_reasoning: str = ""
     gate1_questions: list[str] = field(default_factory=list)
     gate1_search_recommended: bool = True
+    gate1_search_reasoning: str = ""
 
     # Round outputs
     round_texts: dict[str, dict[str, str]] = field(default_factory=dict)  # {round_num: {model: text}}

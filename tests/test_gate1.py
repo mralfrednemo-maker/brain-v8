@@ -43,21 +43,25 @@ class TestGate1Parsing:
         text = (
             "VERDICT: PASS\n"
             "SEARCH: YES\n"
+            "SEARCH_REASONING: Brief references GDPR articles and HIPAA CFR sections that need verification.\n"
             "QUESTIONS:\n"
             "REASONING: Regulatory claims need verification."
         )
         result = parse_gate1_response(text)
         assert result.search_recommended is True
+        assert "GDPR" in result.search_reasoning
 
     def test_parse_search_no(self):
         text = (
             "VERDICT: PASS\n"
             "SEARCH: NO\n"
+            "SEARCH_REASONING: Pure architecture question with no external facts to verify.\n"
             "QUESTIONS:\n"
-            "REASONING: Pure logic question, no factual claims to verify."
+            "REASONING: Pure logic question."
         )
         result = parse_gate1_response(text)
         assert result.search_recommended is False
+        assert "architecture" in result.search_reasoning
 
     def test_parse_missing_search_defaults_yes(self):
         """If SEARCH line missing, default to YES (conservative)."""
@@ -68,6 +72,7 @@ class TestGate1Parsing:
         )
         result = parse_gate1_response(text)
         assert result.search_recommended is True
+        assert result.search_reasoning == ""
 
 
 class TestGate1Execution:

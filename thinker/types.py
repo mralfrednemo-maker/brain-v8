@@ -144,6 +144,7 @@ class Gate1Result:
     questions: list[str] = field(default_factory=list)
     reasoning: str = ""
     search_recommended: bool = True  # Default to YES (conservative)
+    search_reasoning: str = ""
 
 
 @dataclass

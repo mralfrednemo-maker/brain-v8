@@ -108,20 +108,25 @@ class ProofBuilder:
         self._synthesis_residue_omissions = omissions
 
     def set_search_decision(self, source: str, value: bool, reasoning: str,
-                            gate1_recommended: Optional[bool] = None):
+                            gate1_recommended: Optional[bool] = None,
+                            gate1_search_reasoning: Optional[str] = None):
         """Record who decided search on/off and why.
 
         source: "gate1" | "cli_override"
         value: True (search on) or False (search off)
+        reasoning: Why this decision was made
         gate1_recommended: Gate 1's original recommendation (if overridden)
+        gate1_search_reasoning: Gate 1's reasoning for its recommendation (if overridden)
         """
         self._search_decision = {
             "source": source,
             "value": value,
             "reasoning": reasoning,
         }
-        if gate1_recommended is not None and source == "cli_override":
+        if source == "cli_override" and gate1_recommended is not None:
             self._search_decision["gate1_recommended"] = gate1_recommended
+            if gate1_search_reasoning:
+                self._search_decision["gate1_search_reasoning"] = gate1_search_reasoning
 
     def add_violation(self, violation_id: str, severity: str, detail: str):
         self._invariant_violations.append({
