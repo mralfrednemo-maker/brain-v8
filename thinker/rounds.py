@@ -120,8 +120,8 @@ R2+ PROMPT adds:
 ## Unaddressed Arguments (You MUST engage with each one)
 
 R3 (final round): no search request section.""",
-    logic="All models called in parallel. Failed models excluded. Zero responses = FATAL ESCALATE.",
-    failure_mode="Individual model failure: excluded from results. All fail: pipeline stops with ESCALATE.",
+    logic="All models called in parallel. Any model failure = BrainError (zero tolerance).",
+    failure_mode="Any model failure: BrainError raised by Brain orchestrator. Zero tolerance.",
     cost="R1: ~$0.40 (4 models) | R2: ~$0.30 (3 models) | R3: ~$0.20 (2 models)",
     stage_id="round",
 )

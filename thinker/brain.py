@@ -402,12 +402,16 @@ class Brain:
                 st.round_responded[str(round_num)] = round_result.responded
                 st.round_failed[str(round_num)] = round_result.failed
 
-                if not round_result.responded:
-                    proof.set_final_status("FAILED_NO_RESPONSES")
-                    proof.add_violation("BV1", "FATAL", f"No models responded in round {round_num}")
-                    return BrainResult(
-                        outcome=Outcome.ESCALATE, proof=proof.build(),
-                        report="", gate1=gate1,
+                if round_result.failed:
+                    failed_details = "; ".join(
+                        f"{m}: {round_result.responses[m].error}"
+                        for m in round_result.failed
+                        if m in round_result.responses
+                    )
+                    raise BrainError(
+                        f"round{round_num}",
+                        f"Model(s) failed in round {round_num}: {', '.join(round_result.failed)}",
+                        detail=failed_details,
                     )
 
                 if self._checkpoint(f"r{round_num}"):
@@ -465,25 +469,29 @@ class Brain:
                 st.search_queries[phase.value] = queries
 
                 total_admitted = 0
-                search_errors = 0
                 all_search_results: list[SearchResult] = []
                 for query in queries[:self._config.max_search_queries_per_phase]:
                     try:
                         results = await search_orch.execute_query(query, phase)
                     except Exception as e:
-                        log._print(f"  [SEARCH ERROR] {query[:50]}: {e}")
-                        search_errors += 1
-                        continue
+                        raise BrainError(
+                            f"search_round{round_num}",
+                            f"Search query failed: {query[:80]}",
+                            detail=str(e),
+                        )
                     all_search_results.extend(results)
-
-                if search_errors > 0:
-                    log._print(f"  [SEARCH WARNING] {search_errors}/{len(queries)} queries failed")
 
                 # F4: Fetch full page content for top results
                 try:
                     await fetch_pages_for_results(all_search_results, max_pages=5)
+                except BrainError:
+                    raise
                 except Exception as e:
-                    log._print(f"  [PAGE FETCH WARNING] {e}")
+                    raise BrainError(
+                        f"page_fetch_round{round_num}",
+                        f"Page fetch failed",
+                        detail=str(e),
+                    )
 
                 # F5: LLM-based extraction from fetched pages, fallback to snippets
                 for sr in all_search_results:
@@ -503,9 +511,13 @@ class Brain:
                                 if evidence.add(ev):
                                     total_admitted += 1
                         except BrainError:
-                            raise  # Zero tolerance
+                            raise
                         except Exception as e:
-                            log._print(f"  [EXTRACT WARNING] {sr.url[:50]}: {e}")
+                            raise BrainError(
+                                f"evidence_extract_round{round_num}",
+                                f"Evidence extraction failed for {sr.url[:80]}",
+                                detail=str(e),
+                            )
                     else:
                         # Fallback: use snippet/title as before
                         ev = EvidenceItem_from_search_result(sr, len(evidence.items))
