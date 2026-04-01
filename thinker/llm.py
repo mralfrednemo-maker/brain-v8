@@ -81,6 +81,7 @@ class LLMClient:
         else:
             return await self._call_anthropic(
                 prompt, model_cfg.max_tokens, system,
+                timeout_s=model_cfg.timeout_s,
             )
 
     async def _call_openai_compat(self, client: httpx.AsyncClient, model_id: str,
@@ -112,7 +113,7 @@ class LLMClient:
             )
 
     async def _call_anthropic(self, prompt: str, max_tokens: int,
-                               system: str = "") -> ModelResponse:
+                               system: str = "", timeout_s: int = 120) -> ModelResponse:
         """Call Anthropic via OAuth (Max subscription).
 
         System prompt MUST be array format with Claude Code identity first.
@@ -140,7 +141,7 @@ class LLMClient:
                     "system": system_blocks,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=120,
+                timeout=timeout_s,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -152,7 +153,7 @@ class LLMClient:
         except Exception as e:
             return ModelResponse(
                 model="claude-sonnet-4-6", ok=False, text="",
-                elapsed_s=time.monotonic() - start, error=str(e),
+                elapsed_s=time.monotonic() - start, error=f"{type(e).__name__}: {e}",
             )
 
     async def close(self):
