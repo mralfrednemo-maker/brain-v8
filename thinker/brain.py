@@ -49,6 +49,7 @@ from thinker.divergent_framing import (
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
 from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
 from thinker.stability import run_stability_tests
+from thinker.analysis_mode import get_analysis_round_preamble, get_analysis_synthesis_contract
 from thinker.synthesis_packet import build_synthesis_packet, format_synthesis_packet_for_prompt
 from thinker.residue import check_disposition_coverage
 from thinker.types import (
@@ -261,6 +262,7 @@ class Brain:
         alt_frames_text = ""
         divergence_result = DivergenceResult()
         semantic_ctrs: list = []
+        is_analysis_mode = False
         stability_result = StabilityResult()
 
         # Restore tracker state if resuming
@@ -298,6 +300,7 @@ class Brain:
 
             st.preflight = preflight_result.to_dict()
             st.modality = preflight_result.modality.value
+            is_analysis_mode = preflight_result.modality == Modality.ANALYSIS
             proof.set_preflight(preflight_result)
 
             # --- Defect Routing (V9, DESIGN-V3.md Section 1.1) ---
@@ -325,6 +328,7 @@ class Brain:
                 preflight_result = PreflightResult(
                     modality=Modality(st.preflight.get("modality", "DECIDE")),
                 )
+            is_analysis_mode = preflight_result.modality == Modality.ANALYSIS
 
         # --- Dimension Seeder (V9) ---
         if not self._stage_done("dimensions"):
@@ -443,8 +447,10 @@ class Brain:
                 log.round_start(round_num, models, is_last_round)
 
                 t0 = time.monotonic()
+                # ANALYSIS mode: prepend exploration preamble to brief
+                effective_brief = (get_analysis_round_preamble() + brief) if is_analysis_mode else brief
                 round_result = await execute_round(
-                    self._llm, round_num=round_num, brief=brief,
+                    self._llm, round_num=round_num, brief=effective_brief,
                     prior_views=prior_views if round_num > 1 else None,
                     evidence_text=evidence.format_for_prompt() if round_num > 1 else "",
                     unaddressed_arguments=unaddressed_text if round_num > 1 else "",
@@ -764,6 +770,8 @@ class Brain:
             evidence_items=evidence.active_items,
         )
         synthesis_packet_text = format_synthesis_packet_for_prompt(packet)
+        if is_analysis_mode:
+            synthesis_packet_text += get_analysis_synthesis_contract()
         proof.set_synthesis_packet(packet)
 
         # Record arguments with resolution status in proof
@@ -806,6 +814,15 @@ class Brain:
                    f"assumption={stability_result.assumption_stable} "
                    f"groupthink_warning={stability_result.groupthink_warning}")
 
+        # --- Compute dimension coverage (V9) ---
+        if dimension_result and dimension_result.items:
+            for dim in dimension_result.items:
+                dim_args = [a for a in all_args if a.dimension_id == dim.dimension_id]
+                dim.argument_count = len(dim_args)
+                dim.coverage_status = "SATISFIED" if len(dim_args) >= 2 else ("PARTIAL" if dim_args else "ZERO")
+            covered = sum(1 for d in dimension_result.items if d.argument_count >= 2)
+            dimension_result.dimension_coverage_score = covered / len(dimension_result.items) if dimension_result.items else 0.0
+
         # --- Gate 2 (deterministic) ---
         gate2 = run_gate2_deterministic(
             agreement_ratio=agreement,
@@ -818,6 +835,8 @@ class Brain:
             preflight=preflight_result,
             divergence=divergence_result,
             stability=stability_result,
+            dimensions=dimension_result,
+            total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
         )
         log.gate2_result(
