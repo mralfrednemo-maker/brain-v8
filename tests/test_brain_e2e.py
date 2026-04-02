@@ -96,6 +96,14 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
         "r1: O4 [HIGH] — full shutdown\n"
         "reasoner: O4 [HIGH] — converged to shutdown\n"
     ))
+    # Frame Survival R3 (V9)
+    mock.add_response("sonnet", (
+        '{"evaluations": ['
+        '{"frame_id": "FRAME-1", "status": "CONTESTED", "drop_vote_models": [], '
+        '"reasoning": "Frame still relevant in R3"}'
+        ']}'
+    ))
+
     # R2->R3 argument comparison
     mock.add_response("sonnet", "ARG-5: ADDRESSED\nARG-6: ADDRESSED\n")
 

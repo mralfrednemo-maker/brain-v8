@@ -108,9 +108,9 @@ def build_round_prompt(
         parts.append(_EVIDENCE_HEADER)
         parts.append(f"{evidence_text}\n")
 
-    # R2: inject alternative frames after evidence
-    if round_num == 2 and alt_frames_text:
-        parts.append(f"## Alternative Frames From R1\n\n{alt_frames_text}\n")
+    # R2+: inject alternative frames after evidence (visible in R2, R3, R4)
+    if round_num >= 2 and alt_frames_text:
+        parts.append(f"## Alternative Frames\n\n{alt_frames_text}\n")
 
     if round_num >= 2 and unaddressed_arguments:
         parts.append("## Unaddressed Arguments From Prior Rounds\n")

@@ -528,6 +528,18 @@ class Brain:
                 log._print(f"  [FRAMING] Frame survival R2 done ({time.monotonic() - t0:.1f}s)")
                 self._checkpoint("frame_survival_r2")
 
+            # --- V9: Post-R3 frame survival ---
+            if round_num == 3 and not self._stage_done("frame_survival_r3"):
+                log._print("  [FRAMING] Running frame survival check (R3)...")
+                t0 = time.monotonic()
+                divergence_result.alt_frames = await run_frame_survival_check(
+                    self._llm, divergence_result.alt_frames, round_result.texts, round_num=3,
+                )
+                alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
+                st.divergence = divergence_result.to_dict()
+                log._print(f"  [FRAMING] Frame survival R3 done ({time.monotonic() - t0:.1f}s)")
+                self._checkpoint("frame_survival_r3")
+
             # --- Ungrounded Stat Detection (V9, post-R1 and post-R2) ---
             if round_num in (1, 2) and not self._stage_done(f"ungrounded_r{round_num}"):
                 all_round_text = " ".join(round_result.texts.values())
