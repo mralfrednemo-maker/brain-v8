@@ -10,15 +10,36 @@ from conftest import MockLLMClient, load_model_output
 def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
     """Queue all responses needed for a full Brain run (no search_fn).
 
-    Call order per Brain.run() with search_fn=None:
-    Gate1(sonnet) -> R1(4 models) -> R1_args(sonnet) -> R1_pos(sonnet)
+    Call order per Brain.run() (V9) with search_fn=None:
+    Gate1(sonnet) -> Preflight(sonnet) -> DimensionSeeder(sonnet)
+    -> R1(4 models) -> R1_args(sonnet) -> R1_pos(sonnet)
+    -> FramingExtract(sonnet)
     -> R2(3 models) -> R2_args(sonnet) -> R2_pos(sonnet) -> R1vR2_cmp(sonnet)
+    -> FrameSurvival(sonnet)
     -> R3(2 models) -> R3_args(sonnet) -> R3_pos(sonnet) -> R2vR3_cmp(sonnet)
     -> Synthesis(sonnet)
-    (Gate 2 is deterministic — no LLM call needed)
+    (Gate 2 + Stability are deterministic — no LLM call needed)
     """
     # Gate 1
     mock.add_response("sonnet", "VERDICT: PASS\nQUESTIONS:\nREASONING: Clear incident.")
+
+    # Preflight (V9)
+    mock.add_response("sonnet", (
+        '{"answerability": "ANSWERABLE", "question_class": "OPEN", "stakes_class": "HIGH", '
+        '"effort_tier": "STANDARD", "modality": "DECIDE", "search_scope": "TARGETED", '
+        '"exploration_required": true, "short_circuit_allowed": false, "fatal_premise": false, '
+        '"follow_up_questions": [], "premise_flags": [], "hidden_context_gaps": [], '
+        '"critical_assumptions": [], "reasoning": "Clear security incident brief."}'
+    ))
+
+    # Dimension Seeder (V9)
+    mock.add_response("sonnet", (
+        '{"dimensions": ['
+        '{"dimension_id": "DIM-1", "name": "Technical Severity", "mandatory": true}, '
+        '{"dimension_id": "DIM-2", "name": "Business Impact", "mandatory": true}, '
+        '{"dimension_id": "DIM-3", "name": "Legal & Compliance", "mandatory": true}'
+        ']}'
+    ))
 
     # --- Round 1 ---
     mock.add_responses_from_fixtures(1, ["r1", "reasoner", "glm5", "kimi"])
@@ -37,6 +58,14 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
         "kimi: O4 [HIGH] — full shutdown\n"
     ))
 
+    # Framing Extract (V9) — after R1 tracking
+    mock.add_response("sonnet", (
+        '{"frames": ['
+        '{"frame_id": "FRAME-1", "text": "Isolation-first may expose to lateral movement", '
+        '"origin_model": "glm5", "frame_type": "PREMISE_CHALLENGE", "material_to_outcome": true}'
+        '], "cross_domain_analogies": []}'
+    ))
+
     # --- Round 2 ---
     mock.add_responses_from_fixtures(2, ["r1", "reasoner", "glm5"])
     # R2 argument extraction
@@ -50,6 +79,14 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
         "reasoner: O3 [MEDIUM] — still prefers isolation\n"
         "glm5: O4 [HIGH] — maintains shutdown position\n"
     ))
+    # Frame Survival R2 (V9) — runs after track2, before comparison
+    mock.add_response("sonnet", (
+        '{"evaluations": ['
+        '{"frame_id": "FRAME-1", "status": "CONTESTED", "drop_vote_models": ["r1"], '
+        '"reasoning": "R1 partially addressed lateral movement risk"}'
+        ']}'
+    ))
+
     # R1->R2 argument comparison
     mock.add_response("sonnet", "ARG-1: ADDRESSED\nARG-2: ADDRESSED\nARG-3: MENTIONED\nARG-4: ADDRESSED\n")
 
@@ -100,7 +137,7 @@ class TestBrainE2E:
         assert result.gate2 is not None
         assert result.gate2.outcome == Outcome.DECIDE
         assert "proof_schema_version" in result.proof
-        assert result.proof["proof_schema_version"] == "2.0"
+        assert result.proof["proof_schema_version"] == "3.0"
 
     async def test_gate1_rejection_short_circuits(self):
         mock = MockLLMClient()

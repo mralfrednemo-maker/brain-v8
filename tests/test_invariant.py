@@ -79,7 +79,7 @@ class TestValidateInvariants:
         evidence = EvidenceLedger(max_items=10)
         e1 = EvidenceItem("E001", "t", "fact 1", "https://a.com", Confidence.HIGH)
         e3 = EvidenceItem("E003", "t different", "fact 3 different", "https://b.com", Confidence.HIGH)
-        evidence.items = [e1, e3]  # Gap: E002 missing
+        evidence.active_items = [e1, e3]  # Gap: E002 missing
 
         violations = validate_invariants(
             positions_by_round={1: {"r1": Position("r1", 1, "O3")}},
@@ -112,7 +112,7 @@ class TestValidateInvariants:
     def test_orphaned_contradiction_references(self):
         evidence = EvidenceLedger(max_items=10)
         e1 = EvidenceItem("E001", "t", "fact 1", "https://a.com", Confidence.HIGH)
-        evidence.items = [e1]
+        evidence.active_items = [e1]
         # Contradiction references E099 which doesn't exist
         evidence.contradictions = [
             Contradiction("CTR001", ["E001", "E099"], "t", "HIGH"),

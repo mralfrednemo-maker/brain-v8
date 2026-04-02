@@ -1,14 +1,18 @@
-"""Brain Orchestrator — wires the full V8 deliberation pipeline.
+"""Brain Orchestrator — wires the full V9 deliberation pipeline.
 
 Flow:
-  Gate 1 -> R1 -> Search(R1) -> R2 -> Search(R2) -> R3 -> Synthesis Gate -> Deterministic Gate 2
+  Gate 1 -> Preflight -> Dimensions -> R1(+adversarial) -> PerspectiveCards -> FramingPass
+  -> Search(R1) -> R2 -> FrameSurvival -> Search(R2) -> R3 -> R4
+  -> SemanticContradiction -> SynthesisPacket -> Synthesis -> Stability -> Gate 2
 
 Debug modes:
   --verbose          : Full logging at each stage
   --stop-after STAGE : Run up to STAGE, save checkpoint, exit
   --resume FILE      : Resume from a checkpoint file
 
-Stage IDs: gate1, r1, track1, search1, r2, track2, search2, r3, track3, synthesis, gate2
+Stage IDs: gate1, preflight, dimensions, r1, track1, perspective_cards, framing_pass,
+           search1, r2, track2, frame_survival_r2, search2, r3, track3, r4, track4,
+           semantic_contradiction, synthesis, gate2
 """
 from __future__ import annotations
 
@@ -34,10 +38,24 @@ from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
 from thinker.types import ArgumentStatus, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, Position, SearchResult
+from thinker.preflight import run_preflight
+from thinker.dimension_seeder import run_dimension_seeder, format_dimensions_for_prompt
+from thinker.perspective_cards import extract_perspective_cards, format_perspective_card_instructions
+from thinker.divergent_framing import (
+    run_framing_extract, run_frame_survival_check,
+    check_exploration_stress, format_frames_for_prompt, format_r2_frame_enforcement,
+)
+from thinker.semantic_contradiction import run_semantic_contradiction_pass
+from thinker.stability import run_stability_tests
+from thinker.synthesis_packet import build_synthesis_packet, format_synthesis_packet_for_prompt
+from thinker.residue import check_disposition_coverage
+from thinker.types import (
+    DimensionSeedResult, DivergenceResult, Modality, PreflightResult, StabilityResult,
+)
 
 
 class Brain:
-    """The V8 Brain deliberation engine."""
+    """The V9 Brain deliberation engine."""
 
     def __init__(
         self,
@@ -233,11 +251,27 @@ class Brain:
         search_orch = None
         proof.set_blocker_ledger(blocker_ledger)
 
+        # V9 state — initialized here so they're available even on resume
+        preflight_result = PreflightResult()  # defaults
+        dimension_result = DimensionSeedResult()
+        dimension_text = ""
+        alt_frames_text = ""
+        divergence_result = DivergenceResult()
+        semantic_ctrs: list = []
+        stability_result = StabilityResult()
+
         # Restore tracker state if resuming
         if resuming:
             prior_views, unaddressed_text = self._restore_trackers(
                 argument_tracker, position_tracker, evidence,
             )
+            # Restore V9 state from checkpoint
+            if st.preflight:
+                preflight_result = PreflightResult(
+                    modality=Modality(st.preflight.get("modality", "DECIDE")),
+                )
+            if st.dimensions:
+                dimension_result = DimensionSeedResult()
         else:
             prior_views = {}
             unaddressed_text = ""
@@ -272,6 +306,47 @@ class Brain:
                 )
             if self._checkpoint("gate1"):
                 return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT GATE1]", gate1=gate1)
+
+        # --- PreflightAssessment (V9) ---
+        if not self._stage_done("preflight"):
+            log._print("  [PREFLIGHT] Running PreflightAssessment...")
+            t0 = time.monotonic()
+            preflight_result = await run_preflight(self._llm, brief)
+            log._print(f"  [PREFLIGHT] {preflight_result.answerability.value} | "
+                       f"{preflight_result.modality.value} | {preflight_result.effort_tier.value} "
+                       f"({time.monotonic() - t0:.1f}s)")
+
+            if preflight_result.answerability.value in ("NEED_MORE", "INVALID_FORM"):
+                proof.set_preflight(preflight_result)
+                proof.set_final_status("PREFLIGHT_REJECTED")
+                return BrainResult(
+                    outcome=Outcome.NEED_MORE, proof=proof.build(),
+                    report="", preflight=preflight_result,
+                )
+
+            st.preflight = preflight_result.to_dict()
+            st.modality = preflight_result.modality.value
+            proof.set_preflight(preflight_result)
+
+            if self._checkpoint("preflight"):
+                return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT PREFLIGHT]", preflight=preflight_result)
+        else:
+            if st.preflight:
+                preflight_result = PreflightResult(
+                    modality=Modality(st.preflight.get("modality", "DECIDE")),
+                )
+
+        # --- Dimension Seeder (V9) ---
+        if not self._stage_done("dimensions"):
+            log._print("  [DIMENSIONS] Running Dimension Seeder...")
+            t0 = time.monotonic()
+            dimension_result = await run_dimension_seeder(self._llm, brief)
+            dimension_text = format_dimensions_for_prompt(dimension_result.items)
+            log._print(f"  [DIMENSIONS] {dimension_result.dimension_count} dimensions ({time.monotonic() - t0:.1f}s)")
+            st.dimensions = dimension_result.to_dict()
+            proof.set_dimensions(dimension_result)
+            if self._checkpoint("dimensions"):
+                return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT DIMENSIONS]", preflight=preflight_result, dimensions=dimension_result)
 
         # --- Search Decision ---
         # CLI override > Gate 1 recommendation > default (on if provider available)
@@ -393,6 +468,10 @@ class Brain:
                     evidence_text=evidence.format_for_prompt() if round_num > 1 else "",
                     unaddressed_arguments=unaddressed_text if round_num > 1 else "",
                     is_last_round=is_last_round,
+                    adversarial_model="kimi" if round_num == 1 else "",
+                    dimension_text=dimension_text if round_num == 1 else "",
+                    perspective_card_instructions=format_perspective_card_instructions() if round_num == 1 else "",
+                    alt_frames_text=alt_frames_text if round_num >= 2 else "",
                 )
                 log.round_result(round_num, round_result.responded, round_result.failed,
                                  round_result.texts, time.monotonic() - t0)
@@ -454,6 +533,39 @@ class Brain:
                     return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT TRACK{round_num}]", gate1=gate1)
             else:
                 log._print(f"  [RESUME] Skipping track{round_num} (already completed)")
+
+            # --- V9: Post-R1 perspective cards + framing pass ---
+            if round_num == 1 and not self._stage_done("perspective_cards"):
+                perspective_cards = extract_perspective_cards(round_result.texts)
+                st.perspective_cards = [c.to_dict() for c in perspective_cards]
+                proof.set_perspective_cards(perspective_cards)
+                self._checkpoint("perspective_cards")
+
+            if round_num == 1 and not self._stage_done("framing_pass"):
+                log._print("  [FRAMING] Running framing extract...")
+                t0 = time.monotonic()
+                divergence_result = await run_framing_extract(self._llm, brief, round_result.texts)
+                # Check exploration stress (use R1 agreement)
+                r1_agreement = position_tracker.agreement_ratio(1)
+                if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):
+                    divergence_result.exploration_stress_triggered = True
+                st.divergence = divergence_result.to_dict()
+                proof.set_divergence(divergence_result)
+                alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
+                log._print(f"  [FRAMING] {len(divergence_result.alt_frames)} frames extracted ({time.monotonic() - t0:.1f}s)")
+                self._checkpoint("framing_pass")
+
+            # --- V9: Post-R2 frame survival ---
+            if round_num == 2 and not self._stage_done("frame_survival_r2"):
+                log._print("  [FRAMING] Running frame survival check (R2)...")
+                t0 = time.monotonic()
+                divergence_result.alt_frames = await run_frame_survival_check(
+                    self._llm, divergence_result.alt_frames, round_result.texts, round_num=2,
+                )
+                alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
+                st.divergence = divergence_result.to_dict()
+                log._print(f"  [FRAMING] Frame survival R2 done ({time.monotonic() - t0:.1f}s)")
+                self._checkpoint("frame_survival_r2")
 
             # Search phase — after R1 and R2 only
             if has_search_phase:
@@ -587,6 +699,30 @@ class Brain:
         st.agreement_ratio = agreement
         st.outcome_class = outcome_class
 
+        # --- Semantic Contradiction (V9) ---
+        if not self._stage_done("semantic_contradiction"):
+            log._print("  [SEMANTIC] Running semantic contradiction pass...")
+            t0 = time.monotonic()
+            semantic_ctrs = await run_semantic_contradiction_pass(self._llm, evidence.active_items)
+            log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
+            self._checkpoint("semantic_contradiction")
+
+        # --- Synthesis Packet (V9) ---
+        packet = build_synthesis_packet(
+            brief=brief,
+            final_positions=final_positions,
+            arguments=[a for args in argument_tracker.arguments_by_round.values() for a in args],
+            frames=divergence_result.alt_frames if hasattr(divergence_result, 'alt_frames') else [],
+            blockers=blocker_ledger.blockers,
+            decisive_claims=[],  # TODO: wire decisive claim extraction
+            contradictions_numeric=evidence.contradictions,
+            contradictions_semantic=semantic_ctrs,
+            premise_flags=preflight_result.premise_flags,
+            evidence_items=evidence.active_items,
+        )
+        synthesis_packet_text = format_synthesis_packet_for_prompt(packet)
+        proof.set_synthesis_packet(packet)
+
         # --- Synthesis Gate ---
         t0 = time.monotonic()
         final_views = prior_views
@@ -595,6 +731,7 @@ class Brain:
             blocker_summary=blocker_ledger.summary(),
             outcome_class=outcome_class,
             evidence_text=evidence.format_for_prompt(),
+            synthesis_packet_text=synthesis_packet_text,
         )
         log.synthesis_result(len(report), bool(report_json), time.monotonic() - t0)
         proof.set_synthesis_status("COMPLETE" if report else "FAILED")
@@ -603,6 +740,22 @@ class Brain:
 
         if self._checkpoint("synthesis"):
             return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=report, gate1=gate1)
+
+        # --- Stability Tests (V9) ---
+        stability_result = run_stability_tests(
+            positions=final_positions,
+            decisive_claims=[],
+            assumptions=preflight_result.critical_assumptions,
+            round_positions=position_tracker.positions_by_round,
+            question_class=preflight_result.question_class,
+            stakes_class=preflight_result.stakes_class,
+            independent_evidence_present=evidence.high_authority_evidence_present,
+        )
+        proof.set_stability(stability_result)
+        log._print(f"  [STABILITY] conclusion={stability_result.conclusion_stable} "
+                   f"reason={stability_result.reason_stable} "
+                   f"assumption={stability_result.assumption_stable} "
+                   f"groupthink_warning={stability_result.groupthink_warning}")
 
         # --- Gate 2 (deterministic) ---
         gate2 = run_gate2_deterministic(
@@ -613,6 +766,10 @@ class Brain:
             open_blockers=blocker_ledger.open_blockers(),
             evidence_count=len(evidence.items),
             search_enabled=search_enabled,
+            preflight=preflight_result,
+            divergence=divergence_result,
+            stability=stability_result,
+            archive_evidence_count=len(evidence.archive_items),
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,
@@ -620,6 +777,15 @@ class Brain:
             len(evidence.contradictions), len(blocker_ledger.open_blockers()),
         )
         st.outcome = gate2.outcome.value
+
+        # Record gate2 trace in proof (V9)
+        if gate2.rule_trace:
+            proof.set_gate2_trace(
+                modality=gate2.modality or "DECIDE",
+                rule_trace=gate2.rule_trace,
+                final_outcome=gate2.outcome.value,
+            )
+
         self._checkpoint("gate2")
 
         # --- Invariant validation (F6) ---
@@ -654,6 +820,9 @@ class Brain:
         proof.set_final_status("COMPLETE")
         proof.set_evidence_count(len(evidence.items))
 
+        # Two-tier evidence in proof (V9)
+        proof.set_evidence_two_tier(evidence.active_items, evidence.archive_items, evidence.eviction_log)
+
         # --- Acceptance status (F2) — must be computed last, after all violations ---
         proof.compute_acceptance_status()
 
@@ -662,6 +831,9 @@ class Brain:
         return BrainResult(
             outcome=outcome, proof=proof.build(),
             report=report, gate1=gate1, gate2=gate2,
+            preflight=preflight_result,
+            dimensions=dimension_result,
+            stability=stability_result,
         )
 
 
@@ -821,6 +993,9 @@ async def main():
     import thinker.gate1, thinker.rounds, thinker.argument_tracker  # noqa: F401
     import thinker.tools.position, thinker.search, thinker.synthesis, thinker.gate2  # noqa: F401
     import thinker.invariant, thinker.residue, thinker.page_fetch, thinker.evidence_extractor  # noqa: F401
+    import thinker.preflight, thinker.dimension_seeder  # noqa: F401
+    import thinker.perspective_cards, thinker.divergent_framing  # noqa: F401
+    import thinker.semantic_contradiction, thinker.stability  # noqa: F401
     from thinker.pipeline import generate_architecture_html
     events_data = json.loads((Path(args.outdir) / "events.json").read_text())
     generate_architecture_html(
