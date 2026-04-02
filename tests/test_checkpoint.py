@@ -163,7 +163,7 @@ class TestStageOrder:
             "ungrounded_r2", "search2",
             "r3", "track3", "frame_survival_r3",
             "r4", "track4",
-            "semantic_contradiction", "synthesis_packet",
+            "semantic_contradiction", "decisive_claims", "synthesis_packet",
             "synthesis", "stability", "gate2",
         ]
         assert STAGE_ORDER == expected

@@ -17,7 +17,7 @@ Stage IDs for --stop-after (V9):
   preflight, dimensions, r1, track1, perspective_cards, framing_pass,
   ungrounded_r1, search1, r2, track2, frame_survival_r2, ungrounded_r2,
   search2, r3, track3, frame_survival_r3, r4, track4,
-  semantic_contradiction, synthesis_packet, synthesis, stability, gate2
+  semantic_contradiction, decisive_claims, synthesis_packet, synthesis, stability, gate2
 """
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ STAGE_ORDER = [
     "ungrounded_r2", "search2",
     "r3", "track3", "frame_survival_r3",
     "r4", "track4",
-    "semantic_contradiction", "synthesis_packet",
+    "semantic_contradiction", "decisive_claims", "synthesis_packet",
     "synthesis", "stability", "gate2",
 ]
 
