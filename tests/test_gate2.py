@@ -105,7 +105,8 @@ class TestRunGate2Deterministic:
             evidence_count=5,
             search_enabled=True,
         )
-        assert result.outcome == Outcome.ESCALATE
+        # V9 D10: agreement < 0.50 without HIGH stakes → NO_CONSENSUS
+        assert result.outcome == Outcome.NO_CONSENSUS
         assert result.convergence_ok is False
 
     def test_few_ignored_with_high_agreement_still_decides(self):

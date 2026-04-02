@@ -76,6 +76,7 @@ def build_synthesis_prompt(
     final_views: dict[str, str],
     blocker_summary: dict,
     evidence_text: str = "",
+    synthesis_packet_text: str = "",
 ) -> str:
     views_text = "\n\n".join(f"### {m}\n{v}" for m, v in final_views.items())
     blocker_text = "\n".join(f"- {k}: {v}" for k, v in blocker_summary.items()) if blocker_summary else "None"
@@ -89,6 +90,8 @@ def build_synthesis_prompt(
             "Cite evidence IDs when referencing specific facts.\n\n"
             f"{evidence_text}\n"
         )
+    if synthesis_packet_text:
+        prompt += f"\n\n{synthesis_packet_text}\n"
     return prompt
 
 
@@ -148,12 +151,18 @@ async def run_synthesis(
     blocker_summary: dict,
     outcome_class: str = "",
     evidence_text: str = "",
+    synthesis_packet_text: str = "",
 ) -> tuple[str, dict]:
     """Run the Synthesis Gate. Returns (markdown_report, json_data).
 
     The outcome_class is appended to both outputs after the LLM call.
+    V9: Accepts curated synthesis packet text for richer context.
     """
-    prompt = build_synthesis_prompt(brief, final_views, blocker_summary, evidence_text=evidence_text)
+    prompt = build_synthesis_prompt(
+        brief, final_views, blocker_summary,
+        evidence_text=evidence_text,
+        synthesis_packet_text=synthesis_packet_text,
+    )
     resp = await client.call("sonnet", prompt)
 
     if not resp.ok:

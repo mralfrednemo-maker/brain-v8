@@ -36,6 +36,26 @@ _SEARCH_REQUEST_SECTION = (
 )
 
 
+_ADVERSARIAL_PREAMBLE = (
+    "## ADVERSARIAL ROLE (assigned to you)\n"
+    "You are the designated adversarial voice. Your job is to:\n"
+    "- Challenge the dominant framing\n"
+    "- Attack hidden assumptions\n"
+    "- Propose alternative interpretations\n"
+    "- Be the devil's advocate\n"
+    "Do NOT simply agree with the obvious position.\n\n"
+)
+
+_FRAME_ENGAGEMENT_SECTION = (
+    "\n## Frame Engagement Requirements (MANDATORY for R2)\n"
+    "You MUST:\n"
+    "1. ADOPT at least one alternative frame and argue from its perspective\n"
+    "2. REBUT at least one alternative frame with substantive counter-arguments\n"
+    "3. GENERATE at least one NEW alternative frame not yet proposed\n\n"
+    "For each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
+)
+
+
 def build_round_prompt(
     round_num: int,
     brief: str,
@@ -43,18 +63,39 @@ def build_round_prompt(
     evidence_text: str,
     unaddressed_arguments: str,
     is_last_round: bool = False,
+    adversarial_model: str = "",
+    model_id: str = "",
+    alt_frames_text: str = "",
+    dimension_text: str = "",
+    perspective_card_instructions: str = "",
 ) -> str:
     """Build the prompt for a given round.
 
     R1: brief + search request appendix.
     R2: brief + prior views + evidence + unaddressed args + search request appendix.
     R3: brief + prior views + evidence + unaddressed args (no search — final round).
+
+    V9 extensions:
+    - R1: adversarial preamble (if model_id == adversarial_model),
+      dimension_text, perspective_card_instructions injected after brief.
+    - R2: alt_frames_text injected after evidence, plus frame engagement section.
     """
     parts = []
+
+    # Adversarial preamble — R1 only, only for the designated adversarial model
+    if round_num == 1 and adversarial_model and model_id == adversarial_model:
+        parts.append(_ADVERSARIAL_PREAMBLE)
 
     parts.append("You are participating in a multi-model deliberation. "
                  "Analyze the following brief independently and thoroughly.\n")
     parts.append(f"## Brief\n\n{brief}\n")
+
+    # R1 injections: dimension text and perspective card instructions after brief
+    if round_num == 1 and dimension_text:
+        parts.append(f"## Dimension Focus\n\n{dimension_text}\n")
+
+    if round_num == 1 and perspective_card_instructions:
+        parts.append(f"## Perspective Card\n\n{perspective_card_instructions}\n")
 
     if round_num >= 2 and prior_views:
         parts.append("## Prior Round Views\n")
@@ -67,11 +108,19 @@ def build_round_prompt(
         parts.append(_EVIDENCE_HEADER)
         parts.append(f"{evidence_text}\n")
 
+    # R2: inject alternative frames after evidence
+    if round_num == 2 and alt_frames_text:
+        parts.append(f"## Alternative Frames From R1\n\n{alt_frames_text}\n")
+
     if round_num >= 2 and unaddressed_arguments:
         parts.append("## Unaddressed Arguments From Prior Rounds\n")
         parts.append("The following arguments were raised but NOT substantively engaged with. "
                      "You MUST engage with each one — agree, rebut, or refine.\n")
         parts.append(f"{unaddressed_arguments}\n")
+
+    # R2: frame engagement requirements
+    if round_num == 2 and alt_frames_text:
+        parts.append(_FRAME_ENGAGEMENT_SECTION)
 
     parts.append("\n## Your Analysis\n")
     parts.append("Provide your independent assessment. Structure your response as:\n"
@@ -133,6 +182,10 @@ async def execute_round(
     evidence_text: str = "",
     unaddressed_arguments: str = "",
     is_last_round: bool = False,
+    adversarial_model: str = "",
+    alt_frames_text: str = "",
+    dimension_text: str = "",
+    perspective_card_instructions: str = "",
 ) -> RoundResult:
     """Execute a single deliberation round.
 
@@ -140,17 +193,41 @@ async def execute_round(
     with successful responses and a list of failed models.
     """
     models = ROUND_TOPOLOGY[round_num]
-    prompt = build_round_prompt(
-        round_num=round_num,
-        brief=brief,
-        prior_views=prior_views or {},
-        evidence_text=evidence_text,
-        unaddressed_arguments=unaddressed_arguments,
-        is_last_round=is_last_round,
-    )
 
-    # Call all models in parallel
-    tasks = {model: client.call(model, prompt) for model in models}
+    # R1: build per-model prompts (adversarial model gets different preamble)
+    # R2+: shared prompt with frames injection
+    if round_num == 1 and adversarial_model:
+        # Per-model prompts for R1 when adversarial is active
+        tasks = {}
+        for model in models:
+            prompt = build_round_prompt(
+                round_num=round_num,
+                brief=brief,
+                prior_views=prior_views or {},
+                evidence_text=evidence_text,
+                unaddressed_arguments=unaddressed_arguments,
+                is_last_round=is_last_round,
+                adversarial_model=adversarial_model,
+                model_id=model,
+                dimension_text=dimension_text,
+                perspective_card_instructions=perspective_card_instructions,
+            )
+            tasks[model] = client.call(model, prompt)
+    else:
+        prompt = build_round_prompt(
+            round_num=round_num,
+            brief=brief,
+            prior_views=prior_views or {},
+            evidence_text=evidence_text,
+            unaddressed_arguments=unaddressed_arguments,
+            is_last_round=is_last_round,
+            alt_frames_text=alt_frames_text,
+            dimension_text=dimension_text,
+            perspective_card_instructions=perspective_card_instructions,
+        )
+        # Call all models in parallel
+        tasks = {model: client.call(model, prompt) for model in models}
+
     responses: dict[str, ModelResponse] = {}
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 

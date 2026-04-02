@@ -4,11 +4,20 @@ V8-F1 (DoD D7): After synthesis, scan the report text to verify it
 mentions all structural findings — blocker IDs, contradiction IDs,
 and unaddressed argument IDs. This is a narrative completeness check,
 not truth verification.
+
+V9 (DoD Section 14): Structured dispositions. Schema validation + coverage
+validation replaces string matching. Disposition object for every open blocker,
+active frame, decisive claim, contradiction. omission_rate > 0.20 triggers
+deep semantic scan.
 """
 from __future__ import annotations
 
 from thinker.pipeline import pipeline_stage
-from thinker.types import Argument, Blocker, Contradiction
+from thinker.types import (
+    Argument, Blocker, BlockerStatus, Contradiction, DecisiveClaim,
+    DispositionObject, DispositionTargetType, FrameInfo, FrameSurvivalStatus,
+    SemanticContradiction,
+)
 
 
 def check_synthesis_residue(
@@ -52,6 +61,74 @@ def check_synthesis_residue(
             o["threshold_violation"] = True
 
     return omissions
+
+
+def check_disposition_coverage(
+    dispositions: list[DispositionObject],
+    open_blockers: list[Blocker],
+    active_frames: list[FrameInfo],
+    decisive_claims: list[DecisiveClaim],
+    contradictions_numeric: list[Contradiction],
+    contradictions_semantic: list[SemanticContradiction],
+) -> dict:
+    """V9: Check that synthesis dispositions cover all tracked open findings.
+
+    Returns dict with: coverage_pass, omission_rate, omissions[], deep_scan_triggered.
+    """
+    # Build required targets
+    required_targets: list[tuple[str, str]] = []  # (target_type, target_id)
+
+    for b in open_blockers:
+        if b.status == BlockerStatus.OPEN:
+            required_targets.append(("BLOCKER", b.blocker_id))
+
+    for f in active_frames:
+        if f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED):
+            required_targets.append(("FRAME", f.frame_id))
+
+    for c in decisive_claims:
+        required_targets.append(("CLAIM", c.claim_id))
+
+    for c in contradictions_numeric:
+        if c.status not in ("RESOLVED", "NON_MATERIAL"):
+            required_targets.append(("CONTRADICTION", c.contradiction_id))
+
+    for c in contradictions_semantic:
+        if c.status.value not in ("RESOLVED", "NON_MATERIAL"):
+            required_targets.append(("CONTRADICTION", c.ctr_id))
+
+    if not required_targets:
+        return {
+            "coverage_pass": True,
+            "omission_rate": 0.0,
+            "omissions": [],
+            "deep_scan_triggered": False,
+            "total_required": 0,
+            "total_disposed": 0,
+        }
+
+    # Build disposition lookup
+    disposed = set()
+    for d in dispositions:
+        disposed.add((d.target_type.value, d.target_id))
+
+    # Find omissions
+    omissions = []
+    for target_type, target_id in required_targets:
+        if (target_type, target_id) not in disposed:
+            omissions.append({"target_type": target_type, "target_id": target_id})
+
+    omission_rate = len(omissions) / len(required_targets) if required_targets else 0.0
+    deep_scan = omission_rate > 0.20
+
+    return {
+        "coverage_pass": len(omissions) == 0,
+        "omission_rate": round(omission_rate, 3),
+        "omissions": omissions,
+        "deep_scan_triggered": deep_scan,
+        "total_required": len(required_targets),
+        "total_disposed": len(required_targets) - len(omissions),
+    }
 
 
 @pipeline_stage(
