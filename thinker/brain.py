@@ -1,18 +1,20 @@
 """Brain Orchestrator — wires the full V9 deliberation pipeline.
 
 Flow:
-  Gate 1 -> Preflight -> Dimensions -> R1(+adversarial) -> PerspectiveCards -> FramingPass
-  -> Search(R1) -> R2 -> FrameSurvival -> Search(R2) -> R3 -> R4
-  -> SemanticContradiction -> SynthesisPacket -> Synthesis -> Stability -> Gate 2
+  Preflight -> Dimensions -> R1(+adversarial) -> PerspectiveCards -> FramingPass
+  -> UngroundedR1 -> Search(R1) -> R2 -> FrameSurvivalR2 -> UngroundedR2 -> Search(R2)
+  -> R3 -> FrameSurvivalR3 -> R4 -> SemanticContradiction -> SynthesisPacket
+  -> Synthesis -> Stability -> Gate 2
 
 Debug modes:
   --verbose          : Full logging at each stage
   --stop-after STAGE : Run up to STAGE, save checkpoint, exit
   --resume FILE      : Resume from a checkpoint file
 
-Stage IDs: gate1, preflight, dimensions, r1, track1, perspective_cards, framing_pass,
-           search1, r2, track2, frame_survival_r2, search2, r3, track3, r4, track4,
-           semantic_contradiction, synthesis, gate2
+Stage IDs: preflight, dimensions, r1, track1, perspective_cards, framing_pass,
+           ungrounded_r1, search1, r2, track2, frame_survival_r2, ungrounded_r2, search2,
+           r3, track3, frame_survival_r3, r4, track4,
+           semantic_contradiction, synthesis_packet, synthesis, stability, gate2
 """
 from __future__ import annotations
 
@@ -25,7 +27,6 @@ from thinker.config import BrainConfig, ROUND_TOPOLOGY
 from thinker.debug import RunLog
 from thinker.evidence import EvidenceLedger
 from thinker.evidence_extractor import extract_evidence_from_page
-from thinker.gate1 import run_gate1
 from thinker.gate2 import run_gate2_deterministic, classify_outcome
 from thinker.invariant import validate_invariants
 from thinker.page_fetch import fetch_pages_for_results
@@ -77,7 +78,7 @@ class Brain:
         self._stop_after = stop_after
         self._outdir = outdir
         self._debug_step = debug_step
-        self._search_override = search_override  # None=gate1 decides, True=force on, False=force off
+        self._search_override = search_override  # None=preflight decides, True=force on, False=force off
         self.log = RunLog(verbose=verbose)
         self.state = resume_state if resume_state else PipelineState()
 
@@ -103,10 +104,9 @@ class Brain:
         self.log._print(f"  Pipeline so far: {' → '.join(st.completed_stages)}")
 
         # Stage-specific analysis
-        if stage_id == "gate1":
-            self.log._print(f"  Gate 1: {'PASS' if st.gate1_passed else 'FAIL'}")
-            if st.gate1_questions:
-                self.log._print(f"  Questions: {st.gate1_questions}")
+        if stage_id == "preflight":
+            pf = st.preflight or {}
+            self.log._print(f"  Preflight: {pf.get('answerability', 'N/A')} | {pf.get('modality', 'N/A')} | {pf.get('effort_tier', 'N/A')}")
 
         elif stage_id.startswith("r"):
             rnd = stage_id[1:]
@@ -276,38 +276,7 @@ class Brain:
             prior_views = {}
             unaddressed_text = ""
 
-        # --- Gate 1 ---
-        if self._stage_done("gate1"):
-            log._print("  [RESUME] Skipping gate1 (already completed)")
-            gate1 = Gate1Result(
-                passed=st.gate1_passed,
-                outcome=Outcome.DECIDE if st.gate1_passed else Outcome.NEED_MORE,
-                questions=st.gate1_questions,
-                reasoning=st.gate1_reasoning,
-                search_recommended=st.gate1_search_recommended,
-                search_reasoning=st.gate1_search_reasoning,
-            )
-        else:
-            log.gate1_start(len(brief))
-            t0 = time.monotonic()
-            gate1 = await run_gate1(self._llm, brief)
-            log.gate1_result(gate1.passed, gate1.reasoning, gate1.questions, time.monotonic() - t0)
-            st.gate1_passed = gate1.passed
-            st.gate1_reasoning = gate1.reasoning
-            st.gate1_questions = gate1.questions
-            st.gate1_search_recommended = gate1.search_recommended
-            st.gate1_search_reasoning = gate1.search_reasoning
-
-            if not gate1.passed:
-                proof.set_final_status("GATE1_REJECTED")
-                return BrainResult(
-                    outcome=gate1.outcome, proof=proof.build(),
-                    report="", gate1=gate1,
-                )
-            if self._checkpoint("gate1"):
-                return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT GATE1]", gate1=gate1)
-
-        # --- PreflightAssessment (V9) ---
+        # --- PreflightAssessment (V9 — replaces Gate 1) ---
         if not self._stage_done("preflight"):
             log._print("  [PREFLIGHT] Running PreflightAssessment...")
             t0 = time.monotonic()
@@ -348,33 +317,24 @@ class Brain:
             if self._checkpoint("dimensions"):
                 return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT DIMENSIONS]", preflight=preflight_result, dimensions=dimension_result)
 
-        # --- Search Decision ---
-        # CLI override > Gate 1 recommendation > default (on if provider available)
+        # --- Search Decision (V9: uses preflight.search_scope) ---
+        from thinker.types import SearchScope
         has_search_provider = self._search_fn is not None
         if self._search_override is not None:
-            # CLI override
             search_enabled = self._search_override and has_search_provider
             source = "cli_override"
-            if self._search_override:
-                override_reasoning = "Forced on via --search"
-            else:
-                override_reasoning = "Forced off via --no-search"
-            proof.set_search_decision(
-                source=source, value=search_enabled,
-                reasoning=override_reasoning,
-                gate1_recommended=gate1.search_recommended,
-                gate1_search_reasoning=gate1.search_reasoning,
-            )
+            reasoning = "Forced on via --search" if self._search_override else "Forced off via --no-search"
+            proof.set_search_decision(source=source, value=search_enabled, reasoning=reasoning)
             log._print(f"  [SEARCH DECISION] {source}: {'ON' if search_enabled else 'OFF'} "
-                        f"(Gate 1 recommended: {'YES' if gate1.search_recommended else 'NO'} — {gate1.search_reasoning})")
+                        f"(Preflight scope: {preflight_result.search_scope.value})")
         else:
-            # Gate 1 decides
-            search_enabled = gate1.search_recommended and has_search_provider
+            search_enabled = (preflight_result.search_scope != SearchScope.NONE) and has_search_provider
             proof.set_search_decision(
-                source="gate1", value=search_enabled,
-                reasoning=gate1.search_reasoning,
+                source="preflight",
+                value=search_enabled,
+                reasoning=f"Preflight search_scope={preflight_result.search_scope.value}",
             )
-            log._print(f"  [SEARCH DECISION] gate1: {'ON' if search_enabled else 'OFF'} — {gate1.search_reasoning}")
+            log._print(f"  [SEARCH DECISION] preflight: {'ON' if search_enabled else 'OFF'} — scope={preflight_result.search_scope.value}")
 
         if search_enabled:
             search_orch = SearchOrchestrator(
@@ -494,7 +454,7 @@ class Brain:
                     )
 
                 if self._checkpoint(f"r{round_num}"):
-                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT R{round_num}]", gate1=gate1)
+                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT R{round_num}]", preflight=preflight_result)
 
             # --- Tracking phase (skip if already done on resume) ---
             if not self._stage_done(track_stage):
@@ -530,7 +490,7 @@ class Brain:
                     st.position_changes.extend(changes)
 
                 if self._checkpoint(f"track{round_num}"):
-                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT TRACK{round_num}]", gate1=gate1)
+                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT TRACK{round_num}]", preflight=preflight_result)
             else:
                 log._print(f"  [RESUME] Skipping track{round_num} (already completed)")
 
@@ -661,7 +621,7 @@ class Brain:
                 st.evidence_count = len(evidence.items)
 
                 if self._checkpoint(f"search{round_num}"):
-                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT SEARCH{round_num}]", gate1=gate1)
+                    return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=f"[STOPPED AT SEARCH{round_num}]", preflight=preflight_result)
 
             # Compare arguments (after R2+)
             if round_num > 1:
@@ -739,7 +699,7 @@ class Brain:
         st.report_json = report_json
 
         if self._checkpoint("synthesis"):
-            return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=report, gate1=gate1)
+            return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=report, preflight=preflight_result)
 
         # --- Stability Tests (V9) ---
         stability_result = run_stability_tests(
@@ -830,8 +790,7 @@ class Brain:
 
         return BrainResult(
             outcome=outcome, proof=proof.build(),
-            report=report, gate1=gate1, gate2=gate2,
-            preflight=preflight_result,
+            report=report, preflight=preflight_result, gate2=gate2,
             dimensions=dimension_result,
             stability=stability_result,
         )
@@ -890,7 +849,7 @@ async def main():
     parser.add_argument("--outdir", default="./output", help="Output directory")
     parser.add_argument("--verbose", action="store_true", help="Full logging at each stage")
     parser.add_argument("--stop-after", default=None,
-                        help="Stop after STAGE, save checkpoint (gate1,r1,track1,search1,r2,...)")
+                        help="Stop after STAGE, save checkpoint (preflight,dimensions,r1,track1,...)")
     parser.add_argument("--resume", default=None,
                         help="Resume from a checkpoint JSON file (skips completed stages)")
     parser.add_argument("--full-run", action="store_true",
@@ -990,7 +949,7 @@ async def main():
 
     # Generate auto-populated diagram from stage registry + run data
     # Import all tagged modules so the registry is populated
-    import thinker.gate1, thinker.rounds, thinker.argument_tracker  # noqa: F401
+    import thinker.preflight, thinker.rounds, thinker.argument_tracker  # noqa: F401
     import thinker.tools.position, thinker.search, thinker.synthesis, thinker.gate2  # noqa: F401
     import thinker.invariant, thinker.residue, thinker.page_fetch, thinker.evidence_extractor  # noqa: F401
     import thinker.preflight, thinker.dimension_seeder  # noqa: F401

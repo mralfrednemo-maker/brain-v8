@@ -11,7 +11,7 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
     """Queue all responses needed for a full Brain run (no search_fn).
 
     Call order per Brain.run() (V9) with search_fn=None:
-    Gate1(sonnet) -> Preflight(sonnet) -> DimensionSeeder(sonnet)
+    Preflight(sonnet) -> DimensionSeeder(sonnet)
     -> R1(4 models) -> R1_args(sonnet) -> R1_pos(sonnet)
     -> FramingExtract(sonnet)
     -> R2(3 models) -> R2_args(sonnet) -> R2_pos(sonnet) -> R1vR2_cmp(sonnet)
@@ -20,10 +20,7 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
     -> Synthesis(sonnet)
     (Gate 2 + Stability are deterministic — no LLM call needed)
     """
-    # Gate 1
-    mock.add_response("sonnet", "VERDICT: PASS\nQUESTIONS:\nREASONING: Clear incident.")
-
-    # Preflight (V9)
+    # Preflight (V9 — replaces Gate 1)
     mock.add_response("sonnet", (
         '{"answerability": "ANSWERABLE", "question_class": "OPEN", "stakes_class": "HIGH", '
         '"effort_tier": "STANDARD", "modality": "DECIDE", "search_scope": "TARGETED", '
@@ -133,23 +130,28 @@ class TestBrainE2E:
             "JWT bypass in production. 847 requests. Active RCE.\n"
         ))
         assert result.outcome == Outcome.DECIDE
-        assert result.gate1.passed is True
+        assert result.preflight is not None
         assert result.gate2 is not None
         assert result.gate2.outcome == Outcome.DECIDE
         assert "proof_schema_version" in result.proof
         assert result.proof["proof_schema_version"] == "3.0"
 
-    async def test_gate1_rejection_short_circuits(self):
+    async def test_preflight_rejection_short_circuits(self):
         mock = MockLLMClient()
         mock.add_response("sonnet", (
-            "VERDICT: NEED_MORE\n"
-            "QUESTIONS:\n- What system is affected?\n- What is the scope?\n"
-            "REASONING: Brief is too vague."
+            '{"answerability": "NEED_MORE", "question_class": "AMBIGUOUS", '
+            '"stakes_class": "STANDARD", "effort_tier": "ELEVATED", "modality": "DECIDE", '
+            '"search_scope": "NONE", "exploration_required": false, '
+            '"short_circuit_allowed": false, "fatal_premise": false, '
+            '"follow_up_questions": ["What system is affected?", "What is the scope?"], '
+            '"premise_flags": [], "hidden_context_gaps": [], '
+            '"critical_assumptions": [], "reasoning": "Brief is too vague."}'
         ))
         brain = Brain(config=BrainConfig(rounds=3), llm_client=mock, search_fn=None)
         result = await brain.run(brief="Something broke, help?")
         assert result.outcome == Outcome.NEED_MORE
-        assert len(result.gate1.questions) >= 1
+        assert result.preflight is not None
+        assert len(result.preflight.follow_up_questions) >= 1
         # Should NOT have called any deliberation models
         assert len(mock.calls_for("r1")) == 0
 
