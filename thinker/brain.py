@@ -38,7 +38,7 @@ from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, Position, SearchResult
+from thinker.types import ArgumentStatus, BlockerKind, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, Position, SearchResult
 from thinker.preflight import run_preflight
 from thinker.dimension_seeder import run_dimension_seeder, format_dimensions_for_prompt
 from thinker.perspective_cards import extract_perspective_cards, format_perspective_card_instructions
@@ -47,6 +47,7 @@ from thinker.divergent_framing import (
     check_exploration_stress, format_frames_for_prompt, format_r2_frame_enforcement,
 )
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
+from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
 from thinker.stability import run_stability_tests
 from thinker.synthesis_packet import build_synthesis_packet, format_synthesis_packet_for_prompt
 from thinker.residue import check_disposition_coverage
@@ -527,6 +528,31 @@ class Brain:
                 log._print(f"  [FRAMING] Frame survival R2 done ({time.monotonic() - t0:.1f}s)")
                 self._checkpoint("frame_survival_r2")
 
+            # --- Ungrounded Stat Detection (V9, post-R1 and post-R2) ---
+            if round_num in (1, 2) and not self._stage_done(f"ungrounded_r{round_num}"):
+                all_round_text = " ".join(round_result.texts.values())
+                ungrounded = find_ungrounded_stats(all_round_text, evidence.active_items)
+                if ungrounded:
+                    log._print(f"  [UNGROUNDED] R{round_num}: {len(ungrounded)} ungrounded stats detected")
+                    verification_queries = generate_verification_queries(ungrounded, all_round_text)
+                    st.search_queries[f"ungrounded_r{round_num}"] = verification_queries
+                self._checkpoint(f"ungrounded_r{round_num}")
+
+            # --- Post-R3: unresolved ungrounded stats become UNVERIFIED_CLAIM blockers ---
+            if round_num == 3:
+                all_r3_text = " ".join(round_result.texts.values())
+                ungrounded_r3 = find_ungrounded_stats(all_r3_text, evidence.active_items)
+                for stat in ungrounded_r3:
+                    blocker_ledger.add(
+                        kind=BlockerKind.UNVERIFIED_CLAIM,
+                        source="ungrounded_stat_detector",
+                        detected_round=3,
+                        detail=f"Unverified numeric claim persists after R3: {stat}",
+                        models=[],
+                    )
+                if ungrounded_r3:
+                    log._print(f"  [UNGROUNDED] R3: {len(ungrounded_r3)} unresolved → UNVERIFIED_CLAIM blockers")
+
             # Search phase — after R1 and R2 only
             if has_search_phase:
                 phase = SearchPhase.R1_R2 if round_num == 1 else SearchPhase.R2_R3
@@ -597,7 +623,6 @@ class Brain:
                             total_admitted += 1
 
                 # Wire evidence contradictions into blocker ledger
-                from thinker.types import BlockerKind
                 for ctr in evidence.contradictions:
                     if not any(b.detail == ctr.contradiction_id for b in blocker_ledger.blockers):
                         blocker_ledger.add(
