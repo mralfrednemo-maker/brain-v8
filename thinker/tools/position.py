@@ -168,8 +168,43 @@ class PositionTracker:
         # Collect per-framework components: {model: [(framework, option, conf, qualifier)]}
         framework_components: dict[str, list[tuple[str, str, Confidence, str]]] = {}
 
+        # Track current model from ### headers (for table-per-model format)
+        current_model = ""
+
         for line in text.strip().split("\n"):
             line = line.strip()
+
+            # Track model headers: ### r1, ### reasoner, etc.
+            header_match = re.match(r"#{1,4}\s+[*`]*(\w+)[*`]*\s*$", line)
+            if header_match:
+                candidate = header_match.group(1).lower()
+                if candidate in _KNOWN_MODELS:
+                    current_model = candidate
+                continue
+
+            # Table row with framework as first column (model from header):
+            # | GDPR | **not-reportable** | MEDIUM | qualifier |
+            # | Framework | Position | Confidence | Qualifier | (skip header)
+            if current_model and "|" in line:
+                fw_row = re.search(
+                    r"\|\s*[*`]*(\w[\w\s]*\w|\w+)[*`]*\s*\|\s*[*`]*(.+?)[*`]*\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
+                    line,
+                )
+                if fw_row:
+                    framework = fw_row.group(1).strip().upper().replace(" ", "_")
+                    option = fw_row.group(2).strip().strip("*`").strip()
+                    conf_text = fw_row.group(3).strip()
+                    qualifier = fw_row.group(4).strip()
+                    # Skip header rows and separator rows
+                    if (framework not in ("FRAMEWORK", "---", "MODEL")
+                            and not option.startswith("---")
+                            and not option.lower().startswith("position")
+                            and conf_text.upper() in ("HIGH", "MEDIUM", "LOW")):
+                        conf = self._parse_confidence(conf_text)
+                        framework_components.setdefault(current_model, []).append(
+                            (framework, option, conf, qualifier)
+                        )
+                        continue
 
             # Try markdown table row with model/framework
             # Handles: | `r1/PCI_DSS` | position | HIGH | qualifier |
