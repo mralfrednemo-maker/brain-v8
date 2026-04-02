@@ -162,6 +162,7 @@ class ArgumentTracker:
                              f"Argument comparison failed: {resp.error}",
                              detail=f"Could not compare R{prev_round} args against R{curr_round} outputs.")
 
+        from thinker.types import ResolutionStatus
         statuses = parse_comparison(resp.text, prev_round=prev_round)
         unaddressed = []
         for arg in prev_args:
@@ -169,9 +170,12 @@ class ArgumentTracker:
             arg.status = status
             if status in (ArgumentStatus.IGNORED, ArgumentStatus.MENTIONED):
                 arg.addressed_in_round = None
+                arg.open = True
                 unaddressed.append(arg)
             else:
                 arg.addressed_in_round = curr_round
+                arg.resolution_status = ResolutionStatus.REFINED
+                arg.open = False
 
         # Accumulate: add newly unaddressed args, remove any that were addressed
         addressed_ids = {a.argument_id for a in prev_args if a.status == ArgumentStatus.ADDRESSED}

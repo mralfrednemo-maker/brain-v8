@@ -238,8 +238,10 @@ class Brain:
             log._print(f"\n  [RESUME] Resuming from stage: {st.current_stage}")
             log._print(f"  [RESUME] Completed stages: {' → '.join(st.completed_stages)}")
 
+        run_start_time = time.monotonic()
         proof = ProofBuilder(run_id, brief, self._config.rounds)
         brief_keywords = {w.lower() for w in brief.split() if len(w) >= 4}
+        search_log_entries: list = []
         evidence = EvidenceLedger(
             max_items=self._config.max_evidence_items,
             brief_keywords=brief_keywords,
@@ -528,6 +530,20 @@ class Brain:
                 r1_agreement = position_tracker.agreement_ratio(1)
                 if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):
                     divergence_result.exploration_stress_triggered = True
+                    from thinker.types import FrameInfo, FrameType
+                    seed_frames = [
+                        FrameInfo(
+                            frame_id="SEED-INV", text="What if the opposite of the emerging consensus is true? Argue against the majority position.",
+                            origin_round=1, origin_model="controller", frame_type=FrameType.INVERSION,
+                        ),
+                        FrameInfo(
+                            frame_id="SEED-STAKE", text="Consider the perspective of the stakeholder most harmed by the emerging consensus.",
+                            origin_round=1, origin_model="controller", frame_type=FrameType.OPPOSITE_STANCE,
+                        ),
+                    ]
+                    divergence_result.alt_frames.extend(seed_frames)
+                    divergence_result.stress_seed_frames = [f.to_dict() for f in seed_frames]
+                    log._print(f"  [STRESS] Exploration stress triggered — {len(seed_frames)} seed frames injected")
                 st.divergence = divergence_result.to_dict()
                 proof.set_divergence(divergence_result)
                 alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
@@ -598,15 +614,27 @@ class Brain:
 
                 total_admitted = 0
                 all_search_results: list[SearchResult] = []
+                from thinker.types import SearchLogEntry, QueryProvenance, QueryStatus
                 for query in queries[:self._config.max_search_queries_per_phase]:
                     try:
                         results = await search_orch.execute_query(query, phase)
                     except Exception as e:
+                        search_log_entries.append(SearchLogEntry(
+                            query_id=f"Q-{len(search_log_entries)+1}", query_text=query[:200],
+                            provenance=QueryProvenance.MODEL_CLAIM, issued_after_stage=f"r{round_num}",
+                            query_status=QueryStatus.FAILED,
+                        ))
                         raise BrainError(
                             f"search_round{round_num}",
                             f"Search query failed: {query[:80]}",
                             detail=str(e),
                         )
+                    search_log_entries.append(SearchLogEntry(
+                        query_id=f"Q-{len(search_log_entries)+1}", query_text=query[:200],
+                        provenance=QueryProvenance.MODEL_CLAIM, issued_after_stage=f"r{round_num}",
+                        pages_fetched=len(results),
+                        query_status=QueryStatus.SUCCESS if results else QueryStatus.ZERO_RESULT,
+                    ))
                     all_search_results.extend(results)
 
                 # F4: Fetch full page content for top results
@@ -738,6 +766,12 @@ class Brain:
         synthesis_packet_text = format_synthesis_packet_for_prompt(packet)
         proof.set_synthesis_packet(packet)
 
+        # Record arguments with resolution status in proof
+        all_args = []
+        for rnd_args in argument_tracker.arguments_by_round.values():
+            all_args.extend(rnd_args)
+        proof.set_arguments(all_args)
+
         # --- Synthesis Gate ---
         t0 = time.monotonic()
         final_views = prior_views
@@ -863,14 +897,39 @@ class Brain:
                 f"Synthesis omitted >30% of structural findings ({len(residue_omissions)} omissions)",
             )
 
-        # --- Final ---
+        # --- Final: Wire all remaining proof sections ---
         outcome = gate2.outcome
         proof.set_outcome(outcome, agreement, outcome_class)
         proof.set_final_status("COMPLETE")
         proof.set_evidence_count(len(evidence.items))
 
-        # Two-tier evidence in proof (V9)
+        # Two-tier evidence
         proof.set_evidence_two_tier(evidence.active_items, evidence.archive_items, evidence.eviction_log)
+
+        # Search log
+        proof.set_search_log(search_log_entries)
+
+        # Contradictions (numeric + semantic)
+        proof.set_contradictions(evidence.contradictions, semantic_ctrs)
+
+        # Cross-domain analogies from divergence
+        if divergence_result.cross_domain_analogies:
+            proof.set_analogies(divergence_result.cross_domain_analogies)
+
+        # Stage integrity
+        proof.set_stage_integrity(
+            required=["preflight", "dimensions", "r1", "r2", "r3", "r4", "synthesis", "gate2"],
+            order=self.state.completed_stages,
+            fatal=[],
+        )
+
+        # Diagnostics
+        proof.set_diagnostics({
+            "total_elapsed_s": round(time.monotonic() - run_start_time, 1),
+            "rounds_completed": self._config.rounds,
+            "search_enabled": search_enabled,
+            "models_used": list(set(m for rnd in st.round_responded.values() for m in rnd)),
+        })
 
         # --- Acceptance status (F2) — must be computed last, after all violations ---
         proof.compute_acceptance_status()
