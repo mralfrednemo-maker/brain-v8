@@ -38,13 +38,13 @@ from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BlockerKind, BrainError, BrainResult, Confidence, EvidenceItem, Gate1Result, Outcome, Position, SearchResult
+from thinker.types import ArgumentStatus, BlockerKind, BrainError, BrainResult, Confidence, EvidenceItem, Outcome, Position, SearchResult
 from thinker.preflight import run_preflight
 from thinker.dimension_seeder import run_dimension_seeder, format_dimensions_for_prompt
 from thinker.perspective_cards import extract_perspective_cards, format_perspective_card_instructions
 from thinker.divergent_framing import (
     run_framing_extract, run_frame_survival_check,
-    check_exploration_stress, format_frames_for_prompt, format_r2_frame_enforcement,
+    check_exploration_stress, format_frames_for_prompt,
 )
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
 from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
