@@ -173,9 +173,10 @@ class PositionTracker:
 
             # Try markdown table row with model/framework
             # Handles: | `r1/PCI_DSS` | position | HIGH | qualifier |
+            # Also: | **r1/GDPR** | position | MEDIUM | qualifier |
             # Also: | 1 | `r1/PCI_DSS` | position | HIGH | qualifier | (leading column)
             table_match = re.search(
-                r"\|\s*`?(\w+)/(\w+)`?\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
+                r"\|\s*[*`]*(\w+)/(\w+)[*`]*\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
                 line,
             )
             if table_match:
@@ -191,8 +192,9 @@ class PositionTracker:
                 continue
 
             # Also handle: | `model` | position | HIGH | qualifier | (no framework)
+            # Also: | **model** | position | HIGH | qualifier |
             table_simple = re.search(
-                r"\|\s*`?(\w+)`?\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
+                r"\|\s*[*`]*(\w+)[*`]*\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
                 line,
             )
             if table_simple:
