@@ -3,8 +3,18 @@ from thinker.types import (
     Argument, ArgumentStatus, BrainResult, Blocker, BlockerKind,
     BlockerStatus, Confidence, Contradiction, EvidenceItem, Gate1Result,
     Gate2Assessment, ModelResponse, Outcome, Position, RoundResult, SearchResult,
+    ResolutionStatus, PreflightResult, PremiseFlag, PremiseFlagType,
+    PremiseFlagSeverity, PremiseFlagRouting, DimensionSeedResult, DimensionItem,
+    StabilityResult, FrameInfo, FrameType, FrameSurvivalStatus,
+    AssumptionVerifiability, CriticalAssumption,
 )
 from thinker.config import ROUND_TOPOLOGY, MODEL_REGISTRY, BrainConfig
+
+
+def test_outcome_has_all_values():
+    assert set(o.value for o in Outcome) == {
+        "DECIDE", "ESCALATE", "NO_CONSENSUS", "ANALYSIS", "ERROR", "NEED_MORE"
+    }
 
 
 def test_outcome_values():
@@ -73,3 +83,128 @@ def test_blocker_lifecycle():
     b.status = BlockerStatus.RESOLVED
     b.resolution_note = "All models converged"
     assert b.status == BlockerStatus.RESOLVED
+
+
+# --- V9 Type Tests ---
+
+
+def test_preflight_result_critical_flags():
+    pf = PreflightResult(
+        premise_flags=[
+            PremiseFlag(
+                flag_id="PFLAG-1", flag_type=PremiseFlagType.INTERNAL_CONTRADICTION,
+                severity=PremiseFlagSeverity.CRITICAL, summary="test",
+                routing=PremiseFlagRouting.MANAGEABLE_UNKNOWN,
+            ),
+        ],
+    )
+    assert pf.has_critical_flags is True
+    assert len(pf.unresolved_critical_flags) == 1
+
+
+def test_preflight_result_resolved_critical_not_blocking():
+    pf = PreflightResult(
+        premise_flags=[
+            PremiseFlag(
+                flag_id="PFLAG-1", flag_type=PremiseFlagType.INTERNAL_CONTRADICTION,
+                severity=PremiseFlagSeverity.CRITICAL, summary="test",
+                routing=PremiseFlagRouting.MANAGEABLE_UNKNOWN,
+                resolved=True, resolved_stage="r2",
+            ),
+        ],
+    )
+    assert pf.has_critical_flags is False
+
+
+def test_dimension_seed_result_to_dict():
+    ds = DimensionSeedResult(
+        items=[DimensionItem(dimension_id="DIM-1", name="Legal")],
+        dimension_count=1,
+    )
+    d = ds.to_dict()
+    assert d["seeded"] is True
+    assert len(d["items"]) == 1
+
+
+def test_stability_result_defaults():
+    sr = StabilityResult()
+    assert sr.conclusion_stable is True
+    assert sr.groupthink_warning is False
+
+
+def test_frame_info_to_dict():
+    f = FrameInfo(frame_id="FRAME-1", text="test", frame_type=FrameType.INVERSION)
+    d = f.to_dict()
+    assert d["frame_type"] == "INVERSION"
+    assert d["survival_status"] == "ACTIVE"
+
+
+def test_evidence_item_has_two_tier_fields():
+    e = EvidenceItem(
+        evidence_id="E001", topic="test", fact="test fact",
+        url="https://example.com", confidence=Confidence.HIGH,
+    )
+    assert e.is_active is True
+    assert e.is_archived is False
+    assert e.authority_tier == "STANDARD"
+
+
+def test_argument_has_resolution_status():
+    a = Argument(argument_id="R1-ARG-1", round_num=1, model="r1", text="test")
+    assert a.resolution_status == ResolutionStatus.ORIGINAL
+    assert a.superseded_by is None
+    assert a.open is True
+
+
+def test_preflight_fatal_assumptions():
+    pf = PreflightResult(
+        critical_assumptions=[
+            CriticalAssumption(
+                assumption_id="CA-1", text="Data is real-time",
+                verifiability=AssumptionVerifiability.UNVERIFIABLE, material=True,
+            ),
+        ],
+    )
+    assert pf.has_fatal_assumptions is True
+
+
+def test_preflight_to_dict_roundtrip():
+    pf = PreflightResult()
+    d = pf.to_dict()
+    assert d["answerability"] == "ANSWERABLE"
+    assert d["executed"] is True
+    assert isinstance(d["premise_flags"], list)
+
+
+def test_blocker_new_kinds():
+    b1 = Blocker(
+        blocker_id="BLK-COV", kind=BlockerKind.COVERAGE_GAP,
+        source="dimension:DIM-1", detected_round=2,
+    )
+    b2 = Blocker(
+        blocker_id="BLK-UNV", kind=BlockerKind.UNVERIFIED_CLAIM,
+        source="claim:C-1", detected_round=3,
+    )
+    assert b1.kind == BlockerKind.COVERAGE_GAP
+    assert b2.kind == BlockerKind.UNVERIFIED_CLAIM
+
+
+def test_contradiction_new_fields():
+    c = Contradiction(
+        contradiction_id="CTR-1", evidence_ids=["E1", "E2"],
+        topic="test", severity="HIGH", detection_mode="SEMANTIC",
+        justification="Conflicting data", linked_claim_ids=["C-1"],
+    )
+    assert c.detection_mode == "SEMANTIC"
+    assert len(c.linked_claim_ids) == 1
+
+
+def test_gate2_assessment_rule_trace():
+    g = Gate2Assessment(
+        outcome=Outcome.DECIDE, convergence_ok=True,
+        evidence_credible=True, dissent_addressed=True,
+        enough_data=True, report_honest=True,
+        modality="DECIDE", rule_trace=[{"rule": "D1", "matched": True}],
+    )
+    assert g.modality == "DECIDE"
+    assert len(g.rule_trace) == 1
