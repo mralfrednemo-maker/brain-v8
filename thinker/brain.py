@@ -298,6 +298,24 @@ class Brain:
             st.modality = preflight_result.modality.value
             proof.set_preflight(preflight_result)
 
+            # --- Defect Routing (V9, DESIGN-V3.md Section 1.1) ---
+            from thinker.types import PremiseFlagRouting
+            for flag in preflight_result.premise_flags:
+                if flag.resolved:
+                    continue
+                if flag.routing == PremiseFlagRouting.MANAGEABLE_UNKNOWN:
+                    blocker_ledger.add(
+                        kind=BlockerKind.COVERAGE_GAP,
+                        source=f"preflight:{flag.flag_id}",
+                        detected_round=0,
+                        detail=f"Manageable unknown: {flag.summary}",
+                        models=[],
+                    )
+                    log._print(f"  [DEFECT] {flag.flag_id}: MANAGEABLE_UNKNOWN → blocker registered")
+                elif flag.routing == PremiseFlagRouting.FRAMING_DEFECT:
+                    dimension_text += f"\n\n## Reframing Required (Premise Defect)\n{flag.summary}\nYou MUST engage with this reframing in your analysis.\n"
+                    log._print(f"  [DEFECT] {flag.flag_id}: FRAMING_DEFECT → reframe injected into R1")
+
             if self._checkpoint("preflight"):
                 return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT PREFLIGHT]", preflight=preflight_result)
         else:
