@@ -107,6 +107,16 @@ def _setup_full_mock(mock: MockLLMClient, rounds: int = 3):
     # R2->R3 argument comparison
     mock.add_response("sonnet", "ARG-5: ADDRESSED\nARG-6: ADDRESSED\n")
 
+    # Decisive Claims (V9)
+    mock.add_response("sonnet", (
+        '{"claims": ['
+        '{"claim_id": "DC-1", "text": "Active RCE confirmed via 847 automated requests", '
+        '"material_to_conclusion": true, "evidence_refs": ["E001"], "evidence_support_status": "SUPPORTED"}, '
+        '{"claim_id": "DC-2", "text": "Full shutdown required to contain lateral movement risk", '
+        '"material_to_conclusion": true, "evidence_refs": [], "evidence_support_status": "PARTIAL"}'
+        ']}'
+    ))
+
     # --- Synthesis (returns dual format: markdown + JSON) ---
     mock.add_response("sonnet", (
         "# Deliberation Report\n\n## TL;DR\nAll models converged on full service shutdown (O4).\n"

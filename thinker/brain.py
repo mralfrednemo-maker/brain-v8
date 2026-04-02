@@ -49,6 +49,7 @@ from thinker.divergent_framing import (
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
 from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
 from thinker.stability import run_stability_tests
+from thinker.decisive_claims import extract_decisive_claims
 from thinker.analysis_mode import get_analysis_round_preamble, get_analysis_synthesis_contract
 from thinker.synthesis_packet import build_synthesis_packet, format_synthesis_packet_for_prompt
 from thinker.residue import check_disposition_coverage
@@ -262,6 +263,7 @@ class Brain:
         alt_frames_text = ""
         divergence_result = DivergenceResult()
         semantic_ctrs: list = []
+        decisive_claims: list = []
         is_analysis_mode = False
         stability_result = StabilityResult()
 
@@ -661,13 +663,16 @@ class Brain:
                 total_admitted = 0
                 all_search_results: list[SearchResult] = []
                 from thinker.types import SearchLogEntry, QueryProvenance, QueryStatus
+                # Determine provenance per query
+                ungrounded_qs = set(st.search_queries.get(f"ungrounded_r{round_num}", []))
                 for query in queries[:self._config.max_search_queries_per_phase]:
+                    provenance = QueryProvenance.UNGROUNDED_STAT if query in ungrounded_qs else QueryProvenance.MODEL_CLAIM
                     try:
                         results = await search_orch.execute_query(query, phase)
                     except Exception as e:
                         search_log_entries.append(SearchLogEntry(
                             query_id=f"Q-{len(search_log_entries)+1}", query_text=query[:200],
-                            provenance=QueryProvenance.MODEL_CLAIM, issued_after_stage=f"r{round_num}",
+                            provenance=provenance, issued_after_stage=f"r{round_num}",
                             query_status=QueryStatus.FAILED,
                         ))
                         raise BrainError(
@@ -677,7 +682,7 @@ class Brain:
                         )
                     search_log_entries.append(SearchLogEntry(
                         query_id=f"Q-{len(search_log_entries)+1}", query_text=query[:200],
-                        provenance=QueryProvenance.MODEL_CLAIM, issued_after_stage=f"r{round_num}",
+                        provenance=provenance, issued_after_stage=f"r{round_num}",
                         pages_fetched=len(results),
                         query_status=QueryStatus.SUCCESS if results else QueryStatus.ZERO_RESULT,
                     ))
@@ -796,6 +801,17 @@ class Brain:
             log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
             self._checkpoint("semantic_contradiction")
 
+        # --- Decisive Claim Extraction (V9) ---
+        if not self._stage_done("decisive_claims"):
+            log._print("  [CLAIMS] Extracting decisive claims...")
+            t0 = time.monotonic()
+            decisive_claims = await extract_decisive_claims(
+                self._llm, final_views=prior_views, evidence_text=evidence.format_for_prompt(),
+            )
+            log._print(f"  [CLAIMS] {len(decisive_claims)} decisive claims ({time.monotonic() - t0:.1f}s)")
+            proof.set_decisive_claims(decisive_claims)
+            self._checkpoint("decisive_claims")
+
         # --- Synthesis Packet (V9) ---
         packet = build_synthesis_packet(
             brief=brief,
@@ -803,7 +819,7 @@ class Brain:
             arguments=[a for args in argument_tracker.arguments_by_round.values() for a in args],
             frames=divergence_result.alt_frames if hasattr(divergence_result, 'alt_frames') else [],
             blockers=blocker_ledger.blockers,
-            decisive_claims=[],  # TODO: wire decisive claim extraction
+            decisive_claims=decisive_claims,
             contradictions_numeric=evidence.contradictions,
             contradictions_semantic=semantic_ctrs,
             premise_flags=preflight_result.premise_flags,
@@ -813,6 +829,7 @@ class Brain:
         if is_analysis_mode:
             synthesis_packet_text += get_analysis_synthesis_contract()
         proof.set_synthesis_packet(packet)
+        self._checkpoint("synthesis_packet")
 
         # Record arguments with resolution status in proof
         all_args = []
@@ -838,10 +855,25 @@ class Brain:
         if self._checkpoint("synthesis"):
             return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report=report, preflight=preflight_result)
 
+        # --- ANALYSIS mode proof additions ---
+        if is_analysis_mode:
+            # Analysis map: dimension-keyed from synthesis JSON
+            analysis_map_entries = []
+            if report_json and isinstance(report_json, dict):
+                for key in report_json:
+                    if key.startswith("DIM-") or key in ("aspect_map", "hypothesis_ledger"):
+                        analysis_map_entries.append({key: report_json[key]})
+            proof.set_analysis_map(analysis_map_entries)
+            proof.set_analysis_debug({
+                "debug_mode": True,  # Section 4.6: deployed with debug initially
+                "analysis_mode_active": True,
+                "dimension_coverage_score": dimension_result.dimension_coverage_score,
+            })
+
         # --- Stability Tests (V9) ---
         stability_result = run_stability_tests(
             positions=final_positions,
-            decisive_claims=[],
+            decisive_claims=decisive_claims,
             assumptions=preflight_result.critical_assumptions,
             round_positions=position_tracker.positions_by_round,
             question_class=preflight_result.question_class,
@@ -849,6 +881,7 @@ class Brain:
             independent_evidence_present=evidence.high_authority_evidence_present,
         )
         proof.set_stability(stability_result)
+        self._checkpoint("stability")
         log._print(f"  [STABILITY] conclusion={stability_result.conclusion_stable} "
                    f"reason={stability_result.reason_stable} "
                    f"assumption={stability_result.assumption_stable} "
@@ -929,7 +962,7 @@ class Brain:
             dispositions=disposition_objects,
             open_blockers=blocker_ledger.blockers,
             active_frames=active_frames,
-            decisive_claims=[],
+            decisive_claims=decisive_claims,
             contradictions_numeric=evidence.contradictions,
             contradictions_semantic=semantic_ctrs,
         )
@@ -967,6 +1000,14 @@ class Brain:
 
         # Search log
         proof.set_search_log(search_log_entries)
+
+        # Ungrounded stats
+        ungrounded_proof = []
+        for rnd_key in ["ungrounded_r1", "ungrounded_r2"]:
+            qs = st.search_queries.get(rnd_key, [])
+            if qs:
+                ungrounded_proof.append({"stage": rnd_key, "queries": qs})
+        proof.set_ungrounded_stats(ungrounded_proof)
 
         # Contradictions (numeric + semantic)
         proof.set_contradictions(evidence.contradictions, semantic_ctrs)
