@@ -2,7 +2,7 @@
 
 Usage:
   # Run up to a specific stage, save state, exit:
-  python -m thinker.brain --brief b1.md --stop-after gate1
+  python -m thinker.brain --brief b1.md --stop-after preflight
 
   # Inspect the checkpoint:
   python -m thinker.checkpoint output/checkpoint.json
@@ -13,8 +13,11 @@ Usage:
   # Resume and run to completion:
   python -m thinker.brain --resume output/checkpoint.json
 
-Stage IDs for --stop-after:
-  gate1, r1, track1, search1, r2, track2, search2, r3, track3, synthesis, gate2
+Stage IDs for --stop-after (V9):
+  preflight, dimensions, r1, track1, perspective_cards, framing_pass,
+  ungrounded_r1, search1, r2, track2, frame_survival_r2, ungrounded_r2,
+  search2, r3, track3, frame_survival_r3, r4, track4,
+  semantic_contradiction, synthesis_packet, synthesis, stability, gate2
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-CHECKPOINT_VERSION = "1.0"
+CHECKPOINT_VERSION = "2.0"
 
 
 @dataclass
@@ -31,17 +34,31 @@ class PipelineState:
     """Serializable pipeline state for checkpointing."""
     checkpoint_version: str = CHECKPOINT_VERSION
     brief: str = ""
-    rounds: int = 3
+    rounds: int = 4
     run_id: str = ""
     current_stage: str = ""
     completed_stages: list[str] = field(default_factory=list)
 
-    # Gate 1
+    # Gate 1 (legacy, kept for backward compat)
     gate1_passed: bool = False
     gate1_reasoning: str = ""
     gate1_questions: list[str] = field(default_factory=list)
     gate1_search_recommended: bool = True
     gate1_search_reasoning: str = ""
+
+    # V9: PreflightAssessment
+    preflight: dict = field(default_factory=dict)
+    modality: str = "DECIDE"
+
+    # V9: Dimensions
+    dimensions: dict = field(default_factory=dict)
+
+    # V9: Perspective Cards
+    perspective_cards: list[dict] = field(default_factory=list)
+
+    # V9: Divergence
+    divergence: dict = field(default_factory=dict)
+    adversarial_model: str = ""
 
     # Round outputs
     round_texts: dict[str, dict[str, str]] = field(default_factory=dict)  # {round_num: {model: text}}
@@ -61,6 +78,9 @@ class PipelineState:
     evidence_items: list[dict] = field(default_factory=list)
     evidence_count: int = 0
 
+    # V9: Search log
+    search_log: list[dict] = field(default_factory=list)
+
     # Search
     search_queries: dict[str, list[str]] = field(default_factory=dict)
     search_results: dict[str, int] = field(default_factory=dict)
@@ -72,6 +92,9 @@ class PipelineState:
     # Synthesis
     report: str = ""
     report_json: dict = field(default_factory=dict)
+
+    # V9: Stability
+    stability: dict = field(default_factory=dict)
 
     # Gate 2
     outcome: str = ""
@@ -92,13 +115,17 @@ class PipelineState:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
-# Valid stage IDs in pipeline order
+# Valid stage IDs in pipeline order (V9)
 STAGE_ORDER = [
-    "gate1",
-    "r1", "track1", "search1",
-    "r2", "track2", "search2",
-    "r3", "track3",
-    "synthesis", "gate2",
+    "preflight", "dimensions",
+    "r1", "track1", "perspective_cards", "framing_pass",
+    "ungrounded_r1", "search1",
+    "r2", "track2", "frame_survival_r2",
+    "ungrounded_r2", "search2",
+    "r3", "track3", "frame_survival_r3",
+    "r4", "track4",
+    "semantic_contradiction", "synthesis_packet",
+    "synthesis", "stability", "gate2",
 ]
 
 

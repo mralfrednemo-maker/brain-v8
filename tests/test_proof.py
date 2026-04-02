@@ -9,7 +9,7 @@ class TestProofBuilder:
     def test_schema_version(self):
         pb = ProofBuilder(run_id="test-001", brief="Test brief", rounds_requested=4)
         proof = pb.build()
-        assert proof["proof_schema_version"] == "2.0"
+        assert proof["proof_schema_version"] == "3.0"
         assert proof["run_id"] == "test-001"
 
     def test_records_round_results(self):
@@ -76,27 +76,27 @@ class TestAcceptanceStatus:
         proof = pb.build()
         assert proof["acceptance_status"] == "ACCEPTED"
 
-    def test_accepted_with_warnings_non_consensus(self):
+    def test_review_required_non_consensus(self):
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
         pb.set_outcome(Outcome.DECIDE, agreement_ratio=0.8, outcome_class="CLOSED_WITH_ACCEPTED_RISKS")
         pb.compute_acceptance_status()
         proof = pb.build()
-        assert proof["acceptance_status"] == "ACCEPTED_WITH_WARNINGS"
+        assert proof["acceptance_status"] == "REVIEW_REQUIRED"
 
-    def test_accepted_with_warnings_on_violations(self):
+    def test_review_required_on_violations(self):
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
         pb.set_outcome(Outcome.DECIDE, agreement_ratio=1.0, outcome_class="CONSENSUS")
         pb.add_violation("INV-1", "WARN", "minor issue")
         pb.compute_acceptance_status()
         proof = pb.build()
-        assert proof["acceptance_status"] == "ACCEPTED_WITH_WARNINGS"
+        assert proof["acceptance_status"] == "REVIEW_REQUIRED"
 
-    def test_accepted_with_warnings_on_escalate(self):
+    def test_review_required_on_escalate(self):
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
         pb.set_outcome(Outcome.ESCALATE, agreement_ratio=0.4, outcome_class="NO_CONSENSUS")
         pb.compute_acceptance_status()
         proof = pb.build()
-        assert proof["acceptance_status"] == "ACCEPTED_WITH_WARNINGS"
+        assert proof["acceptance_status"] == "REVIEW_REQUIRED"
 
     def test_never_rejected(self):
         """acceptance_status is never REJECTED — BrainError stops pipeline before proof."""
@@ -106,7 +106,7 @@ class TestAcceptanceStatus:
         pb.add_violation("INV-2", "ERROR", "worse")
         pb.compute_acceptance_status()
         proof = pb.build()
-        assert proof["acceptance_status"] in ("ACCEPTED", "ACCEPTED_WITH_WARNINGS")
+        assert proof["acceptance_status"] in ("ACCEPTED", "REVIEW_REQUIRED")
 
 
 class TestSearchDecision:
@@ -135,3 +135,68 @@ class TestSearchDecision:
         pb.set_search_decision(source="gate1", value=True, reasoning="needs search")
         proof = pb.build()
         assert "gate1_recommended" not in proof["search_decision"]
+
+
+class TestProofV9:
+    """V9 proof schema 3.0 additions."""
+
+    def test_v9_sections_present(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        proof = pb.build()
+        assert proof["protocol_version"] == "v9"
+        assert "preflight" in proof
+        assert "dimensions" in proof
+        assert "stability" in proof
+        assert "gate2" in proof
+
+    def test_set_preflight(self):
+        from thinker.types import PreflightResult
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pf = PreflightResult()
+        pb.set_preflight(pf)
+        proof = pb.build()
+        assert proof["preflight"]["answerability"] == "ANSWERABLE"
+
+    def test_set_dimensions(self):
+        from thinker.types import DimensionSeedResult, DimensionItem
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        ds = DimensionSeedResult(items=[DimensionItem("DIM-1", "Legal")], dimension_count=1)
+        pb.set_dimensions(ds)
+        proof = pb.build()
+        assert proof["dimensions"]["dimension_count"] == 1
+
+    def test_set_stability(self):
+        from thinker.types import StabilityResult
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        sr = StabilityResult(groupthink_warning=True)
+        pb.set_stability(sr)
+        proof = pb.build()
+        assert proof["stability"]["groupthink_warning"] is True
+
+    def test_set_gate2_trace(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_gate2_trace("DECIDE", [{"rule": "D1", "matched": True}], "DECIDE")
+        proof = pb.build()
+        assert proof["gate2"]["modality"] == "DECIDE"
+        assert len(proof["gate2"]["rule_trace"]) == 1
+
+    def test_set_evidence_two_tier(self):
+        from thinker.types import EvidenceItem, Confidence, EvictionEvent
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        active = [EvidenceItem("E001", "t", "f", "https://a.com", Confidence.HIGH)]
+        archive = [EvidenceItem("E002", "t", "f2", "https://b.com", Confidence.LOW)]
+        evlog = [EvictionEvent("EVICT-1", "E002")]
+        pb.set_evidence_two_tier(active, archive, evlog)
+        proof = pb.build()
+        assert proof["evidence"]["active_count"] == 1
+        assert proof["evidence"]["archive_count"] == 1
+
+    def test_set_contradictions(self):
+        from thinker.types import Contradiction, SemanticContradiction
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        numeric = [Contradiction("CTR-1", ["E1", "E2"], "t", "HIGH")]
+        semantic = [SemanticContradiction(ctr_id="CTR-SEM-1")]
+        pb.set_contradictions(numeric, semantic)
+        proof = pb.build()
+        assert len(proof["contradictions"]["numeric"]) == 1
+        assert len(proof["contradictions"]["semantic"]) == 1

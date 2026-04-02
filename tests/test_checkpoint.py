@@ -155,6 +155,15 @@ class TestPositionComponentsRoundTrip:
 class TestStageOrder:
 
     def test_all_stages_present(self):
-        expected = ["gate1", "r1", "track1", "search1", "r2", "track2",
-                    "search2", "r3", "track3", "synthesis", "gate2"]
+        expected = [
+            "preflight", "dimensions",
+            "r1", "track1", "perspective_cards", "framing_pass",
+            "ungrounded_r1", "search1",
+            "r2", "track2", "frame_survival_r2",
+            "ungrounded_r2", "search2",
+            "r3", "track3", "frame_survival_r3",
+            "r4", "track4",
+            "semantic_contradiction", "synthesis_packet",
+            "synthesis", "stability", "gate2",
+        ]
         assert STAGE_ORDER == expected

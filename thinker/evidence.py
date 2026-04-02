@@ -4,6 +4,9 @@ Evidence items are kept in insertion order (search engine's ranking order).
 V8-F3 adds relevance scoring: under cap pressure, the lowest-scored item
 is evicted instead of blindly rejecting new items.
 Cap at max_items. Within the same score tier, insertion order is preserved.
+
+V9: Two-tier ledger — active_items (capped) + archive_items (uncapped).
+Eviction moves to archive, never deletes. Referenced evidence always available.
 """
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ import hashlib
 from typing import Optional
 from urllib.parse import urlparse
 
-from thinker.types import Confidence, EvidenceItem
+from thinker.types import Confidence, EvidenceItem, EvictionEvent
 from thinker.tools.cross_domain import is_cross_domain
 
 # Authoritative domains that get a score boost
@@ -56,14 +59,18 @@ def score_evidence(item: EvidenceItem, brief_keywords: set[str]) -> float:
 class EvidenceLedger:
     """Manages evidence items with dedup, cross-domain filtering, scoring, and cap enforcement.
 
-    Items are kept in search engine ranking order (insertion order).
-    Under cap pressure, the lowest-scored item is evicted if the new
-    item scores higher. Otherwise the new item is rejected.
+    V9 two-tier architecture:
+    - active_items: capped at max_items, used in prompts
+    - archive_items: uncapped, evicted items preserved here
+    - eviction_log: tracks all movements
+    - Never deletes evidence — eviction moves to archive.
     """
 
     def __init__(self, max_items: int = 10, brief_domain: Optional[str] = None,
                  brief_keywords: Optional[set[str]] = None):
-        self.items: list[EvidenceItem] = []
+        self.active_items: list[EvidenceItem] = []
+        self.archive_items: list[EvidenceItem] = []
+        self.eviction_log: list[EvictionEvent] = []
         self.max_items = max_items
         self.brief_domain = brief_domain
         self.brief_keywords: set[str] = brief_keywords or set()
@@ -71,6 +78,47 @@ class EvidenceLedger:
         self._seen_urls: set[str] = set()
         self.cross_domain_rejections: int = 0
         self.contradictions: list = []
+        self._eviction_counter: int = 0
+
+    @property
+    def items(self) -> list[EvidenceItem]:
+        """Backward compatibility: returns active items."""
+        return self.active_items
+
+    @property
+    def all_items(self) -> list[EvidenceItem]:
+        """All evidence items (active + archived)."""
+        return self.active_items + self.archive_items
+
+    @property
+    def high_authority_evidence_present(self) -> bool:
+        """Whether any active evidence has HIGH or AUTHORITATIVE authority tier."""
+        return any(e.authority_tier in ("HIGH", "AUTHORITATIVE") for e in self.active_items)
+
+    def get_from_any(self, evidence_id: str) -> Optional[EvidenceItem]:
+        """Search both active and archive for an evidence item by ID."""
+        for item in self.active_items:
+            if item.evidence_id == evidence_id:
+                return item
+        for item in self.archive_items:
+            if item.evidence_id == evidence_id:
+                return item
+        return None
+
+    def _evict_to_archive(self, item: EvidenceItem, reason: str = "cap_pressure") -> None:
+        """Move an item from active to archive."""
+        self.active_items.remove(item)
+        item.is_active = False
+        item.is_archived = True
+        self.archive_items.append(item)
+        self._eviction_counter += 1
+        self.eviction_log.append(EvictionEvent(
+            event_id=f"EVICT-{self._eviction_counter}",
+            evidence_id=item.evidence_id,
+            from_active=True,
+            to_archive=True,
+            reason=reason,
+        ))
 
     def add(self, item: EvidenceItem) -> bool:
         """Add evidence item. Returns False if rejected.
@@ -78,7 +126,7 @@ class EvidenceLedger:
         Rejection reasons: duplicate content, duplicate URL, cross-domain,
         or lower-scored than all existing items when ledger is full.
         Under cap pressure: if the new item scores higher than the
-        lowest-scored existing item, evict that item and insert the new one.
+        lowest-scored existing item, evict that item to archive.
         """
         # Cross-domain filter
         if self.brief_domain and is_cross_domain(item.fact + " " + item.topic, self.brief_domain):
@@ -96,26 +144,28 @@ class EvidenceLedger:
 
         # Score the new item
         item.score = score_evidence(item, self.brief_keywords)
+        item.is_active = True
+        item.is_archived = False
 
-        # Cap check with eviction
-        if len(self.items) >= self.max_items:
-            min_item = min(self.items, key=lambda e: e.score)
+        # Cap check with eviction to archive
+        if len(self.active_items) >= self.max_items:
+            min_item = min(self.active_items, key=lambda e: e.score)
             if item.score > min_item.score:
-                # Evict the lowest-scored item
+                # Evict the lowest-scored item to archive
                 self._content_hashes.discard(min_item.content_hash)
                 self._seen_urls.discard(min_item.url)
-                self.items.remove(min_item)
+                self._evict_to_archive(min_item, reason="cap_pressure_score_eviction")
             else:
                 return False
 
         self._content_hashes.add(content_hash)
         self._seen_urls.add(item.url)
         item.content_hash = content_hash
-        self.items.append(item)
+        self.active_items.append(item)
 
-        # Check for contradictions with existing items
+        # Check for contradictions with existing active items
         from thinker.tools.contradiction import detect_contradiction
-        for existing in self.items[:-1]:
+        for existing in self.active_items[:-1]:
             ctr = detect_contradiction(existing, item)
             if ctr:
                 self.contradictions.append(ctr)
@@ -123,11 +173,11 @@ class EvidenceLedger:
         return True
 
     def format_for_prompt(self) -> str:
-        """Format all evidence for injection into a model prompt."""
-        if not self.items:
+        """Format active evidence for injection into a model prompt."""
+        if not self.active_items:
             return ""
         lines = []
-        for i, item in enumerate(self.items, 1):
+        for i, item in enumerate(self.active_items, 1):
             lines.append(
                 f"{{{item.evidence_id}}} {item.fact}\n"
                 f"Source: {item.url}\n"

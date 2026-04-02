@@ -175,3 +175,92 @@ class TestEvidenceEviction:
                                     f"https://{i}.com", Confidence.MEDIUM))
         ids = [e.evidence_id for e in ledger.items]
         assert ids == ["E000", "E001", "E002", "E003", "E004"]
+
+
+class TestTwoTierLedger:
+    """V9: Two-tier evidence ledger — active + archive."""
+
+    def test_eviction_moves_to_archive(self):
+        ledger = EvidenceLedger(max_items=2, brief_keywords={"security", "breach"})
+        ledger.add(EvidenceItem("E001", "cooking", "recipe for soup",
+                                "https://recipes.com", Confidence.LOW))
+        ledger.add(EvidenceItem("E002", "gardening", "plant tips",
+                                "https://garden.com", Confidence.LOW))
+        # High-relevance evicts lowest-scored to archive
+        ledger.add(EvidenceItem("E003", "breach", "Major security breach detected",
+                                "https://nvd.nist.gov/breach", Confidence.HIGH))
+        assert len(ledger.active_items) == 2
+        assert len(ledger.archive_items) == 1
+        assert ledger.archive_items[0].is_archived is True
+        assert ledger.archive_items[0].is_active is False
+
+    def test_eviction_log_recorded(self):
+        ledger = EvidenceLedger(max_items=1, brief_keywords={"security"})
+        ledger.add(EvidenceItem("E001", "cooking", "recipe",
+                                "https://recipes.com", Confidence.LOW))
+        ledger.add(EvidenceItem("E002", "security", "breach detected",
+                                "https://nvd.nist.gov/1", Confidence.HIGH))
+        assert len(ledger.eviction_log) == 1
+        assert ledger.eviction_log[0].evidence_id == "E001"
+
+    def test_get_from_any_searches_both(self):
+        ledger = EvidenceLedger(max_items=1, brief_keywords={"security"})
+        ledger.add(EvidenceItem("E001", "cooking", "recipe",
+                                "https://recipes.com", Confidence.LOW))
+        ledger.add(EvidenceItem("E002", "security", "breach detected",
+                                "https://nvd.nist.gov/1", Confidence.HIGH))
+        # E001 is in archive, E002 is active
+        assert ledger.get_from_any("E001") is not None
+        assert ledger.get_from_any("E002") is not None
+        assert ledger.get_from_any("E999") is None
+
+    def test_all_items_returns_both(self):
+        ledger = EvidenceLedger(max_items=1, brief_keywords={"security"})
+        ledger.add(EvidenceItem("E001", "cooking", "recipe",
+                                "https://recipes.com", Confidence.LOW))
+        ledger.add(EvidenceItem("E002", "security", "breach detected",
+                                "https://nvd.nist.gov/1", Confidence.HIGH))
+        assert len(ledger.all_items) == 2
+
+    def test_items_backward_compat(self):
+        ledger = EvidenceLedger(max_items=10)
+        ledger.add(EvidenceItem("E001", "t", "fact", "https://a.com", Confidence.HIGH))
+        assert ledger.items is ledger.active_items
+        assert len(ledger.items) == 1
+
+    def test_high_authority_evidence_present(self):
+        ledger = EvidenceLedger(max_items=10)
+        ledger.add(EvidenceItem("E001", "t", "fact", "https://a.com", Confidence.HIGH,
+                                authority_tier="HIGH"))
+        assert ledger.high_authority_evidence_present is True
+
+    def test_high_authority_not_present(self):
+        ledger = EvidenceLedger(max_items=10)
+        ledger.add(EvidenceItem("E001", "t", "fact", "https://a.com", Confidence.HIGH))
+        assert ledger.high_authority_evidence_present is False
+
+    def test_format_only_uses_active(self):
+        ledger = EvidenceLedger(max_items=1, brief_keywords={"security"})
+        ledger.add(EvidenceItem("E001", "cooking", "recipe for soup",
+                                "https://recipes.com", Confidence.LOW))
+        ledger.add(EvidenceItem("E002", "security", "breach detected",
+                                "https://nvd.nist.gov/1", Confidence.HIGH))
+        text = ledger.format_for_prompt()
+        assert "{E002}" in text
+        assert "{E001}" not in text  # archived, not in prompt
+
+    def test_never_deletes_evidence(self):
+        """V9 guarantee: eviction moves to archive, never deletes."""
+        ledger = EvidenceLedger(max_items=1, brief_keywords={"security"})
+        # Add low-relevance item first
+        ledger.add(EvidenceItem("E001", "cooking", "recipe",
+                                "https://recipes.com", Confidence.LOW))
+        # Higher-relevance evicts to archive
+        ledger.add(EvidenceItem("E002", "security", "breach found",
+                                "https://nvd.nist.gov/1", Confidence.HIGH))
+        # Verify: 1 active + 1 archive = 2 total, nothing deleted
+        assert len(ledger.active_items) == 1
+        assert len(ledger.archive_items) == 1
+        assert len(ledger.all_items) == 2
+        # Archived item still accessible
+        assert ledger.get_from_any("E001") is not None

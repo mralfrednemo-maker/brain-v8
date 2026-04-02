@@ -1,7 +1,10 @@
 """Proof.json builder — the machine-readable audit trail.
 
-Schema 2.0, compatible with V7 proof format. Every position, every evidence
-item, every disagreement, every decision is recorded here.
+Schema 3.0 (V9). Adds: preflight, dimensions, perspective_cards, divergence,
+search_log, ungrounded_stats, two-tier evidence, arguments with resolution,
+decisive_claims, cross_domain_analogies, semantic contradictions,
+synthesis_packet, synthesis dispositions, stability, gate2 rule_trace,
+stage_integrity, analysis_map, analysis_debug, diagnostics.
 """
 from __future__ import annotations
 
@@ -35,6 +38,30 @@ class ProofBuilder:
         self._synthesis_residue_omissions: list[dict] = []
         self._search_decision: Optional[dict] = None
         self._v3_outcome_class: str = "not applicable"
+        # V9 additions
+        self._preflight: Optional[dict] = None
+        self._dimensions: Optional[dict] = None
+        self._perspective_cards: Optional[list[dict]] = None
+        self._divergence: Optional[dict] = None
+        self._search_log: list[dict] = []
+        self._ungrounded_stats: list[dict] = []
+        self._evidence_active: list[dict] = []
+        self._evidence_archive: list[dict] = []
+        self._eviction_log: list[dict] = []
+        self._arguments: list[dict] = []
+        self._decisive_claims: list[dict] = []
+        self._cross_domain_analogies: list[dict] = []
+        self._contradictions_numeric: list[dict] = []
+        self._contradictions_semantic: list[dict] = []
+        self._synthesis_packet: Optional[dict] = None
+        self._synthesis_dispositions: list[dict] = []
+        self._stability: Optional[dict] = None
+        self._gate2_trace: Optional[dict] = None
+        self._stage_integrity: Optional[dict] = None
+        self._analysis_map: list[dict] = []
+        self._analysis_debug: Optional[dict] = None
+        self._diagnostics: dict = {}
+        self._residue_verification: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -90,7 +117,7 @@ class ProofBuilder:
         """Compute acceptance_status from run metrics.
 
         ACCEPTED: clean run — DECIDE outcome, CONSENSUS class, no violations.
-        ACCEPTED_WITH_WARNINGS: anything else (non-fatal issues).
+        V9: ACCEPTED_WITH_WARNINGS removed. Now just ACCEPTED or outcome-based.
         Never REJECTED — if fatal, BrainError stops the pipeline before proof.
         """
         from thinker.types import AcceptanceStatus
@@ -99,10 +126,7 @@ class ProofBuilder:
             and self._outcome.get("outcome_class") == "CONSENSUS"
             and len(self._invariant_violations) == 0
         )
-        if is_clean:
-            self._acceptance_status = AcceptanceStatus.ACCEPTED.value
-        else:
-            self._acceptance_status = AcceptanceStatus.ACCEPTED_WITH_WARNINGS.value
+        self._acceptance_status = AcceptanceStatus.ACCEPTED.value if is_clean else "REVIEW_REQUIRED"
 
     def set_synthesis_residue(self, omissions: list[dict]):
         self._synthesis_residue_omissions = omissions
@@ -133,6 +157,130 @@ class ProofBuilder:
             "id": violation_id, "severity": severity, "detail": detail,
         })
 
+    # --- V9 Setters ---
+
+    def set_preflight(self, result) -> None:
+        """Set preflight assessment result (PreflightResult.to_dict())."""
+        self._preflight = result.to_dict() if hasattr(result, 'to_dict') else result
+
+    def set_dimensions(self, result) -> None:
+        """Set dimension seeder result (DimensionSeedResult.to_dict())."""
+        self._dimensions = result.to_dict() if hasattr(result, 'to_dict') else result
+
+    def set_perspective_cards(self, cards: list) -> None:
+        """Set perspective cards list."""
+        self._perspective_cards = [c.to_dict() if hasattr(c, 'to_dict') else c for c in cards]
+
+    def set_divergence(self, result) -> None:
+        """Set divergence/framing result."""
+        self._divergence = result.to_dict() if hasattr(result, 'to_dict') else result
+
+    def set_search_log(self, entries: list) -> None:
+        """Set search log entries."""
+        self._search_log = [e.to_dict() if hasattr(e, 'to_dict') else e for e in entries]
+
+    def set_ungrounded_stats(self, data: list[dict]) -> None:
+        """Set ungrounded statistic detection results."""
+        self._ungrounded_stats = data
+
+    def set_evidence_two_tier(self, active: list, archive: list, eviction_log: list) -> None:
+        """Set two-tier evidence data."""
+        self._evidence_active = [
+            {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
+             "url": e.url, "confidence": e.confidence.value, "score": e.score,
+             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
+            if hasattr(e, 'evidence_id') else e
+            for e in active
+        ]
+        self._evidence_archive = [
+            {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
+             "url": e.url, "confidence": e.confidence.value, "score": e.score,
+             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
+            if hasattr(e, 'evidence_id') else e
+            for e in archive
+        ]
+        self._eviction_log = [
+            ev.to_dict() if hasattr(ev, 'to_dict') else ev for ev in eviction_log
+        ]
+
+    def set_arguments(self, arguments: list) -> None:
+        """Set argument map with resolution status."""
+        self._arguments = [
+            {"argument_id": a.argument_id, "round_num": a.round_num, "model": a.model,
+             "text": a.text, "status": a.status.value, "resolution_status": a.resolution_status.value,
+             "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
+             "evidence_refs": a.evidence_refs, "open": a.open}
+            if hasattr(a, 'argument_id') else a
+            for a in arguments
+        ]
+
+    def set_decisive_claims(self, claims: list) -> None:
+        """Set decisive claims."""
+        self._decisive_claims = [c.to_dict() if hasattr(c, 'to_dict') else c for c in claims]
+
+    def set_analogies(self, analogies: list) -> None:
+        """Set cross-domain analogies."""
+        self._cross_domain_analogies = [a.to_dict() if hasattr(a, 'to_dict') else a for a in analogies]
+
+    def set_contradictions(self, numeric: list, semantic: list) -> None:
+        """Set both numeric and semantic contradictions."""
+        self._contradictions_numeric = [
+            {"contradiction_id": c.contradiction_id, "evidence_ids": c.evidence_ids,
+             "topic": c.topic, "severity": c.severity, "status": c.status,
+             "detection_mode": c.detection_mode}
+            if hasattr(c, 'contradiction_id') else c
+            for c in numeric
+        ]
+        self._contradictions_semantic = [
+            c.to_dict() if hasattr(c, 'to_dict') else c for c in semantic
+        ]
+
+    def set_synthesis_packet(self, packet: dict) -> None:
+        """Set synthesis packet data."""
+        self._synthesis_packet = packet
+
+    def set_synthesis_dispositions(self, dispositions: list) -> None:
+        """Set synthesis dispositions."""
+        self._synthesis_dispositions = [
+            d.to_dict() if hasattr(d, 'to_dict') else d for d in dispositions
+        ]
+
+    def set_stability(self, result) -> None:
+        """Set stability test results."""
+        self._stability = result.to_dict() if hasattr(result, 'to_dict') else result
+
+    def set_gate2_trace(self, modality: str, rule_trace: list[dict], final_outcome: str) -> None:
+        """Set gate2 rule evaluation trace."""
+        self._gate2_trace = {
+            "modality": modality,
+            "rule_trace": rule_trace,
+            "final_outcome": final_outcome,
+        }
+
+    def set_stage_integrity(self, required: list[str], order: list[str], fatal: list[str]) -> None:
+        """Set stage integrity tracking."""
+        self._stage_integrity = {
+            "required_stages": required,
+            "execution_order": order,
+            "fatal_failures": fatal,
+        }
+
+    def set_residue_verification(self, data: dict) -> None:
+        """Set residue verification results."""
+        self._residue_verification = data
+
+    def set_analysis_map(self, entries: list) -> None:
+        """Set analysis map entries (ANALYSIS mode)."""
+        self._analysis_map = entries
+
+    def set_analysis_debug(self, data: dict) -> None:
+        """Set analysis debug data."""
+        self._analysis_debug = data
+
+    def set_diagnostics(self, data: dict) -> None:
+        """Set diagnostics data."""
+        self._diagnostics = data
+
     def build(self) -> dict:
         """Build the complete proof.json dict."""
         blocker_list = []
@@ -153,19 +301,59 @@ class ProofBuilder:
                 })
             blocker_summary = self._blocker_ledger.summary()
 
-        return {
-            "proof_schema_version": "2.0",
+        proof = {
+            "proof_schema_version": "3.0",
             "run_id": self._run_id,
             "timestamp": self._timestamp,
-            "protocol_version": "v8",
+            "protocol_version": "v9",
             "rounds_requested": self._rounds_requested,
             "final_status": self._final_status,
             "synthesis_status": self._synthesis_status,
             "acceptance_status": self._acceptance_status,
             "search_decision": self._search_decision,
             "v3_outcome_class": self._v3_outcome_class,
-            "rounds": self._rounds,
+            # V9 new sections
+            "preflight": self._preflight,
+            "dimensions": self._dimensions,
+            "perspective_cards": self._perspective_cards,
+            "divergence": self._divergence,
+            "search_log": self._search_log,
+            "ungrounded_stats": self._ungrounded_stats,
+            # Evidence (two-tier)
+            "evidence": {
+                "active": self._evidence_active,
+                "archive": self._evidence_archive,
+                "eviction_log": self._eviction_log,
+                "active_count": len(self._evidence_active),
+                "archive_count": len(self._evidence_archive),
+            } if self._evidence_active or self._evidence_archive else None,
             "evidence_items": self._evidence_items,
+            # Arguments with resolution
+            "arguments": self._arguments if self._arguments else None,
+            "decisive_claims": self._decisive_claims if self._decisive_claims else None,
+            "cross_domain_analogies": self._cross_domain_analogies if self._cross_domain_analogies else None,
+            # Contradictions (numeric + semantic)
+            "contradictions": {
+                "numeric": self._contradictions_numeric,
+                "semantic": self._contradictions_semantic,
+            } if self._contradictions_numeric or self._contradictions_semantic else None,
+            # Synthesis
+            "synthesis_packet": self._synthesis_packet,
+            "synthesis_dispositions": self._synthesis_dispositions if self._synthesis_dispositions else None,
+            "residue_verification": self._residue_verification,
+            # Stability
+            "stability": self._stability,
+            # Gate 2
+            "gate2": self._gate2_trace,
+            # Stage integrity
+            "stage_integrity": self._stage_integrity,
+            # Analysis mode
+            "analysis_map": self._analysis_map if self._analysis_map else None,
+            "analysis_debug": self._analysis_debug,
+            # Diagnostics
+            "diagnostics": self._diagnostics if self._diagnostics else None,
+            # Existing sections
+            "rounds": self._rounds,
             "research_phases": self._research_phases,
             "controller_outcome": self._outcome,
             "model_positions_by_round": self._positions,
@@ -175,3 +363,4 @@ class ProofBuilder:
             "invariant_violations": self._invariant_violations,
             "synthesis_residue_omissions": self._synthesis_residue_omissions,
         }
+        return proof
