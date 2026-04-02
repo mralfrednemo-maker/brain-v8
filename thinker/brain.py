@@ -271,12 +271,52 @@ class Brain:
                 argument_tracker, position_tracker, evidence,
             )
             # Restore V9 state from checkpoint
+            from thinker.types import (
+                Answerability, QuestionClass, StakesClass, EffortTier, SearchScope,
+                DimensionItem, FrameInfo, FrameType, FrameSurvivalStatus,
+            )
             if st.preflight:
+                pf = st.preflight
                 preflight_result = PreflightResult(
-                    modality=Modality(st.preflight.get("modality", "DECIDE")),
+                    answerability=Answerability(pf.get("answerability", "ANSWERABLE")),
+                    question_class=QuestionClass(pf.get("question_class", "OPEN")),
+                    stakes_class=StakesClass(pf.get("stakes_class", "STANDARD")),
+                    effort_tier=EffortTier(pf.get("effort_tier", "STANDARD")),
+                    modality=Modality(pf.get("modality", "DECIDE")),
+                    search_scope=SearchScope(pf.get("search_scope", "TARGETED")),
+                    exploration_required=pf.get("exploration_required", False),
+                    short_circuit_allowed=pf.get("short_circuit_allowed", False),
+                    fatal_premise=pf.get("fatal_premise", False),
+                    reasoning=pf.get("reasoning", ""),
                 )
             if st.dimensions:
-                dimension_result = DimensionSeedResult()
+                dim = st.dimensions
+                items = [DimensionItem(
+                    dimension_id=d.get("dimension_id", ""),
+                    name=d.get("name", ""),
+                ) for d in dim.get("items", [])]
+                dimension_result = DimensionSeedResult(
+                    items=items, dimension_count=dim.get("dimension_count", 0),
+                )
+                dimension_text = format_dimensions_for_prompt(dimension_result.items)
+            if st.divergence:
+                div = st.divergence
+                divergence_result = DivergenceResult(
+                    framing_pass_executed=div.get("framing_pass_executed", False),
+                    exploration_stress_triggered=div.get("exploration_stress_triggered", False),
+                )
+                for f_data in div.get("alt_frames", []):
+                    try:
+                        divergence_result.alt_frames.append(FrameInfo(
+                            frame_id=f_data.get("frame_id", ""),
+                            text=f_data.get("text", ""),
+                            frame_type=FrameType(f_data.get("frame_type", "INVERSION")),
+                            survival_status=FrameSurvivalStatus(f_data.get("survival_status", "ACTIVE")),
+                            material_to_outcome=f_data.get("material_to_outcome", True),
+                        ))
+                    except (ValueError, KeyError):
+                        pass
+                alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
         else:
             prior_views = {}
             unaddressed_text = ""
