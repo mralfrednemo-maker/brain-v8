@@ -42,7 +42,7 @@ class TestSynthesisExecution:
             '"key_findings": ["RCE confirmed"], "risk_factors": [], '
             '"evidence_cited": ["E001"], "unresolved_questions": []}'
         ))
-        markdown, json_data = await run_synthesis(
+        markdown, json_data, _dispositions = await run_synthesis(
             mock_llm, brief="Brief", final_views={"r1": "v", "reasoner": "v"},
             blocker_summary={}, outcome_class="CONSENSUS",
         )
@@ -56,7 +56,7 @@ class TestSynthesisExecution:
         mock_llm.add_response("sonnet", (
             "# Deliberation Report\n\n## TL;DR\nModels reached consensus.\n"
         ))
-        markdown, json_data = await run_synthesis(
+        markdown, json_data, _dispositions = await run_synthesis(
             mock_llm, brief="Brief", final_views={"r1": "v"},
             blocker_summary={}, outcome_class="CONSENSUS",
         )
@@ -75,7 +75,7 @@ class TestSynthesisExecution:
     async def test_outcome_class_appended(self, mock_llm):
         """outcome_class is appended to markdown and json_data."""
         mock_llm.add_response("sonnet", "# Report\n\n---JSON---\n\n{}")
-        markdown, json_data = await run_synthesis(
+        markdown, json_data, _dispositions = await run_synthesis(
             mock_llm, brief="Brief", final_views={"r1": "v"},
             blocker_summary={}, outcome_class="PARTIAL_CONSENSUS",
         )

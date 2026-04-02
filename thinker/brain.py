@@ -741,7 +741,7 @@ class Brain:
         # --- Synthesis Gate ---
         t0 = time.monotonic()
         final_views = prior_views
-        report, report_json = await run_synthesis(
+        report, report_json, dispositions = await run_synthesis(
             self._llm, brief=brief, final_views=final_views,
             blocker_summary=blocker_ledger.summary(),
             outcome_class=outcome_class,
@@ -815,7 +815,41 @@ class Brain:
         for v in inv_violations:
             proof.add_violation(v["id"], v["severity"], v["detail"])
 
-        # --- Post-synthesis residue verification (F1) ---
+        # --- V9: Disposition Coverage Verification ---
+        from thinker.types import DispositionObject, DispositionTargetType, FrameSurvivalStatus
+        disposition_objects = []
+        for d in dispositions:
+            try:
+                disposition_objects.append(DispositionObject(
+                    target_type=DispositionTargetType(d["target_type"]),
+                    target_id=d["target_id"],
+                    status=d["status"],
+                    importance=d["importance"],
+                    narrative_explanation=d["narrative_explanation"],
+                ))
+            except (ValueError, KeyError):
+                pass
+
+        active_frames = [f for f in divergence_result.alt_frames
+                         if f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
+        coverage = check_disposition_coverage(
+            dispositions=disposition_objects,
+            open_blockers=blocker_ledger.blockers,
+            active_frames=active_frames,
+            decisive_claims=[],
+            contradictions_numeric=evidence.contradictions,
+            contradictions_semantic=semantic_ctrs,
+        )
+        proof.set_residue_verification(coverage)
+        proof.set_synthesis_dispositions(disposition_objects)
+
+        if coverage.get("deep_scan_triggered"):
+            proof.add_violation(
+                "RESIDUE-COVERAGE", "WARN",
+                f"Disposition omission rate {coverage['omission_rate']:.0%} > 20% threshold",
+            )
+
+        # --- Legacy string-match residue check (supplementary) ---
         residue_omissions = check_synthesis_residue(
             report=report,
             blockers=blocker_ledger.blockers,

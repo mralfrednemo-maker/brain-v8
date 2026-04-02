@@ -68,7 +68,18 @@ SECTION 2: JSON object (fill fields if applicable, use "N/A" if not)
   "risk_factors": [{{"risk": "...", "severity": "...", "mitigation": "..."}}],
   "evidence_cited": ["E001", "E002"],
   "unresolved_questions": ["...", "..."]
-}}"""
+}}
+
+---DISPOSITIONS---
+
+SECTION 3: Structured dispositions (one per line)
+For EVERY open finding listed in the Curated State Bundle (open blockers, active/contested frames,
+decisive claims, unresolved contradictions), emit a disposition line:
+
+DISPOSITION: [BLOCKER|FRAME|CLAIM|CONTRADICTION] | [target_id] | [RESOLVED|DEFERRED|ACCEPTED_RISK|MITIGATED] | [LOW|MEDIUM|HIGH|CRITICAL] | [one-sentence explanation]
+
+If you cannot address a finding, still emit DISPOSITION with status DEFERRED and explain why.
+Omitting dispositions for open findings is a compliance failure."""
 
 
 def build_synthesis_prompt(
@@ -95,26 +106,47 @@ def build_synthesis_prompt(
     return prompt
 
 
-def parse_synthesis_output(text: str) -> tuple[str, dict]:
-    """Split synthesis output into markdown report and JSON object.
+def parse_synthesis_output(text: str) -> tuple[str, dict, list[dict]]:
+    """Split synthesis output into markdown report, JSON object, and dispositions.
 
-    Returns (markdown_report, json_data). If JSON parsing fails,
-    json_data is a dict with error info.
+    Returns (markdown_report, json_data, dispositions).
     """
     import json
+
+    dispositions = []
+
+    # Extract dispositions section first
+    if "---DISPOSITIONS---" in text:
+        parts = text.split("---DISPOSITIONS---", 1)
+        text = parts[0]
+        disp_text = parts[1].strip()
+        # Also split off JSON if it appears after dispositions
+        if "---JSON---" in disp_text:
+            disp_text, extra = disp_text.split("---JSON---", 1)
+            text = text + "---JSON---" + extra
+        for line in disp_text.split("\n"):
+            line = line.strip()
+            if line.startswith("DISPOSITION:"):
+                parts_d = [p.strip() for p in line[len("DISPOSITION:"):].split("|")]
+                if len(parts_d) >= 5:
+                    dispositions.append({
+                        "target_type": parts_d[0],
+                        "target_id": parts_d[1],
+                        "status": parts_d[2],
+                        "importance": parts_d[3],
+                        "narrative_explanation": parts_d[4],
+                    })
 
     if "---JSON---" in text:
         parts = text.split("---JSON---", 1)
         markdown = parts[0].strip()
         json_text = parts[1].strip()
     else:
-        # LLM didn't follow format — treat whole thing as markdown
         markdown = text.strip()
         json_text = ""
 
     json_data = {}
     if json_text:
-        # Strip markdown code fences if present
         json_text = json_text.strip()
         if json_text.startswith("```"):
             json_text = "\n".join(json_text.split("\n")[1:])
@@ -125,7 +157,7 @@ def parse_synthesis_output(text: str) -> tuple[str, dict]:
         except json.JSONDecodeError:
             json_data = {"parse_error": "Failed to parse JSON section", "raw": json_text[:500]}
 
-    return markdown, json_data
+    return markdown, json_data, dispositions
 
 
 @pipeline_stage(
@@ -152,11 +184,11 @@ async def run_synthesis(
     outcome_class: str = "",
     evidence_text: str = "",
     synthesis_packet_text: str = "",
-) -> tuple[str, dict]:
-    """Run the Synthesis Gate. Returns (markdown_report, json_data).
+) -> tuple[str, dict, list[dict]]:
+    """Run the Synthesis Gate. Returns (markdown_report, json_data, dispositions).
 
     The outcome_class is appended to both outputs after the LLM call.
-    V9: Accepts curated synthesis packet text for richer context.
+    V9: Accepts curated synthesis packet text + returns structured dispositions.
     """
     prompt = build_synthesis_prompt(
         brief, final_views, blocker_summary,
@@ -170,11 +202,11 @@ async def run_synthesis(
         raise BrainError("synthesis", f"Synthesis gate LLM call failed: {resp.error}",
                          detail="Cannot produce deliberation report without a working Sonnet call.")
 
-    markdown, json_data = parse_synthesis_output(resp.text)
+    markdown, json_data, dispositions = parse_synthesis_output(resp.text)
 
     # Append deterministic classification
     if outcome_class:
         markdown += f"\n\n---\n**Classification: {outcome_class}**\n"
         json_data["outcome_class"] = outcome_class
 
-    return markdown, json_data
+    return markdown, json_data, dispositions
