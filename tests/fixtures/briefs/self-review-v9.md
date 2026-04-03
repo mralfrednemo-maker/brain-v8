@@ -1411,6 +1411,11 @@ class Contradiction:
     detection_mode: str = "NUMERIC"  # NUMERIC, SEMANTIC
     justification: str = ""
     linked_claim_ids: list[str] = field(default_factory=list)
+    # DOD §12.1 unified schema fields
+    evidence_ref_a: str = ""
+    evidence_ref_b: str = ""
+    same_entity: bool = False
+    same_timeframe: bool = False
 
 
 @dataclass
@@ -2843,7 +2848,7 @@ class Brain:
         all_args = []
         for rnd_args in argument_tracker.arguments_by_round.values():
             all_args.extend(rnd_args)
-        proof.set_arguments(all_args)
+        proof.set_arguments(all_args, blocker_ledger=blocker_ledger)
 
         # --- Synthesis Gate ---
         t0 = time.monotonic()
@@ -2977,14 +2982,11 @@ class Brain:
                 all_evidence_refs.extend(a.evidence_refs)
             phantom_refs = evidence.validate_refs(all_evidence_refs)
             if phantom_refs:
-                # DOD §10.3 + §1.2: phantom evidence is not infrastructure failure → ESCALATE via blocker
-                blocker_ledger.add(
-                    kind=BlockerKind.UNVERIFIED_CLAIM,
-                    source="evidence_validation",
-                    detected_round=self._config.rounds,
-                    detail=f"Cited evidence missing from both stores: {phantom_refs[:5]}",
-                    models=[],
-                    severity="CRITICAL",
+                # DOD §10.3 + §3.3: cited evidence missing = fatal integrity → ERROR
+                raise BrainError(
+                    "evidence_validation",
+                    f"Cited evidence missing from both stores: {phantom_refs[:5]}",
+                    detail=f"DOD §10.3: {len(phantom_refs)} phantom evidence refs. FATAL_INTEGRITY.",
                 )
 
         # --- V9: Disposition Coverage Verification (runs BEFORE Gate 2 per DOD §14.6) ---
@@ -3069,21 +3071,15 @@ class Brain:
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 
-        # DOD §11.3: broken supersession links → ERROR (BEFORE Gate 2)
-        # Register as both violation AND blocker so D1/D6 can see it
+        # DOD §11.3: broken supersession links → ERROR
+        # These are prevented by construction: argument_tracker validates IDs and falls
+        # back to REFINED when Sonnet hallucninates a target. superseded_by is never set
+        # to a bad ID in proof.json. Violations logged for audit transparency.
         for bl in argument_tracker._broken_supersession_links:
             proof.add_violation(
                 "SUPERSESSION-BROKEN", "ERROR",
-                f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
-                f"but target not found: {bl['reason']}",
-            )
-            blocker_ledger.add(
-                kind=BlockerKind.COVERAGE_GAP,
-                source="supersession_validation",
-                detected_round=self._config.rounds,
-                detail=f"Broken supersession link: {bl['argument_id']} → {bl['claimed_superseded_by']}",
-                models=[],
-                severity="CRITICAL",
+                f"Argument {bl['argument_id']}: LLM claimed superseded_by {bl['claimed_superseded_by']} "
+                f"but target not found — fell back to REFINED (link not written to proof)",
             )
 
         # Merge numeric + semantic contradictions for Gate 2 (DOD §16 D8)
@@ -6533,17 +6529,26 @@ class ProofBuilder:
             ev.to_dict() if hasattr(ev, 'to_dict') else ev for ev in eviction_log
         ]
 
-    def set_arguments(self, arguments: list) -> None:
+    def set_arguments(self, arguments: list, blocker_ledger=None) -> None:
         """Set argument map with resolution status (DOD §19: object keyed by argument_id)."""
+        # Build dimension→blocker mapping for blocker_link_ids
+        dim_blockers: dict[str, list[str]] = {}
+        if blocker_ledger:
+            for b in blocker_ledger.blockers:
+                if b.source.startswith("dimension:"):
+                    dim_id = b.source.split(":", 1)[1]
+                    dim_blockers.setdefault(dim_id, []).append(b.blocker_id)
+
         self._arguments = {}
         for a in arguments:
             if hasattr(a, 'argument_id'):
+                links = dim_blockers.get(a.dimension_id, []) if a.dimension_id else []
                 self._arguments[a.argument_id] = {
                     "argument_id": a.argument_id, "round_origin": a.round_num,
                     "model_id": a.model, "text": a.text,
                     "status": a.status.value, "resolution_status": a.resolution_status.value,
                     "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
-                    "blocker_link_ids": [], "evidence_refs": a.evidence_refs, "open": a.open,
+                    "blocker_link_ids": links, "evidence_refs": a.evidence_refs, "open": a.open,
                 }
             else:
                 key = a.get("argument_id", f"arg-{len(self._arguments)}")
@@ -6562,8 +6567,10 @@ class ProofBuilder:
         self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
             {"contradiction_id": c.contradiction_id, "evidence_ids": c.evidence_ids,
+             "evidence_ref_a": c.evidence_ref_a, "evidence_ref_b": c.evidence_ref_b,
+             "same_entity": c.same_entity, "same_timeframe": c.same_timeframe,
              "topic": c.topic, "severity": c.severity, "status": c.status,
-             "detection_mode": c.detection_mode}
+             "detection_mode": c.detection_mode, "linked_claim_ids": c.linked_claim_ids}
             if hasattr(c, 'contradiction_id') else c
             for c in numeric
         ]
@@ -7149,20 +7156,24 @@ class ArgumentTracker:
                 # Set superseded_by if valid (DOD §11.3)
                 if superseded_by_id:
                     if superseded_by_id in valid_curr_ids:
+                        # Fully resolved: explicit lineage link
                         arg.resolution_status = ResolutionStatus.SUPERSEDED
                         arg.superseded_by = superseded_by_id
+                        arg.open = False
                     else:
-                        # DOD §11.3: "Supersession link broken → ERROR"
-                        # Log as broken link; fall back to REFINED since LLM may hallucinate IDs
+                        # DOD §11.3: broken link — log and keep open
                         arg.resolution_status = ResolutionStatus.REFINED
+                        arg.open = True  # DOD §11.2: no lineage = not resolved
                         self._broken_supersession_links.append({
                             "argument_id": arg.argument_id,
                             "claimed_superseded_by": superseded_by_id,
                             "reason": "target ID not found in current round arguments",
                         })
                 else:
+                    # DOD §11.2: "Restatement without explicit linkage is NOT resolution"
+                    # ADDRESSED without supersession tag = engaged but not formally resolved
                     arg.resolution_status = ResolutionStatus.REFINED
-                arg.open = False
+                    arg.open = True
 
         # Accumulate: add newly unaddressed args, remove any that were addressed
         addressed_ids = {a.argument_id for a in prev_args if a.status == ArgumentStatus.ADDRESSED}

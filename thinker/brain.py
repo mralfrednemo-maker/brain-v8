@@ -1113,6 +1113,16 @@ class Brain:
         proof.set_residue_verification(coverage)
         proof.set_synthesis_dispositions(disposition_objects)
 
+        # DOD §14.5: "coverage_pass = true required on all non-ERROR runs"
+        if not coverage.get("coverage_pass") and coverage.get("total_required", 0) > 0:
+            # Missing dispositions for tracked findings → ERROR per DOD §14.6
+            raise BrainError(
+                "disposition_coverage",
+                f"Disposition coverage failed: {coverage.get('omission_rate', 0):.0%} omission rate, "
+                f"{len(coverage.get('omissions', []))} missing dispositions",
+                detail="DOD §14.5: coverage_pass = true required on all non-ERROR runs.",
+            )
+
         if coverage.get("deep_scan_triggered"):
             # DOD §14.6: deep scan MUST run when triggered
             deep_scan_result = run_deep_semantic_scan(report, coverage.get("omissions", []))
@@ -1196,6 +1206,7 @@ class Brain:
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
             stage_integrity_fatal=fatal_stages if fatal_stages else None,
+            analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,

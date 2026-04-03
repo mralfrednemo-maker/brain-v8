@@ -255,6 +255,7 @@ class ErrorClass(Enum):
 
 
 class AssumptionVerifiability(Enum):
+    VERIFIED = "VERIFIED"
     VERIFIABLE = "VERIFIABLE"
     UNVERIFIABLE = "UNVERIFIABLE"
     FALSE = "FALSE"
