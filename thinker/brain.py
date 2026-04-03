@@ -1077,10 +1077,14 @@ class Brain:
                 all_evidence_refs.extend(a.evidence_refs)
             phantom_refs = evidence.validate_refs(all_evidence_refs)
             if phantom_refs:
-                raise BrainError(
-                    "evidence_validation",
-                    f"Cited evidence missing from both stores: {phantom_refs[:5]}",
-                    detail=f"DOD §10.3: {len(phantom_refs)} phantom evidence refs detected.",
+                # DOD §10.3 + §1.2: phantom evidence is not infrastructure failure → ESCALATE via blocker
+                blocker_ledger.add(
+                    kind=BlockerKind.UNVERIFIED_CLAIM,
+                    source="evidence_validation",
+                    detected_round=self._config.rounds,
+                    detail=f"Cited evidence missing from both stores: {phantom_refs[:5]}",
+                    models=[],
+                    severity="CRITICAL",
                 )
 
         # --- V9: Disposition Coverage Verification (runs BEFORE Gate 2 per DOD §14.6) ---
@@ -1152,9 +1156,13 @@ class Brain:
             required_stages.append(f"r{i}")
             required_stages.append(f"track{i}")
             if i == 1:
-                required_stages.extend(["perspective_cards", "framing_pass", "ungrounded_r1"])
+                required_stages.extend(["perspective_cards", "framing_pass"])
+                if not is_analysis_mode:  # DOD §9.3: ungrounded DECIDE only
+                    required_stages.append("ungrounded_r1")
             if i == 2:
-                required_stages.extend(["frame_survival_r2", "ungrounded_r2"])
+                required_stages.append("frame_survival_r2")
+                if not is_analysis_mode:
+                    required_stages.append("ungrounded_r2")
             if i == 3:
                 required_stages.append("frame_survival_r3")
         required_stages.extend(["semantic_contradiction", "decisive_claims", "synthesis_packet", "synthesis"])

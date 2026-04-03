@@ -176,6 +176,15 @@ class EvidenceLedger:
         item.content_hash = content_hash
         self.active_items.append(item)
 
+        # DOD §10.3: "Active exceeds 10 → ERROR" — post-condition check
+        if len(self.active_items) > self.max_items:
+            from thinker.types import BrainError
+            raise BrainError(
+                "evidence_ledger",
+                f"Active evidence exceeds cap: {len(self.active_items)} > {self.max_items}",
+                detail="DOD §10.3: Active exceeds 10 → ERROR",
+            )
+
         # Check for contradictions with existing active items
         from thinker.tools.contradiction import detect_contradiction
         for existing in self.active_items[:-1]:

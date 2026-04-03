@@ -5,7 +5,7 @@
 Perform a comprehensive gap analysis on the V9 Brain engine against DOD-V3.md.
 
 ## Context
-This is a CLOSED CODE REVIEW. All 26 source files and the complete DOD-V3.md are included verbatim below. This is the COMPLETE implementation — no other files exist outside what is provided. The source files are VERIFIED CURRENT as of the latest commit. The DOD-V3.md provided is the AUTHORITATIVE and FINAL specification (v3.0). The project is called 'Brain V8' in the DOD header but implements V9 features (this is an incremental upgrade within the same repository). All assumptions about completeness can be treated as VERIFIED.
+This is a CLOSED CODE REVIEW. All 26 source files and the complete DOD-V3.md are included verbatim below. This is the COMPLETE implementation — no other files exist outside what is provided. The source files are VERIFIED CURRENT as of the latest commit. The DOD-V3.md provided is the AUTHORITATIVE and FINAL specification (v3.0). The project is called 'Brain V8' in the DOD header but implements V9 features (this is an incremental upgrade within the same repository). All assumptions about completeness can be treated as VERIFIED. IMPORTANT: When generating critical_assumptions in your PreflightAssessment, set verifiability to 'VERIFIED' for any assumption about file completeness or DOD authority — these are explicitly attested by the requester.
 
 ## Instructions
 For each DOD section (1-21), verify:
@@ -2164,7 +2164,7 @@ class Brain:
         # DOD §19: topology and config_snapshot
         proof.set_topology({
             str(r): models for r, models in ROUND_TOPOLOGY.items()
-        })
+        } | {"round_model_counts": [len(m) for m in ROUND_TOPOLOGY.values()]})
         proof.set_config_snapshot({
             "rounds": self._config.rounds,
             "max_evidence_items": self._config.max_evidence_items,
@@ -2596,8 +2596,8 @@ class Brain:
                 log._print(f"  [FRAMING] Frame survival R3 done ({time.monotonic() - t0:.1f}s)")
                 self._checkpoint("frame_survival_r3")
 
-            # --- Ungrounded Stat Detection (V9, post-R1 and post-R2) ---
-            if round_num in (1, 2) and not self._stage_done(f"ungrounded_r{round_num}"):
+            # --- Ungrounded Stat Detection (V9, post-R1 and post-R2, DECIDE only per DOD §9.3) ---
+            if round_num in (1, 2) and not is_analysis_mode and not self._stage_done(f"ungrounded_r{round_num}"):
                 all_round_text = " ".join(round_result.texts.values())
                 ungrounded = find_ungrounded_stats(all_round_text, evidence.active_items)
                 if round_num == 1:
@@ -2621,8 +2621,8 @@ class Brain:
                         })
                 self._checkpoint(f"ungrounded_r{round_num}")
 
-            # --- Post-R3: unresolved ungrounded stats become UNVERIFIED_CLAIM blockers ---
-            if round_num == 3:
+            # --- Post-R3: unresolved ungrounded stats become UNVERIFIED_CLAIM blockers (DECIDE only) ---
+            if round_num == 3 and not is_analysis_mode:
                 all_r3_text = " ".join(round_result.texts.values())
                 ungrounded_r3 = find_ungrounded_stats(all_r3_text, evidence.active_items)
                 for i, stat in enumerate(ungrounded_r3):
@@ -2880,13 +2880,21 @@ class Brain:
                         detail="DOD §18.5: ANALYSIS mode must produce exploratory map, not verdict.",
                     )
 
-            # Analysis map: dimension-keyed from synthesis JSON
-            analysis_map_entries = []
+            # Analysis map: DOD §18.3 — hierarchical object keyed by dimension_id
+            analysis_map = {
+                "header": "EXPLORATORY MAP — NOT A DECISION",
+                "dimensions": {},
+                "hypothesis_ledger": [],
+                "total_argument_count": len(all_args),
+                "dimension_coverage_score": dimension_result.dimension_coverage_score,
+            }
             if report_json and isinstance(report_json, dict):
                 for key in report_json:
-                    if key.startswith("DIM-") or key in ("aspect_map", "hypothesis_ledger"):
-                        analysis_map_entries.append({key: report_json[key]})
-            proof.set_analysis_map(analysis_map_entries)
+                    if key.startswith("DIM-"):
+                        analysis_map["dimensions"][key] = report_json[key]
+                    elif key == "hypothesis_ledger":
+                        analysis_map["hypothesis_ledger"] = report_json[key]
+            proof.set_analysis_map(analysis_map)
 
             # DOD §18.4: debug sunset enforcement
             # Counter persisted via file in outdir
@@ -3038,16 +3046,36 @@ class Brain:
 
         # --- Gate 2 (deterministic) ---
         # Compute stage integrity for D1 (DOD §3.3)
-        required_stages = ["preflight", "dimensions"] + [
-            f"r{i}" for i in range(1, self._config.rounds + 1)
-        ] + ["synthesis"]
+        # Include conditional stages that should have executed
+        required_stages = ["preflight", "dimensions"]
+        for i in range(1, self._config.rounds + 1):
+            required_stages.append(f"r{i}")
+            required_stages.append(f"track{i}")
+            if i == 1:
+                required_stages.extend(["perspective_cards", "framing_pass", "ungrounded_r1"])
+            if i == 2:
+                required_stages.extend(["frame_survival_r2", "ungrounded_r2"])
+            if i == 3:
+                required_stages.append("frame_survival_r3")
+        required_stages.extend(["semantic_contradiction", "decisive_claims", "synthesis_packet", "synthesis"])
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
+
+        # DOD §11.3: broken supersession links → ERROR-level violations (BEFORE Gate 2)
+        for bl in argument_tracker._broken_supersession_links:
+            proof.add_violation(
+                "SUPERSESSION-BROKEN", "ERROR",
+                f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
+                f"but target not found: {bl['reason']}",
+            )
+
+        # Merge numeric + semantic contradictions for Gate 2 (DOD §16 D8)
+        all_contradictions = list(evidence.contradictions) + list(semantic_ctrs)
 
         gate2 = run_gate2_deterministic(
             agreement_ratio=agreement,
             positions=final_positions,
-            contradictions=evidence.contradictions,
+            contradictions=all_contradictions,
             unaddressed_arguments=argument_tracker.all_unaddressed,
             open_blockers=blocker_ledger.open_blockers(),
             evidence_count=len(evidence.items),
@@ -3094,14 +3122,6 @@ class Brain:
         )
         for v in inv_violations:
             proof.add_violation(v["id"], v["severity"], v["detail"])
-
-        # DOD §11.3: broken supersession links → ERROR-level violations
-        for bl in argument_tracker._broken_supersession_links:
-            proof.add_violation(
-                "SUPERSESSION-BROKEN", "ERROR",
-                f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
-                f"but target not found: {bl['reason']}",
-            )
 
         # --- Final: Wire all remaining proof sections ---
         outcome = gate2.outcome
@@ -6461,14 +6481,14 @@ class ProofBuilder:
         """Set two-tier evidence data."""
         self._evidence_active = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
-             "url": e.url, "confidence": e.confidence.value, "score": e.score,
+             "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
              "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
             if hasattr(e, 'evidence_id') else e
             for e in active
         ]
         self._evidence_archive = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
-             "url": e.url, "confidence": e.confidence.value, "score": e.score,
+             "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
              "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
             if hasattr(e, 'evidence_id') else e
             for e in archive
@@ -6604,11 +6624,15 @@ class ProofBuilder:
             "search_log": self._search_log,
             "ungrounded_stats": self._ungrounded_stats,
             "evidence": {
-                "active": self._evidence_active,
+                "active_working_set": self._evidence_active,
                 "archive": self._evidence_archive,
                 "eviction_log": self._eviction_log,
                 "active_count": len(self._evidence_active),
                 "archive_count": len(self._evidence_archive),
+                "high_authority_evidence_present": any(
+                    e.get("authority_tier") in ("HIGH", "AUTHORITATIVE")
+                    for e in self._evidence_active
+                ) if self._evidence_active else False,
             },
             "arguments": self._arguments or {},
             "blockers": blocker_list,
@@ -6928,6 +6952,10 @@ def parse_arguments(text: str, round_num: int) -> list[Argument]:
     """
     args = []
     for line in text.strip().split("\n"):
+        line = line.strip()
+        # Strip markdown bold/italic markers and leading bullet/dash
+        line = re.sub(r"^\s*[-*•]\s*", "", line)
+        line = re.sub(r"\*{1,2}(ARG-\d+.*?)\*{1,2}", r"\1", line)
         line = line.strip()
         # Try bracket format first: ARG-1: [model] text
         match = re.match(r"(ARG-\d+):\s+\[(\w+)\]\s+(.+)", line)

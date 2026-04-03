@@ -174,7 +174,13 @@ async def run_frame_survival_check(
     )
     round_formatted = "\n\n".join(f"### {m}\n{t}" for m, t in round_texts.items())
 
-    if round_num == 2:
+    if is_analysis_mode:
+        # DOD §18.2: ANALYSIS frames use EXPLORED/NOTED/UNEXPLORED, never dropped
+        rules = ("- ANALYSIS mode: frames are NEVER dropped.\n"
+                 "- Use statuses: EXPLORED (substantively investigated), NOTED (acknowledged but not deep), "
+                 "UNEXPLORED (identified but not investigated).\n"
+                 "- Do NOT use ACTIVE/CONTESTED/DROPPED in ANALYSIS mode.")
+    elif round_num == 2:
         rules = "- A frame is DROPPED only if 3 or more models explicitly reject it with traceable reasoning.\n- A frame is CONTESTED if at least 1 model challenges it but fewer than 3.\n- A frame is ADOPTED if a model explicitly takes it up.\n- A frame is REBUTTED if substantively countered."
     else:
         rules = "- Frames are NEVER dropped in R3/R4. They can only be CONTESTED, ADOPTED, or remain ACTIVE.\n- CONTESTED frames stay CONTESTED (never downgraded to DROPPED)."
