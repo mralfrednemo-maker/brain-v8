@@ -706,3 +706,29 @@ class TestRuleTrace:
         assert len(fired) > 0
         for r in fired:
             assert r["outcome_if_fired"] is not None
+
+
+class TestGate2Determinism:
+    """DOD §20: Same proof state twice → same Gate 2 result."""
+
+    def test_same_input_same_output(self):
+        """Gate 2 is deterministic: identical inputs produce identical outputs."""
+        kwargs = _base_decide_kwargs()
+        result1 = run_gate2_deterministic(**kwargs)
+        result2 = run_gate2_deterministic(**kwargs)
+        assert result1.outcome == result2.outcome
+        assert len(result1.rule_trace) == len(result2.rule_trace)
+        for r1, r2 in zip(result1.rule_trace, result2.rule_trace):
+            assert r1["rule_id"] == r2["rule_id"]
+            assert r1["fired"] == r2["fired"]
+
+    def test_determinism_with_blockers(self):
+        """Determinism holds even with complex blocker state."""
+        kwargs = _base_decide_kwargs()
+        kwargs["open_blockers"] = [
+            Blocker("BLK001", BlockerKind.COVERAGE_GAP, "dim:DIM-1", 3,
+                    severity="CRITICAL", detail="test"),
+        ]
+        result1 = run_gate2_deterministic(**kwargs)
+        result2 = run_gate2_deterministic(**kwargs)
+        assert result1.outcome == result2.outcome

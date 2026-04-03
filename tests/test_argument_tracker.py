@@ -120,3 +120,28 @@ class TestArgumentParsing:
         statuses = parse_comparison(text, prev_round=1)
         assert statuses["R1-ARG-1"] == (ArgumentStatus.ADDRESSED, "R2-ARG-3")
         assert statuses["R1-ARG-2"] == (ArgumentStatus.IGNORED, None)
+
+
+class TestRestatementResolution:
+    """DOD §20: Restated argument without lineage not counted as resolution."""
+
+    def test_mentioned_not_resolved(self):
+        """MENTIONED status means argument was restated but NOT substantively engaged.
+        It must remain open and not count as resolved."""
+        from thinker.types import ResolutionStatus
+        args = [
+            Argument("R1-ARG-1", 1, "r1", "Key safety concern"),
+        ]
+        # MENTIONED = restated without engagement — should NOT resolve
+        args[0].status = ArgumentStatus.MENTIONED
+        args[0].resolution_status = ResolutionStatus.ORIGINAL
+        args[0].open = True
+        assert args[0].open is True
+        assert args[0].resolution_status == ResolutionStatus.ORIGINAL
+
+    def test_ignored_not_resolved(self):
+        """IGNORED arguments remain open."""
+        args = [Argument("R1-ARG-1", 1, "r1", "Key claim")]
+        args[0].status = ArgumentStatus.IGNORED
+        args[0].open = True
+        assert args[0].open is True

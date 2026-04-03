@@ -102,7 +102,15 @@ def build_synthesis_packet(
                 "summary": f.summary[:150],
             })
 
+    # DOD §14: packet_complete — all required sections present
+    packet_complete = (
+        len(final_positions) > 0
+        and len(arguments) > 0
+        and evidence_items is not None
+    )
+
     return {
+        "packet_complete": packet_complete,
         "brief_excerpt": brief[:500],
         "final_positions": {
             m: {"option": p.primary_option, "confidence": p.confidence.value}

@@ -85,6 +85,11 @@ class PipelineState:
     search_queries: dict[str, list[str]] = field(default_factory=dict)
     search_results: dict[str, int] = field(default_factory=dict)
 
+    # V9: Ungrounded stats tracking (DOD §9.2)
+    ungrounded_flagged_claims: list[dict] = field(default_factory=list)
+    ungrounded_r1_executed: bool = False
+    ungrounded_r2_executed: bool = False
+
     # Classification
     agreement_ratio: float = 0.0
     outcome_class: str = ""

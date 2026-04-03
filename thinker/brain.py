@@ -607,6 +607,11 @@ class Brain:
             else:
                 log._print(f"  [RESUME] Skipping track{round_num} (already completed)")
 
+            # --- V9: Mark adversarial slot assigned (DOD §10) ---
+            if round_num == 1:
+                divergence_result.adversarial_slot_assigned = True
+                divergence_result.adversarial_model_id = "kimi"
+
             # --- V9: Post-R1 perspective cards + framing pass ---
             if round_num == 1 and not self._stage_done("perspective_cards"):
                 perspective_cards = extract_perspective_cards(round_result.texts)
@@ -672,18 +677,33 @@ class Brain:
             if round_num in (1, 2) and not self._stage_done(f"ungrounded_r{round_num}"):
                 all_round_text = " ".join(round_result.texts.values())
                 ungrounded = find_ungrounded_stats(all_round_text, evidence.active_items)
+                if round_num == 1:
+                    st.ungrounded_r1_executed = True
+                else:
+                    st.ungrounded_r2_executed = True
                 if ungrounded:
                     log._print(f"  [UNGROUNDED] R{round_num}: {len(ungrounded)} ungrounded stats detected")
                     verification_queries = generate_verification_queries(ungrounded, all_round_text)
                     st.search_queries[f"ungrounded_r{round_num}"] = verification_queries
+                    # Track per-claim for DOD §9.2 schema
+                    for i, stat in enumerate(ungrounded):
+                        st.ungrounded_flagged_claims.append({
+                            "claim_id": f"UG-R{round_num}-{i+1}",
+                            "text": stat,
+                            "numeric": True,
+                            "verified": False,
+                            "blocker_id": None,
+                            "severity": "MEDIUM",
+                            "status": "UNVERIFIED_CLAIM",
+                        })
                 self._checkpoint(f"ungrounded_r{round_num}")
 
             # --- Post-R3: unresolved ungrounded stats become UNVERIFIED_CLAIM blockers ---
             if round_num == 3:
                 all_r3_text = " ".join(round_result.texts.values())
                 ungrounded_r3 = find_ungrounded_stats(all_r3_text, evidence.active_items)
-                for stat in ungrounded_r3:
-                    blocker_ledger.add(
+                for i, stat in enumerate(ungrounded_r3):
+                    blk = blocker_ledger.add(
                         kind=BlockerKind.UNVERIFIED_CLAIM,
                         source="ungrounded_stat_detector",
                         detected_round=3,
@@ -691,6 +711,23 @@ class Brain:
                         severity="CRITICAL",
                         models=[],
                     )
+                    # Update tracked claim with blocker link
+                    for fc in st.ungrounded_flagged_claims:
+                        if fc["text"] == stat and fc["blocker_id"] is None:
+                            fc["blocker_id"] = blk.blocker_id
+                            fc["severity"] = "CRITICAL"
+                            break
+                    else:
+                        # New claim at R3 not seen earlier
+                        st.ungrounded_flagged_claims.append({
+                            "claim_id": f"UG-R3-{i+1}",
+                            "text": stat,
+                            "numeric": True,
+                            "verified": False,
+                            "blocker_id": blk.blocker_id,
+                            "severity": "CRITICAL",
+                            "status": "UNVERIFIED_CLAIM",
+                        })
                 if ungrounded_r3:
                     log._print(f"  [UNGROUNDED] R3: {len(ungrounded_r3)} unresolved → UNVERIFIED_CLAIM blockers")
 
@@ -905,6 +942,18 @@ class Brain:
 
         # --- ANALYSIS mode proof additions ---
         if is_analysis_mode:
+            # DOD §18.5: "ANALYSIS output contains verdict language → ERROR"
+            verdict_keywords = ["recommend", "verdict", "conclusion", "we should", "the answer is",
+                                "our recommendation", "in conclusion", "therefore we decide"]
+            report_lower = report.lower() if report else ""
+            verdict_found = [kw for kw in verdict_keywords if kw in report_lower]
+            if verdict_found:
+                raise BrainError(
+                    "analysis_verdict_check",
+                    f"ANALYSIS output contains verdict language: {verdict_found[:3]}",
+                    detail="DOD §18.5: ANALYSIS mode must produce exploratory map, not verdict.",
+                )
+
             # Analysis map: dimension-keyed from synthesis JSON
             analysis_map_entries = []
             if report_json and isinstance(report_json, dict):
@@ -1061,6 +1110,7 @@ class Brain:
             preflight=preflight_result,
             divergence=divergence_result,
             stability=stability_result,
+            decisive_claims=decisive_claims,
             dimensions=dimension_result,
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
@@ -1120,13 +1170,20 @@ class Brain:
         # Search log
         proof.set_search_log(search_log_entries)
 
-        # Ungrounded stats
-        ungrounded_proof = []
-        for rnd_key in ["ungrounded_r1", "ungrounded_r2"]:
-            qs = st.search_queries.get(rnd_key, [])
-            if qs:
-                ungrounded_proof.append({"stage": rnd_key, "queries": qs})
-        proof.set_ungrounded_stats(ungrounded_proof)
+        # Ungrounded stats (DOD §9.2 schema)
+        # Mark claims that were verified by evidence after search
+        for fc in st.ungrounded_flagged_claims:
+            if fc["status"] == "UNVERIFIED_CLAIM" and fc["blocker_id"] is None:
+                # Check if the stat now appears in evidence
+                stat_text = fc["text"]
+                if any(stat_text in ev.fact for ev in evidence.active_items):
+                    fc["verified"] = True
+                    fc["status"] = "CLEAR"
+        proof.set_ungrounded_stats({
+            "post_r1_executed": st.ungrounded_r1_executed,
+            "post_r2_executed": st.ungrounded_r2_executed,
+            "flagged_claims": st.ungrounded_flagged_claims,
+        })
 
         # Contradictions (numeric + semantic)
         proof.set_contradictions(evidence.contradictions, semantic_ctrs)

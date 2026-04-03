@@ -71,18 +71,26 @@ def detect_fast_consensus(
 ) -> bool:
     """Detect if models agreed too quickly (from R1).
 
-    Fast consensus = all R1 models agree on primary_option.
+    DOD §15.1: fast_consensus_observed = true if R1 agreement_ratio >= 0.95.
+    Agreement ratio = (count of most common option) / total models.
     """
     r1_positions = round_positions.get(1, {})
     if not r1_positions or len(r1_positions) < 2:
         return False
 
-    options = set()
+    options: list[str] = []
     for p in r1_positions.values():
         if p.primary_option:
-            options.add(p.primary_option.lower().strip())
+            options.append(p.primary_option.lower().strip())
 
-    return len(options) <= 1
+    if not options:
+        return False
+
+    from collections import Counter
+    counts = Counter(options)
+    most_common_count = counts.most_common(1)[0][1]
+    agreement_ratio = most_common_count / len(options)
+    return agreement_ratio >= 0.95
 
 
 def compute_groupthink_warning(

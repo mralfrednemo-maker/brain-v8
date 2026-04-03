@@ -204,8 +204,8 @@ class ProofBuilder:
         """Set search log entries."""
         self._search_log = [e.to_dict() if hasattr(e, 'to_dict') else e for e in entries]
 
-    def set_ungrounded_stats(self, data: list[dict]) -> None:
-        """Set ungrounded statistic detection results."""
+    def set_ungrounded_stats(self, data) -> None:
+        """Set ungrounded statistic detection results (DOD §9.2 schema)."""
         self._ungrounded_stats = data
 
     def set_evidence_two_tier(self, active: list, archive: list, eviction_log: list) -> None:
@@ -229,15 +229,20 @@ class ProofBuilder:
         ]
 
     def set_arguments(self, arguments: list) -> None:
-        """Set argument map with resolution status."""
-        self._arguments = [
-            {"argument_id": a.argument_id, "round_num": a.round_num, "model": a.model,
-             "text": a.text, "status": a.status.value, "resolution_status": a.resolution_status.value,
-             "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
-             "evidence_refs": a.evidence_refs, "open": a.open}
-            if hasattr(a, 'argument_id') else a
-            for a in arguments
-        ]
+        """Set argument map with resolution status (DOD §19: object keyed by argument_id)."""
+        self._arguments = {}
+        for a in arguments:
+            if hasattr(a, 'argument_id'):
+                self._arguments[a.argument_id] = {
+                    "argument_id": a.argument_id, "round_origin": a.round_num,
+                    "model_id": a.model, "text": a.text,
+                    "status": a.status.value, "resolution_status": a.resolution_status.value,
+                    "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
+                    "blocker_link_ids": [], "evidence_refs": a.evidence_refs, "open": a.open,
+                }
+            else:
+                key = a.get("argument_id", f"arg-{len(self._arguments)}")
+                self._arguments[key] = a
 
     def set_decisive_claims(self, claims: list) -> None:
         """Set decisive claims."""
@@ -247,8 +252,9 @@ class ProofBuilder:
         """Set cross-domain analogies."""
         self._cross_domain_analogies = [a.to_dict() if hasattr(a, 'to_dict') else a for a in analogies]
 
-    def set_contradictions(self, numeric: list, semantic: list) -> None:
+    def set_contradictions(self, numeric: list, semantic: list, semantic_pass_executed: bool = True) -> None:
         """Set both numeric and semantic contradictions."""
+        self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
             {"contradiction_id": c.contradiction_id, "evidence_ids": c.evidence_ids,
              "topic": c.topic, "severity": c.severity, "status": c.status,
@@ -351,24 +357,25 @@ class ProofBuilder:
                 "eviction_log": self._eviction_log,
                 "active_count": len(self._evidence_active),
                 "archive_count": len(self._evidence_archive),
-            } if self._evidence_active or self._evidence_archive else None,
-            "arguments": self._arguments if self._arguments else None,
+            },
+            "arguments": self._arguments or {},
             "blockers": blocker_list,
-            "decisive_claims": self._decisive_claims if self._decisive_claims else None,
-            "cross_domain_analogies": self._cross_domain_analogies if self._cross_domain_analogies else None,
+            "decisive_claims": self._decisive_claims or [],
+            "cross_domain_analogies": self._cross_domain_analogies or [],
             "contradictions": {
                 "numeric": self._contradictions_numeric,
                 "semantic": self._contradictions_semantic,
-            } if self._contradictions_numeric or self._contradictions_semantic else None,
+                "semantic_pass_executed": getattr(self, '_semantic_pass_executed', False),
+            },
             "synthesis_packet": self._synthesis_packet,
             "synthesis_output": self._synthesis_output,
-            "synthesis_dispositions": self._synthesis_dispositions if self._synthesis_dispositions else None,
+            "synthesis_dispositions": self._synthesis_dispositions or [],
             "residue_verification": self._residue_verification,
             "positions": self._positions,
             "stability": self._stability,
-            "analysis_map": self._analysis_map if self._analysis_map else None,
+            "analysis_map": self._analysis_map or [],
             "analysis_debug": self._analysis_debug,
-            "diagnostics": self._diagnostics if self._diagnostics else None,
+            "diagnostics": self._diagnostics or {},
             "gate2": self._gate2_trace,
             # --- Extended fields (not in DOD §19 but useful) ---
             "protocol_version": "v9",
