@@ -107,133 +107,133 @@ def _eval_decide_rules(
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
 ) -> tuple[Outcome, list[dict]]:
-    """Evaluate D1-D14 in order. Returns (outcome, rule_trace)."""
+    """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
 
-    def _rule(rule_id: str, matched: bool, reason: str) -> bool:
-        trace.append({"rule": rule_id, "matched": matched, "reason": reason})
+    def _t(rule_id: str, matched: bool, reason: str) -> bool:
+        trace.append({"rule_id": rule_id, "evaluated": True, "fired": matched,
+                      "outcome_if_fired": None, "reason": reason})
         return matched
 
-    # Unresolved contradictions
-    unresolved_contradictions = [
-        c for c in contradictions
-        if getattr(c, "status", "OPEN") == "OPEN"
+    # Pre-compute conditions
+    stability = stability or StabilityResult()
+    conclusion_stable = stability.conclusion_stable
+    reason_stable = stability.reason_stable
+    assumption_stable = stability.assumption_stable
+    groupthink_warning = stability.groupthink_warning
+    independent_evidence = stability.independent_evidence_present
+
+    # CRITICAL blockers (includes COVERAGE_GAP, UNVERIFIED_CLAIM)
+    critical_blockers = [b for b in open_blockers
+                         if getattr(b, 'kind', None) and b.kind.value in
+                         ("COVERAGE_GAP", "UNVERIFIED_CLAIM", "CONTRADICTION")]
+
+    # Decisive claims without valid evidence
+    claims_lacking_evidence = [
+        c for c in (decisive_claims or [])
+        if c.material_to_conclusion and c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
     ]
 
-    # Decisive claims support check
-    claims_supported = False
-    if decisive_claims:
-        claims_supported = all(
-            c.evidence_support_status in (EvidenceSupportStatus.SUPPORTED, EvidenceSupportStatus.PARTIAL)
-            for c in decisive_claims
-            if c.material_to_conclusion
-        )
+    # HIGH/CRITICAL unresolved contradictions
+    high_contradictions = [
+        c for c in contradictions
+        if getattr(c, "status", "OPEN") in ("OPEN", "open")
+        and getattr(c, "severity", "LOW") in ("HIGH", "CRITICAL")
+    ]
 
-    # Material unrebutted frames
-    material_unrebutted = 0
+    # Unresolved CRITICAL premise flags
+    critical_premise_flags = preflight.unresolved_critical_flags if preflight else []
+
+    # Material frames without rebuttal or disposition
+    material_frames_unresolved = []
     if divergence:
-        material_unrebutted = divergence.material_unrebutted_frame_count
+        for f in divergence.alt_frames:
+            if (f.material_to_outcome
+                    and f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)
+                    and f.synthesis_disposition_status == "UNADDRESSED"):
+                material_frames_unresolved.append(f)
 
-    # Dimension coverage gaps
-    has_coverage_gaps = False
-    if dimensions and dimensions.items:
-        has_coverage_gaps = any(
-            d.coverage_status == "ZERO" and d.mandatory and not d.justified_irrelevance
-            for d in dimensions.items
-        )
-
-    # Fatal premise
-    has_fatal_premise = preflight.fatal_premise if preflight else False
-
-    # Stability
-    conclusion_stable = stability.conclusion_stable if stability else True
-    groupthink_warning = stability.groupthink_warning if stability else False
-
-    # Number of models that responded
-    models_responded = len(positions)
-
-    # --- D1: High agreement, no blockers, stable ---
-    if _rule("D1",
-             agreement_ratio >= 0.75 and len(open_blockers) == 0 and conclusion_stable,
-             f"agreement={agreement_ratio:.2f}>=0.75, blockers={len(open_blockers)}==0, stable={conclusion_stable}"):
-        return Outcome.DECIDE, trace
-
-    # --- D2: High agreement, blockers all LOW severity ---
-    if _rule("D2",
-             agreement_ratio >= 0.75 and len(open_blockers) > 0 and _all_blockers_low(open_blockers),
-             f"agreement={agreement_ratio:.2f}>=0.75, blockers={len(open_blockers)}>0, all_low={_all_blockers_low(open_blockers)}"):
-        return Outcome.DECIDE, trace
-
-    # --- D3: High agreement but groupthink warning ---
-    if _rule("D3",
-             agreement_ratio >= 0.75 and groupthink_warning,
-             f"agreement={agreement_ratio:.2f}>=0.75, groupthink_warning={groupthink_warning}"):
-        return Outcome.ESCALATE, trace
-
-    # --- D4: Moderate agreement, evidence, decisive claims supported ---
-    if _rule("D4",
-             agreement_ratio >= 0.50 and evidence_count >= 3 and claims_supported,
-             f"agreement={agreement_ratio:.2f}>=0.50, evidence={evidence_count}>=3, claims_supported={claims_supported}"):
-        return Outcome.DECIDE, trace
-
-    # --- D5: Moderate agreement, material unrebutted frames ---
-    if _rule("D5",
-             agreement_ratio >= 0.50 and material_unrebutted > 0,
-             f"agreement={agreement_ratio:.2f}>=0.50, material_unrebutted={material_unrebutted}>0"):
-        return Outcome.ESCALATE, trace
-
-    # --- D6: Moderate agreement, unresolved contradictions ---
-    if _rule("D6",
-             agreement_ratio >= 0.50 and len(unresolved_contradictions) > 0,
-             f"agreement={agreement_ratio:.2f}>=0.50, unresolved_contradictions={len(unresolved_contradictions)}>0"):
-        return Outcome.ESCALATE, trace
-
-    # --- D7: Moderate agreement, no evidence ---
-    if _rule("D7",
-             agreement_ratio >= 0.50 and evidence_count == 0 and search_enabled,
-             f"agreement={agreement_ratio:.2f}>=0.50, evidence={evidence_count}==0, search_enabled={search_enabled}"):
-        return Outcome.ESCALATE, trace
-
-    # --- D8: Low agreement, HIGH stakes ---
-    high_stakes = preflight and preflight.stakes_class.value == "HIGH" if preflight else False
-    if _rule("D8",
-             agreement_ratio < 0.50 and high_stakes,
-             f"agreement={agreement_ratio:.2f}<0.50, high_stakes={high_stakes}"):
-        return Outcome.ESCALATE, trace
-
-    # --- D9: Low agreement, coverage gaps ---
-    if _rule("D9",
-             agreement_ratio < 0.50 and has_coverage_gaps,
-             f"agreement={agreement_ratio:.2f}<0.50, coverage_gaps={has_coverage_gaps}"):
-        return Outcome.NO_CONSENSUS, trace
-
-    # --- D10: Low agreement fallback ---
-    if _rule("D10",
-             agreement_ratio < 0.50,
-             f"agreement={agreement_ratio:.2f}<0.50"):
-        return Outcome.NO_CONSENSUS, trace
-
-    # --- D11: Fatal premise ---
-    if _rule("D11",
-             has_fatal_premise,
-             f"fatal_premise={has_fatal_premise}"):
-        return Outcome.NEED_MORE, trace
-
-    # --- D12: No models responded ---
-    if _rule("D12",
-             models_responded == 0,
-             f"models_responded={models_responded}==0"):
+    # --- D1: Fatal integrity or infrastructure failure ---
+    if _t("D1", total_arguments == 0 and len(positions) == 0,
+          f"models={len(positions)}, args={total_arguments}"):
+        trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
-    # --- D13: Zero arguments tracked ---
-    if _rule("D13",
-             total_arguments == 0,
-             f"total_arguments={total_arguments}==0"):
+    # --- D2: Modality mismatch ---
+    modality_mismatch = preflight and preflight.modality != Modality.DECIDE if preflight else False
+    if _t("D2", modality_mismatch,
+          f"preflight.modality={preflight.modality.value if preflight else 'N/A'}"):
+        trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
-    # --- D14: Fallback ---
-    _rule("D14", True, "fallback — no prior rule matched")
-    return Outcome.ESCALATE, trace
+    # --- D3: Illegal SHORT_CIRCUIT state (guardrails violated) ---
+    # Deferred per user directive — no budget enforcement
+    _t("D3", False, "SHORT_CIRCUIT guardrail check deferred")
+
+    # --- D4: agreement < 0.50 ---
+    if _t("D4", agreement_ratio < 0.50,
+          f"agreement={agreement_ratio:.2f}<0.50"):
+        trace[-1]["outcome_if_fired"] = "NO_CONSENSUS"
+        return Outcome.NO_CONSENSUS, trace
+
+    # --- D5: agreement 0.50-0.74 ---
+    if _t("D5", 0.50 <= agreement_ratio < 0.75,
+          f"agreement={agreement_ratio:.2f} in [0.50,0.75)"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D6: Any unresolved CRITICAL blocker ---
+    if _t("D6", len(critical_blockers) > 0,
+          f"critical_blockers={len(critical_blockers)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D7: Decisive claim lacks valid evidence binding ---
+    if _t("D7", len(claims_lacking_evidence) > 0,
+          f"claims_lacking_evidence={len(claims_lacking_evidence)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D8: HIGH/CRITICAL contradiction unresolved ---
+    if _t("D8", len(high_contradictions) > 0,
+          f"high_contradictions={len(high_contradictions)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D9: Unresolved CRITICAL premise flag ---
+    if _t("D9", len(critical_premise_flags) > 0,
+          f"critical_premise_flags={len(critical_premise_flags)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D10: Material frame ACTIVE/CONTESTED without disposition ---
+    if _t("D10", len(material_frames_unresolved) > 0,
+          f"material_frames_unresolved={len(material_frames_unresolved)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D11: conclusion_stable = false ---
+    if _t("D11", not conclusion_stable,
+          f"conclusion_stable={conclusion_stable}"):
+        trace[-1]["outcome_if_fired"] = "NO_CONSENSUS"
+        return Outcome.NO_CONSENSUS, trace
+
+    # --- D12: reason_stable = false OR assumption_stable = false ---
+    if _t("D12", not reason_stable or not assumption_stable,
+          f"reason_stable={reason_stable}, assumption_stable={assumption_stable}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D13: groupthink + no independent evidence ---
+    if _t("D13", groupthink_warning and not independent_evidence,
+          f"groupthink={groupthink_warning}, independent_evidence={independent_evidence}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D14: Otherwise → DECIDE ---
+    _t("D14", True, "all checks passed")
+    trace[-1]["outcome_if_fired"] = "DECIDE"
+    return Outcome.DECIDE, trace
 
 
 # ---------------------------------------------------------------------------
@@ -254,78 +254,73 @@ def _eval_analysis_rules(
     decisive_claims: Optional[list[DecisiveClaim]],
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
+    archive_evidence_count: int = 0,
 ) -> tuple[Outcome, list[dict]]:
-    """Evaluate A1-A7 in order. Returns (outcome, rule_trace)."""
+    """Evaluate A1-A7 per DOD-V3 Section 17. First match wins.
+
+    ANALYSIS mode may only emit: ANALYSIS, ESCALATE, ERROR (never NO_CONSENSUS).
+    """
     trace: list[dict] = []
 
-    def _rule(rule_id: str, matched: bool, reason: str) -> bool:
-        trace.append({"rule": rule_id, "matched": matched, "reason": reason})
+    def _t(rule_id: str, matched: bool, reason: str) -> bool:
+        trace.append({"rule_id": rule_id, "evaluated": True, "fired": matched,
+                      "outcome_if_fired": None, "reason": reason})
         return matched
 
-    # Dimension coverage
-    all_dimensions_explored = False
-    dimension_coverage = 0.0
-    if dimensions and dimensions.items:
-        all_dimensions_explored = all(
-            d.coverage_status != "ZERO" or d.justified_irrelevance or not d.mandatory
-            for d in dimensions.items
-        )
-        dimension_coverage = dimensions.dimension_coverage_score
+    from thinker.types import SearchScope
 
-    # Hypothesis ledger = decisive_claims populated
-    hypothesis_populated = bool(decisive_claims and len(decisive_claims) > 0)
+    # --- A1: Missing or invalid PreflightAssessment ---
+    preflight_missing = preflight is None or not preflight.executed or not preflight.parse_ok
+    if _t("A1", preflight_missing,
+          f"preflight={'missing' if preflight is None else f'executed={preflight.executed}, parse_ok={preflight.parse_ok}'}"):
+        trace[-1]["outcome_if_fired"] = "ERROR"
+        return Outcome.ERROR, trace
 
-    # Frame statuses (ANALYSIS mode uses EXPLORED/NOTED/UNEXPLORED)
-    frames = divergence.alt_frames if divergence else []
-    all_frames_explored = all(
-        f.survival_status in (FrameSurvivalStatus.EXPLORED, FrameSurvivalStatus.NOTED)
-        for f in frames
-    ) if frames else True
-    unexplored_frames = [
-        f for f in frames
-        if f.survival_status == FrameSurvivalStatus.UNEXPLORED
-    ]
+    # --- A2: Modality mismatch ---
+    modality_mismatch = preflight.modality != Modality.ANALYSIS if preflight else True
+    if _t("A2", modality_mismatch,
+          f"preflight.modality={preflight.modality.value if preflight else 'N/A'}"):
+        trace[-1]["outcome_if_fired"] = "ERROR"
+        return Outcome.ERROR, trace
 
-    groupthink_warning = stability.groupthink_warning if stability else False
+    # --- A3: Missing required shared pipeline artifacts ---
+    missing_artifacts = (
+        (dimensions is None or len(dimensions.items) == 0)
+        or total_arguments == 0
+    )
+    if _t("A3", missing_artifacts,
+          f"dimensions={'empty' if not dimensions or not dimensions.items else len(dimensions.items)}, args={total_arguments}"):
+        trace[-1]["outcome_if_fired"] = "ERROR"
+        return Outcome.ERROR, trace
 
-    # --- A1: All dimensions explored ---
-    if _rule("A1",
-             all_dimensions_explored and (not dimensions or len(dimensions.items) > 0),
-             f"all_dimensions_explored={all_dimensions_explored}"):
-        return Outcome.ANALYSIS, trace
-
-    # --- A2: Low dimension coverage ---
-    if _rule("A2",
-             dimension_coverage < 0.5 and dimensions is not None and len(dimensions.items) > 0,
-             f"dimension_coverage={dimension_coverage:.2f}<0.5"):
-        return Outcome.NO_CONSENSUS, trace
-
-    # --- A3: Hypothesis ledger populated ---
-    if _rule("A3",
-             hypothesis_populated,
-             f"hypothesis_populated={hypothesis_populated}"):
-        return Outcome.ANALYSIS, trace
-
-    # --- A4: All frames explored/noted ---
-    if _rule("A4",
-             all_frames_explored and len(frames) > 0,
-             f"all_frames_explored={all_frames_explored}, frame_count={len(frames)}"):
-        return Outcome.ANALYSIS, trace
-
-    # --- A5: Unexplored frames remain ---
-    if _rule("A5",
-             len(unexplored_frames) > 0,
-             f"unexplored_frames={len(unexplored_frames)}>0"):
-        return Outcome.NO_CONSENSUS, trace
-
-    # --- A6: Groupthink warning ---
-    if _rule("A6",
-             groupthink_warning,
-             f"groupthink_warning={groupthink_warning}"):
+    # --- A4: Evidence archive empty AND search_scope != NONE ---
+    search_scope_not_none = preflight.search_scope != SearchScope.NONE if preflight else False
+    evidence_archive_empty = archive_evidence_count == 0 and evidence_count == 0
+    if _t("A4", evidence_archive_empty and search_scope_not_none,
+          f"evidence={evidence_count}, archive={archive_evidence_count}, search_scope={preflight.search_scope.value if preflight else 'N/A'}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
 
-    # --- A7: Fallback ---
-    _rule("A7", True, "fallback — ANALYSIS mode default")
+    # --- A5: Any mandatory dimension has zero arguments ---
+    zero_coverage_dims = []
+    if dimensions and dimensions.items:
+        zero_coverage_dims = [d for d in dimensions.items
+                              if d.mandatory and d.coverage_status == "ZERO"
+                              and not d.justified_irrelevance]
+    if _t("A5", len(zero_coverage_dims) > 0,
+          f"zero_coverage_dimensions={len(zero_coverage_dims)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- A6: Total arguments < 8 ---
+    if _t("A6", total_arguments < 8,
+          f"total_arguments={total_arguments}<8"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- A7: Otherwise → ANALYSIS ---
+    _t("A7", True, "all checks passed — ANALYSIS")
+    trace[-1]["outcome_if_fired"] = "ANALYSIS"
     return Outcome.ANALYSIS, trace
 
 
@@ -386,6 +381,7 @@ def run_gate2_deterministic(
             decisive_claims=decisive_claims,
             dimensions=dimensions,
             total_arguments=total_arguments,
+            archive_evidence_count=archive_evidence_count,
         )
     else:
         outcome, rule_trace = _eval_decide_rules(
@@ -404,8 +400,8 @@ def run_gate2_deterministic(
             total_arguments=total_arguments,
         )
 
-    # Identify which rule matched
-    matched_rule = next((r["rule"] for r in rule_trace if r["matched"]), "NONE")
+    # Identify which rule fired
+    matched_rule = next((r["rule_id"] for r in rule_trace if r.get("fired")), "NONE")
 
     # Build legacy classification for backward compat
     outcome_class = classify_outcome(

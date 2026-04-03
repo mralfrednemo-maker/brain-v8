@@ -209,7 +209,7 @@ class Brain:
                 topic=ev_data.get("topic", ""),
                 fact=ev_data.get("fact", ""),
                 url=ev_data.get("url", ""),
-                confidence=Confidence.MEDIUM,
+                confidence=Confidence[ev_data.get("confidence", "MEDIUM")],
             )
             evidence.add(item)
 
@@ -333,6 +333,16 @@ class Brain:
                        f"({time.monotonic() - t0:.1f}s)")
 
             if preflight_result.answerability.value in ("NEED_MORE", "INVALID_FORM"):
+                proof.set_preflight(preflight_result)
+                proof.set_final_status("PREFLIGHT_REJECTED")
+                return BrainResult(
+                    outcome=Outcome.NEED_MORE, proof=proof.build(),
+                    report="", preflight=preflight_result,
+                )
+
+            # DOD 4.5: FATAL_PREMISE cross-check — override answerability if LLM missed it
+            if preflight_result.fatal_premise and preflight_result.answerability.value == "ANSWERABLE":
+                log._print("  [PREFLIGHT] FATAL_PREMISE detected but answerability=ANSWERABLE — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
                 return BrainResult(
@@ -749,7 +759,8 @@ class Brain:
                 st.search_results[phase.value] = total_admitted
                 st.evidence_items = [
                     {"evidence_id": e.evidence_id, "topic": e.topic,
-                     "fact": e.fact, "url": e.url, "score": e.score}
+                     "fact": e.fact, "url": e.url, "score": e.score,
+                     "confidence": e.confidence.value}
                     for e in evidence.items
                 ]
                 st.evidence_count = len(evidence.items)
@@ -887,12 +898,21 @@ class Brain:
                    f"assumption={stability_result.assumption_stable} "
                    f"groupthink_warning={stability_result.groupthink_warning}")
 
-        # --- Compute dimension coverage (V9) ---
+        # --- Compute dimension coverage + register COVERAGE_GAP blockers (V9) ---
         if dimension_result and dimension_result.items:
             for dim in dimension_result.items:
                 dim_args = [a for a in all_args if a.dimension_id == dim.dimension_id]
                 dim.argument_count = len(dim_args)
                 dim.coverage_status = "SATISFIED" if len(dim_args) >= 2 else ("PARTIAL" if dim_args else "ZERO")
+                # Register COVERAGE_GAP blocker for zero-coverage mandatory dimensions
+                if dim.coverage_status == "ZERO" and dim.mandatory and not dim.justified_irrelevance:
+                    blocker_ledger.add(
+                        kind=BlockerKind.COVERAGE_GAP,
+                        source=f"dimension:{dim.dimension_id}",
+                        detected_round=self._config.rounds,
+                        detail=f"Zero arguments for mandatory dimension: {dim.name}",
+                        models=[],
+                    )
             covered = sum(1 for d in dimension_result.items if d.argument_count >= 2)
             dimension_result.dimension_coverage_score = covered / len(dimension_result.items) if dimension_result.items else 0.0
 
