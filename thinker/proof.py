@@ -212,14 +212,14 @@ class ProofBuilder:
         """Set two-tier evidence data."""
         self._evidence_active = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
-             "url": e.url, "confidence": e.confidence.value, "score": e.score,
+             "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
              "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
             if hasattr(e, 'evidence_id') else e
             for e in active
         ]
         self._evidence_archive = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
-             "url": e.url, "confidence": e.confidence.value, "score": e.score,
+             "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
              "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
             if hasattr(e, 'evidence_id') else e
             for e in archive
@@ -355,11 +355,15 @@ class ProofBuilder:
             "search_log": self._search_log,
             "ungrounded_stats": self._ungrounded_stats,
             "evidence": {
-                "active": self._evidence_active,
+                "active_working_set": self._evidence_active,
                 "archive": self._evidence_archive,
                 "eviction_log": self._eviction_log,
                 "active_count": len(self._evidence_active),
                 "archive_count": len(self._evidence_archive),
+                "high_authority_evidence_present": any(
+                    e.get("authority_tier") in ("HIGH", "AUTHORITATIVE")
+                    for e in self._evidence_active
+                ) if self._evidence_active else False,
             },
             "arguments": self._arguments or {},
             "blockers": blocker_list,

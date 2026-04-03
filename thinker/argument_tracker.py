@@ -66,6 +66,10 @@ def parse_arguments(text: str, round_num: int) -> list[Argument]:
     args = []
     for line in text.strip().split("\n"):
         line = line.strip()
+        # Strip markdown bold/italic markers and leading bullet/dash
+        line = re.sub(r"^\s*[-*•]\s*", "", line)
+        line = re.sub(r"\*{1,2}(ARG-\d+.*?)\*{1,2}", r"\1", line)
+        line = line.strip()
         # Try bracket format first: ARG-1: [model] text
         match = re.match(r"(ARG-\d+):\s+\[(\w+)\]\s+(.+)", line)
         if not match:

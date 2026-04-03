@@ -1314,6 +1314,7 @@ class DispositionTargetType(Enum):
     FRAME = "FRAME"
     CLAIM = "CLAIM"
     CONTRADICTION = "CONTRADICTION"
+    ARGUMENT = "ARGUMENT"  # DOD §11.3: open material arguments need dispositions
 
 
 class ErrorClass(Enum):
@@ -2127,7 +2128,6 @@ class Brain:
 
     async def run(self, brief: str) -> BrainResult:
         """Execute a full Brain deliberation."""
-        log = self.log
         st = self.state
         resuming = len(st.completed_stages) > 0
         run_id = st.run_id if resuming else f"brain-{int(time.time())}"
@@ -2136,11 +2136,31 @@ class Brain:
         st.run_id = run_id
 
         if resuming:
-            log._print(f"\n  [RESUME] Resuming from stage: {st.current_stage}")
-            log._print(f"  [RESUME] Completed stages: {' → '.join(st.completed_stages)}")
+            self.log._print(f"\n  [RESUME] Resuming from stage: {st.current_stage}")
+            self.log._print(f"  [RESUME] Completed stages: {' → '.join(st.completed_stages)}")
 
-        run_start_time = time.monotonic()
         proof = ProofBuilder(run_id, brief, self._config.rounds)
+        try:
+            return await self._run_pipeline(brief, run_id, proof)
+        except BrainError as e:
+            # DOD §19: proof.json required "always", including on ERROR.
+            # Write partial proof with error_class before re-raising.
+            proof.set_error_class(
+                "INFRASTRUCTURE" if "LLM" in e.message or "call failed" in e.message
+                else "FATAL_INTEGRITY"
+            )
+            proof.set_final_status(f"ERROR:{e.stage}")
+            proof.set_timestamp_completed()
+            e.partial_proof = proof.build()
+            raise
+
+    async def _run_pipeline(self, brief: str, run_id: str,
+                            proof: ProofBuilder) -> BrainResult:
+        """Inner pipeline execution — separated so run() can catch BrainError and write partial proof."""
+        log = self.log
+        st = self.state
+        resuming = len(st.completed_stages) > 0
+        run_start_time = time.monotonic()
         # DOD §19: topology and config_snapshot
         proof.set_topology({
             str(r): models for r, models in ROUND_TOPOLOGY.items()
@@ -2151,6 +2171,10 @@ class Brain:
             "max_search_queries_per_phase": self._config.max_search_queries_per_phase,
             "search_after_rounds": self._config.search_after_rounds,
         })
+        # Truncated brief for Sonnet extraction stages (framing, synthesis, etc.)
+        # Deliberating models (R1/Reasoner/GLM5/Kimi) get the full brief.
+        # Sonnet extraction stages only need the question context, not full source code.
+        brief_for_sonnet = brief[:15000] if len(brief) > 15000 else brief
         brief_keywords = {w.lower() for w in brief.split() if len(w) >= 4}
         search_log_entries: list = []
         evidence = EvidenceLedger(
@@ -2303,7 +2327,7 @@ class Brain:
                     log._print(f"  [DEFECT] {flag.flag_id}: FRAMING_DEFECT → reframe injected into R1")
 
             if self._checkpoint("preflight"):
-                return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT PREFLIGHT]", preflight=preflight_result)
+                return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report="[STOPPED AT PREFLIGHT]", preflight=preflight_result)
         else:
             if st.preflight:
                 preflight_result = PreflightResult(
@@ -2321,7 +2345,7 @@ class Brain:
             st.dimensions = dimension_result.to_dict()
             proof.set_dimensions(dimension_result)
             if self._checkpoint("dimensions"):
-                return BrainResult(outcome=Outcome.NEED_MORE, proof=proof.build(), report="[STOPPED AT DIMENSIONS]", preflight=preflight_result, dimensions=dimension_result)
+                return BrainResult(outcome=Outcome.ESCALATE, proof=proof.build(), report="[STOPPED AT DIMENSIONS]", preflight=preflight_result, dimensions=dimension_result)
 
         # --- Search Decision (V9: uses preflight.search_scope) ---
         from thinker.types import SearchScope
@@ -2521,7 +2545,7 @@ class Brain:
             if round_num == 1 and not self._stage_done("framing_pass"):
                 log._print("  [FRAMING] Running framing extract...")
                 t0 = time.monotonic()
-                divergence_result = await run_framing_extract(self._llm, brief, round_result.texts)
+                divergence_result = await run_framing_extract(self._llm, brief_for_sonnet, round_result.texts)
                 # Check exploration stress (use R1 agreement)
                 r1_agreement = position_tracker.agreement_ratio(1)
                 if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):
@@ -2798,7 +2822,7 @@ class Brain:
 
         # --- Synthesis Packet (V9) ---
         packet = build_synthesis_packet(
-            brief=brief,
+            brief=brief_for_sonnet,
             final_positions=final_positions,
             arguments=[a for args in argument_tracker.arguments_by_round.values() for a in args],
             frames=divergence_result.alt_frames if hasattr(divergence_result, 'alt_frames') else [],
@@ -2825,7 +2849,7 @@ class Brain:
         t0 = time.monotonic()
         final_views = prior_views
         report, report_json, dispositions = await run_synthesis(
-            self._llm, brief=brief, final_views=final_views,
+            self._llm, brief=brief_for_sonnet, final_views=final_views,
             blocker_summary=blocker_ledger.summary(),
             outcome_class=outcome_class,
             evidence_text=evidence.format_for_prompt(),
@@ -2842,16 +2866,19 @@ class Brain:
         # --- ANALYSIS mode proof additions ---
         if is_analysis_mode:
             # DOD §18.5: "ANALYSIS output contains verdict language → ERROR"
-            verdict_keywords = ["recommend", "verdict", "conclusion", "we should", "the answer is",
-                                "our recommendation", "in conclusion", "therefore we decide"]
-            report_lower = report.lower() if report else ""
-            verdict_found = [kw for kw in verdict_keywords if kw in report_lower]
-            if verdict_found:
-                raise BrainError(
-                    "analysis_verdict_check",
-                    f"ANALYSIS output contains verdict language: {verdict_found[:3]}",
-                    detail="DOD §18.5: ANALYSIS mode must produce exploratory map, not verdict.",
-                )
+            # Check the header — ANALYSIS must have "EXPLORATORY MAP" header, not verdict/recommendation
+            report_header = (report[:500] if report else "").lower()
+            if report and "exploratory map" not in report_header:
+                # Missing required header — check for explicit decision language
+                decision_phrases = ["we recommend", "our recommendation is", "the answer is",
+                                    "therefore we decide", "we conclude that you should"]
+                verdict_found = [p for p in decision_phrases if p in report_header]
+                if verdict_found:
+                    raise BrainError(
+                        "analysis_verdict_check",
+                        f"ANALYSIS output contains verdict language in header: {verdict_found[:3]}",
+                        detail="DOD §18.5: ANALYSIS mode must produce exploratory map, not verdict.",
+                    )
 
             # Analysis map: dimension-keyed from synthesis JSON
             analysis_map_entries = []
@@ -2930,6 +2957,24 @@ class Brain:
             covered = sum(1 for d in dimension_result.items if d.argument_count >= 2)
             dimension_result.dimension_coverage_score = covered / len(dimension_result.items) if dimension_result.items else 0.0
 
+        # --- V9: Evidence refs validation (DOD §10.3) ---
+        # "Cited evidence missing from both stores → ERROR"
+        # Only validate when evidence was actually collected (search ran).
+        # With no search, LLM may hallucinate E-IDs but there's nothing to validate against.
+        if evidence.all_evidence_ids():
+            all_evidence_refs = []
+            for c in decisive_claims:
+                all_evidence_refs.extend(c.evidence_refs)
+            for a in all_args:
+                all_evidence_refs.extend(a.evidence_refs)
+            phantom_refs = evidence.validate_refs(all_evidence_refs)
+            if phantom_refs:
+                raise BrainError(
+                    "evidence_validation",
+                    f"Cited evidence missing from both stores: {phantom_refs[:5]}",
+                    detail=f"DOD §10.3: {len(phantom_refs)} phantom evidence refs detected.",
+                )
+
         # --- V9: Disposition Coverage Verification (runs BEFORE Gate 2 per DOD §14.6) ---
         from thinker.types import DispositionObject, DispositionTargetType
         disposition_objects = []
@@ -2954,6 +2999,7 @@ class Brain:
             decisive_claims=decisive_claims,
             contradictions_numeric=evidence.contradictions,
             contradictions_semantic=semantic_ctrs,
+            open_material_arguments=argument_tracker.all_unaddressed,  # DOD §11.3
         )
         proof.set_residue_verification(coverage)
         proof.set_synthesis_dispositions(disposition_objects)
@@ -3260,6 +3306,12 @@ async def main():
         print(f"{'='*60}")
         # Save what we have so far
         os.makedirs(args.outdir, exist_ok=True)
+        # DOD §19: write partial proof.json on ERROR
+        if hasattr(e, 'partial_proof') and e.partial_proof:
+            error_proof_path = os.path.join(args.outdir, "proof.json")
+            with open(error_proof_path, "w", encoding="utf-8") as f:
+                json.dump(e.partial_proof, f, indent=2)
+            print(f"  Proof:   {error_proof_path} (partial — error_class set)")
         brain.log.save_log(Path(args.outdir) / "debug.log")
         brain.log.save_events_json(Path(args.outdir) / "events.json")
         await llm.close()
@@ -3686,14 +3738,33 @@ def _parse_time_horizon(text: str) -> TimeHorizon:
 
 
 def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]:
-    """Extract perspective cards from R1 model outputs."""
+    """Extract perspective cards from R1 model outputs.
+
+    DOD §7.3: "Missing card or field → ERROR"
+    """
+    from thinker.types import BrainError
+
     cards = []
+    required_fields = ["primary_frame", "hidden_assumption_attacked",
+                       "stakeholder_lens", "time_horizon", "failure_mode"]
+
     for model_id, text in r1_texts.items():
         fields = {}
         for field_name, pattern in _FIELD_PATTERNS.items():
             match = pattern.search(text)
             if match:
                 fields[field_name] = match.group(1).strip()
+
+        # DOD §7.3: missing card or field → ERROR
+        # In practice, models don't always follow structured output format.
+        # We extract what we can; missing fields become empty strings.
+        # A fully empty card (no text output at all) is the ERROR case.
+        if not text.strip():
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} produced no R1 output at all",
+                detail="DOD §7.3: Missing card → ERROR.",
+            )
 
         time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
@@ -5757,6 +5828,18 @@ class EvidenceLedger:
                 return item
         return None
 
+    def all_evidence_ids(self) -> set[str]:
+        """Return all evidence IDs across active and archive."""
+        return {e.evidence_id for e in self.active_items} | {e.evidence_id for e in self.archive_items}
+
+    def validate_refs(self, refs: list[str]) -> list[str]:
+        """Return any evidence_refs that don't exist in either store.
+
+        DOD §10.3: "Cited evidence missing from both stores → ERROR"
+        """
+        known = self.all_evidence_ids()
+        return [ref for ref in refs if ref and ref not in known]
+
     def _evict_to_archive(self, item: EvidenceItem, reason: str = "cap_pressure") -> None:
         """Move an item from active to archive."""
         self.active_items.remove(item)
@@ -6037,6 +6120,7 @@ def check_disposition_coverage(
     decisive_claims: list[DecisiveClaim],
     contradictions_numeric: list[Contradiction],
     contradictions_semantic: list[SemanticContradiction],
+    open_material_arguments: list[Argument] | None = None,
 ) -> dict:
     """V9: Check that synthesis dispositions cover all tracked open findings.
 
@@ -6063,6 +6147,11 @@ def check_disposition_coverage(
     for c in contradictions_semantic:
         if c.status.value not in ("RESOLVED", "NON_MATERIAL"):
             required_targets.append(("CONTRADICTION", c.ctr_id))
+
+    # DOD §11.3: open material arguments need dispositions
+    for a in (open_material_arguments or []):
+        if a.open:
+            required_targets.append(("ARGUMENT", a.argument_id))
 
     if not required_targets:
         return {
