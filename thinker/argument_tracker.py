@@ -33,19 +33,26 @@ from different models — track each separately."""
 COMPARE_PROMPT = """Here are the arguments from round {prev_round}:
 {arguments}
 
+Here are the NEW arguments extracted from round {curr_round}:
+{new_arguments}
+
 Here are the model outputs from round {curr_round}:
 {outputs}
 
-For each argument, classify it as:
+For each argument from round {prev_round}, classify it as:
 - ADDRESSED: The argument was directly engaged with (agreed, rebutted, or refined with reasoning)
 - MENTIONED: The argument was referenced but not substantively engaged with
 - IGNORED: The argument does not appear in any model's output at all
+
+If ADDRESSED by refinement or supersession, also indicate which round {curr_round} argument replaces it.
 
 Be strict. "Mentioned" means the model acknowledged the point but didn't reason about it.
 "Addressed" requires genuine engagement — agreement with new reasoning, or a specific rebuttal.
 
 Respond as:
-ARG-N: ADDRESSED | MENTIONED | IGNORED"""
+ARG-N: ADDRESSED [superseded_by R{curr_round}-ARG-M] | ADDRESSED | MENTIONED | IGNORED
+
+Only include [superseded_by ...] when a specific new argument clearly replaces or refines the old one."""
 
 
 def parse_arguments(text: str, round_num: int) -> list[Argument]:
@@ -85,25 +92,33 @@ def parse_arguments(text: str, round_num: int) -> list[Argument]:
     return args
 
 
-def parse_comparison(text: str, prev_round: int = 0) -> dict[str, ArgumentStatus]:
+def parse_comparison(text: str, prev_round: int = 0) -> dict[str, tuple[ArgumentStatus, str | None]]:
     """Parse argument comparison from Sonnet's response.
 
     Handles both prefixed (R1-ARG-1) and unprefixed (ARG-1) IDs.
     When unprefixed, adds the R{prev_round} prefix to match stored IDs.
+
+    Returns dict mapping argument_id -> (status, superseded_by_id or None).
     """
-    statuses: dict[str, ArgumentStatus] = {}
+    statuses: dict[str, tuple[ArgumentStatus, str | None]] = {}
     for line in text.strip().split("\n"):
         line = line.strip()
-        # Try prefixed format first: R1-ARG-1: ADDRESSED
+        # Extract optional [superseded_by R2-ARG-3] tag
+        superseded_by = None
+        sup_match = re.search(r"\[superseded_by\s+(R\d+-ARG-\d+)\]", line)
+        if sup_match:
+            superseded_by = sup_match.group(1)
+
+        # Try prefixed format first: R1-ARG-1: ADDRESSED [superseded_by ...]
         match = re.match(r"(R\d+-ARG-\d+):\s+(ADDRESSED|MENTIONED|IGNORED)", line)
         if match:
-            statuses[match.group(1)] = ArgumentStatus[match.group(2)]
+            statuses[match.group(1)] = (ArgumentStatus[match.group(2)], superseded_by)
             continue
         # Unprefixed format: ARG-1: ADDRESSED — add round prefix
         match = re.match(r"(ARG-\d+):\s+(ADDRESSED|MENTIONED|IGNORED)", line)
         if match:
             arg_id = f"R{prev_round}-{match.group(1)}" if prev_round else match.group(1)
-            statuses[arg_id] = ArgumentStatus[match.group(2)]
+            statuses[arg_id] = (ArgumentStatus[match.group(2)], superseded_by)
     return statuses
 
 
@@ -115,6 +130,7 @@ class ArgumentTracker:
         self.arguments_by_round: dict[int, list[Argument]] = {}
         self.all_unaddressed: list[Argument] = []  # Cumulative across all rounds
         self.last_raw_response: str = ""  # For debug logging
+        self._broken_supersession_links: list[dict] = []  # DOD §11.3 violations
 
     def assign_dimensions(self, arguments: list[Argument], dimension_names: dict[str, str]) -> None:
         """Post-hoc assignment of dimension_id to arguments by keyword matching.
@@ -168,14 +184,19 @@ class ArgumentTracker:
         args_text = "\n".join(
             f"{a.argument_id}: [{a.model}] {a.text}" for a in prev_args
         )
-        combined = "\n\n".join(f"### {m}\n{t}" for m, t in curr_outputs.items())
         curr_round = prev_round + 1
+        curr_args = self.arguments_by_round.get(curr_round, [])
+        new_args_text = "\n".join(
+            f"{a.argument_id}: [{a.model}] {a.text}" for a in curr_args
+        ) if curr_args else "(not yet extracted)"
+        combined = "\n\n".join(f"### {m}\n{t}" for m, t in curr_outputs.items())
 
         resp = await self._llm.call(
             "sonnet",
             COMPARE_PROMPT.format(
                 prev_round=prev_round, arguments=args_text,
-                curr_round=curr_round, outputs=combined,
+                curr_round=curr_round, new_arguments=new_args_text,
+                outputs=combined,
             ),
         )
         if not resp.ok:
@@ -185,9 +206,12 @@ class ArgumentTracker:
 
         from thinker.types import ResolutionStatus
         statuses = parse_comparison(resp.text, prev_round=prev_round)
+        # Build set of valid curr_round arg IDs for supersession validation
+        valid_curr_ids = {a.argument_id for a in curr_args}
         unaddressed = []
         for arg in prev_args:
-            status = statuses.get(arg.argument_id, ArgumentStatus.IGNORED)
+            result = statuses.get(arg.argument_id, (ArgumentStatus.IGNORED, None))
+            status, superseded_by_id = result
             arg.status = status
             if status in (ArgumentStatus.IGNORED, ArgumentStatus.MENTIONED):
                 arg.addressed_in_round = None
@@ -195,7 +219,22 @@ class ArgumentTracker:
                 unaddressed.append(arg)
             else:
                 arg.addressed_in_round = curr_round
-                arg.resolution_status = ResolutionStatus.REFINED
+                # Set superseded_by if valid (DOD §11.3)
+                if superseded_by_id:
+                    if superseded_by_id in valid_curr_ids:
+                        arg.resolution_status = ResolutionStatus.SUPERSEDED
+                        arg.superseded_by = superseded_by_id
+                    else:
+                        # DOD §11.3: "Supersession link broken → ERROR"
+                        # Log as broken link; fall back to REFINED since LLM may hallucinate IDs
+                        arg.resolution_status = ResolutionStatus.REFINED
+                        self._broken_supersession_links.append({
+                            "argument_id": arg.argument_id,
+                            "claimed_superseded_by": superseded_by_id,
+                            "reason": "target ID not found in current round arguments",
+                        })
+                else:
+                    arg.resolution_status = ResolutionStatus.REFINED
                 arg.open = False
 
         # Accumulate: add newly unaddressed args, remove any that were addressed

@@ -31,7 +31,7 @@ from thinker.gate2 import run_gate2_deterministic, classify_outcome
 from thinker.invariant import validate_invariants
 from thinker.page_fetch import fetch_pages_for_results
 from thinker.proof import ProofBuilder
-from thinker.residue import check_synthesis_residue
+from thinker.residue import check_synthesis_residue, run_deep_semantic_scan
 from thinker.rounds import execute_round
 from thinker.search import SearchOrchestrator, SearchPhase
 from thinker.synthesis import run_synthesis
@@ -242,6 +242,16 @@ class Brain:
 
         run_start_time = time.monotonic()
         proof = ProofBuilder(run_id, brief, self._config.rounds)
+        # DOD §19: topology and config_snapshot
+        proof.set_topology({
+            str(r): models for r, models in ROUND_TOPOLOGY.items()
+        })
+        proof.set_config_snapshot({
+            "rounds": self._config.rounds,
+            "max_evidence_items": self._config.max_evidence_items,
+            "max_search_queries_per_phase": self._config.max_search_queries_per_phase,
+            "search_after_rounds": self._config.search_after_rounds,
+        })
         brief_keywords = {w.lower() for w in brief.split() if len(w) >= 4}
         search_log_entries: list = []
         evidence = EvidenceLedger(
@@ -902,11 +912,39 @@ class Brain:
                     if key.startswith("DIM-") or key in ("aspect_map", "hypothesis_ledger"):
                         analysis_map_entries.append({key: report_json[key]})
             proof.set_analysis_map(analysis_map_entries)
-            proof.set_analysis_debug({
-                "debug_mode": True,  # Section 4.6: deployed with debug initially
+
+            # DOD §18.4: debug sunset enforcement
+            # Counter persisted via file in outdir
+            sunset_file = Path(self._config.outdir) / ".analysis_debug_remaining"
+            if sunset_file.exists():
+                try:
+                    remaining = int(sunset_file.read_text().strip())
+                except (ValueError, OSError):
+                    remaining = self._config.analysis_debug_runs_remaining
+            else:
+                remaining = self._config.analysis_debug_runs_remaining
+
+            debug_active = remaining > 0
+            new_remaining = max(0, remaining - 1) if debug_active else 0
+            # Persist decremented counter
+            try:
+                sunset_file.parent.mkdir(parents=True, exist_ok=True)
+                sunset_file.write_text(str(new_remaining))
+            except OSError:
+                pass  # Non-fatal: counter resets next run
+
+            # DOD §18.4 schema: debug_gate2_result and actual_output
+            # filled after Gate 2 runs (stored as placeholders, updated below)
+            analysis_debug_data = {
+                "debug_mode": debug_active,
+                "debug_gate2_result": None,  # Filled after Gate 2
+                "actual_output": None,  # Filled after Gate 2
+                "rules_enforced": not debug_active,  # Rules always enforced; debug affects audit only
+                "remaining_debug_runs": new_remaining,
                 "analysis_mode_active": True,
                 "dimension_coverage_score": dimension_result.dimension_coverage_score,
-            })
+            }
+            proof.set_analysis_debug(analysis_debug_data)
 
         # --- Stability Tests (V9) ---
         stability_result = run_stability_tests(
@@ -973,10 +1011,22 @@ class Brain:
         proof.set_synthesis_dispositions(disposition_objects)
 
         if coverage.get("deep_scan_triggered"):
-            proof.add_violation(
-                "RESIDUE-COVERAGE", "WARN",
-                f"Disposition omission rate {coverage['omission_rate']:.0%} > 20% threshold",
-            )
+            # DOD §14.6: deep scan MUST run when triggered
+            deep_scan_result = run_deep_semantic_scan(report, coverage.get("omissions", []))
+            coverage["deep_scan"] = deep_scan_result
+            proof.set_residue_verification(coverage)  # Update with deep scan data
+            if deep_scan_result["material_omissions_remain"]:
+                # DOD §14.6: "Material omissions unresolved after deep scan → ESCALATE"
+                # Register CRITICAL blocker so D6 triggers ESCALATE
+                blocker_ledger.add(
+                    kind=BlockerKind.COVERAGE_GAP,
+                    source="deep_semantic_scan",
+                    detected_round=self._config.rounds,
+                    detail=(f"Deep scan: {deep_scan_result['still_missing']} material omissions "
+                            f"remain after scan (omission rate {coverage['omission_rate']:.0%})"),
+                    models=[],
+                    severity="CRITICAL",
+                )
 
         # Legacy string-match residue check (supplementary)
         residue_omissions = check_synthesis_residue(
@@ -993,6 +1043,13 @@ class Brain:
             )
 
         # --- Gate 2 (deterministic) ---
+        # Compute stage integrity for D1 (DOD §3.3)
+        required_stages = ["preflight", "dimensions"] + [
+            f"r{i}" for i in range(1, self._config.rounds + 1)
+        ] + ["synthesis"]
+        completed = set(self.state.completed_stages)
+        fatal_stages = [s for s in required_stages if s not in completed]
+
         gate2 = run_gate2_deterministic(
             agreement_ratio=agreement,
             positions=final_positions,
@@ -1007,6 +1064,7 @@ class Brain:
             dimensions=dimension_result,
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
+            stage_integrity_fatal=fatal_stages if fatal_stages else None,
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,
@@ -1023,6 +1081,11 @@ class Brain:
                 final_outcome=gate2.outcome.value,
             )
 
+        # DOD §18.4: fill debug_gate2_result and actual_output after Gate 2
+        if is_analysis_mode and proof._analysis_debug:
+            proof._analysis_debug["debug_gate2_result"] = gate2.outcome.value
+            proof._analysis_debug["actual_output"] = gate2.outcome.value
+
         self._checkpoint("gate2")
 
         # --- Invariant validation (F6) ---
@@ -1036,6 +1099,14 @@ class Brain:
         )
         for v in inv_violations:
             proof.add_violation(v["id"], v["severity"], v["detail"])
+
+        # DOD §11.3: broken supersession links → ERROR-level violations
+        for bl in argument_tracker._broken_supersession_links:
+            proof.add_violation(
+                "SUPERSESSION-BROKEN", "ERROR",
+                f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
+                f"but target not found: {bl['reason']}",
+            )
 
         # --- Final: Wire all remaining proof sections ---
         outcome = gate2.outcome
@@ -1066,9 +1137,9 @@ class Brain:
 
         # Stage integrity
         proof.set_stage_integrity(
-            required=["preflight", "dimensions", "r1", "r2", "r3", "r4", "synthesis", "gate2"],
+            required=required_stages + ["gate2"],
             order=self.state.completed_stages,
-            fatal=[],
+            fatal=fatal_stages,
         )
 
         # Diagnostics
@@ -1078,6 +1149,14 @@ class Brain:
             "search_enabled": search_enabled,
             "models_used": list(set(m for rnd in st.round_responded.values() for m in rnd)),
         })
+
+        # DOD §19: synthesis_output and timestamp_completed
+        proof.set_synthesis_output({
+            "report": report[:5000] if report else None,
+            "report_json": st.report_json,
+        })
+        proof.set_timestamp_completed()
+        proof.set_error_class(None)  # No error if we reach here
 
         # --- Acceptance status (F2) — must be computed last, after all violations ---
         proof.compute_acceptance_status()

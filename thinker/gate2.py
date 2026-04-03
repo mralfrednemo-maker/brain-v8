@@ -106,6 +106,7 @@ def _eval_decide_rules(
     decisive_claims: Optional[list[DecisiveClaim]],
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
+    stage_integrity_fatal: Optional[list[str]] = None,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
@@ -152,10 +153,19 @@ def _eval_decide_rules(
                     and f.synthesis_disposition_status == "UNADDRESSED"):
                 material_frames_unresolved.append(f)
 
-    # --- D1: Fatal integrity or infrastructure failure (DOD 3.3) ---
-    fatal_integrity = (total_arguments == 0 and len(positions) == 0)
+    # --- D1: Fatal integrity or infrastructure failure (DOD §16, §3.3) ---
+    # Fires when critical pipeline data is completely absent or stage integrity
+    # reports fatal failures — indicating infrastructure failure.
+    no_pipeline_output = (total_arguments == 0 and len(positions) == 0)
+    empty_dimensions = (
+        dimensions is not None and len(dimensions.items) == 0
+    )
+    has_fatal_stages = bool(stage_integrity_fatal)
+    fatal_integrity = no_pipeline_output or empty_dimensions or has_fatal_stages
     if _t("D1", fatal_integrity,
-          f"models={len(positions)}, args={total_arguments}"):
+          f"models={len(positions)}, args={total_arguments}, "
+          f"dims={'none' if dimensions is None else len(dimensions.items)}, "
+          f"fatal_stages={stage_integrity_fatal or []}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
@@ -343,6 +353,7 @@ def run_gate2_deterministic(
     dimensions: Optional[DimensionSeedResult] = None,
     total_arguments: int = 0,
     archive_evidence_count: int = 0,
+    stage_integrity_fatal: Optional[list[str]] = None,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -398,6 +409,7 @@ def run_gate2_deterministic(
             decisive_claims=decisive_claims,
             dimensions=dimensions,
             total_arguments=total_arguments,
+            stage_integrity_fatal=stage_integrity_fatal,
         )
 
     # Identify which rule fired

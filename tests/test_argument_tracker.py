@@ -103,13 +103,20 @@ class TestArgumentParsing:
         """Comparison handles round-prefixed IDs."""
         text = "R1-ARG-1: ADDRESSED\nR1-ARG-2: IGNORED\nR1-ARG-3: MENTIONED\n"
         statuses = parse_comparison(text, prev_round=1)
-        assert statuses["R1-ARG-1"] == ArgumentStatus.ADDRESSED
-        assert statuses["R1-ARG-2"] == ArgumentStatus.IGNORED
-        assert statuses["R1-ARG-3"] == ArgumentStatus.MENTIONED
+        assert statuses["R1-ARG-1"] == (ArgumentStatus.ADDRESSED, None)
+        assert statuses["R1-ARG-2"] == (ArgumentStatus.IGNORED, None)
+        assert statuses["R1-ARG-3"] == (ArgumentStatus.MENTIONED, None)
 
     def test_parse_comparison_unprefixed(self):
         """Comparison auto-prefixes unprefixed ARG-IDs from Sonnet."""
         text = "ARG-1: ADDRESSED\nARG-2: IGNORED\n"
         statuses = parse_comparison(text, prev_round=2)
-        assert statuses["R2-ARG-1"] == ArgumentStatus.ADDRESSED
-        assert statuses["R2-ARG-2"] == ArgumentStatus.IGNORED
+        assert statuses["R2-ARG-1"] == (ArgumentStatus.ADDRESSED, None)
+        assert statuses["R2-ARG-2"] == (ArgumentStatus.IGNORED, None)
+
+    def test_parse_comparison_with_supersession(self):
+        """Comparison parses superseded_by tags."""
+        text = "R1-ARG-1: ADDRESSED [superseded_by R2-ARG-3]\nR1-ARG-2: IGNORED\n"
+        statuses = parse_comparison(text, prev_round=1)
+        assert statuses["R1-ARG-1"] == (ArgumentStatus.ADDRESSED, "R2-ARG-3")
+        assert statuses["R1-ARG-2"] == (ArgumentStatus.IGNORED, None)

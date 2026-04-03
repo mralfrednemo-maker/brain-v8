@@ -54,3 +54,4 @@ class BrainConfig:
     zai_api_key: str = ""
     brave_api_key: str = ""
     outdir: str = "./output"
+    analysis_debug_runs_remaining: int = 10  # DOD §18.4: debug sunset counter

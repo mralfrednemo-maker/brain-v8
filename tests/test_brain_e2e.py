@@ -154,8 +154,8 @@ class TestBrainE2E:
         assert result.gate2 is not None
         assert result.gate2.rule_trace is not None
         assert len(result.gate2.rule_trace) > 0
-        assert "proof_schema_version" in result.proof
-        assert result.proof["proof_schema_version"] == "3.0"
+        assert "proof_version" in result.proof
+        assert result.proof["proof_version"] == "3.0"
 
     async def test_preflight_rejection_short_circuits(self):
         mock = MockLLMClient()

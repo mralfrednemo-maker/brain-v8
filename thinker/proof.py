@@ -23,7 +23,11 @@ class ProofBuilder:
         self._run_id = run_id
         self._brief = brief
         self._rounds_requested = rounds_requested
-        self._timestamp = datetime.now(timezone.utc).isoformat()
+        self._timestamp_started = datetime.now(timezone.utc).isoformat()
+        self._timestamp_completed: Optional[str] = None
+        self._topology: Optional[dict] = None
+        self._error_class: Optional[str] = None
+        self._config_snapshot: Optional[dict] = None
         self._rounds: dict[str, dict] = {}
         self._positions: dict[str, dict] = {}
         self._position_changes: list[dict] = []
@@ -62,6 +66,7 @@ class ProofBuilder:
         self._analysis_debug: Optional[dict] = None
         self._diagnostics: dict = {}
         self._residue_verification: Optional[dict] = None
+        self._synthesis_output: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -158,6 +163,26 @@ class ProofBuilder:
         })
 
     # --- V9 Setters ---
+
+    def set_timestamp_completed(self) -> None:
+        """Record the completion timestamp."""
+        self._timestamp_completed = datetime.now(timezone.utc).isoformat()
+
+    def set_topology(self, topology: dict) -> None:
+        """Set the round topology (DOD §19: which models in each round)."""
+        self._topology = topology
+
+    def set_error_class(self, error_class: Optional[str]) -> None:
+        """Set error_class (DOD §19: null when no error)."""
+        self._error_class = error_class
+
+    def set_config_snapshot(self, config: dict) -> None:
+        """Set config_snapshot (DOD §19: runtime config at start)."""
+        self._config_snapshot = config
+
+    def set_synthesis_output(self, output: dict) -> None:
+        """Set synthesis_output (DOD §19: synthesis report + JSON)."""
+        self._synthesis_output = output
 
     def set_preflight(self, result) -> None:
         """Set preflight assessment result (PreflightResult.to_dict())."""
@@ -302,25 +327,24 @@ class ProofBuilder:
             blocker_summary = self._blocker_ledger.summary()
 
         proof = {
-            "proof_schema_version": "3.0",
-            "proof_version": "3.0",  # DOD Section 19 canonical key
+            # --- DOD §19 canonical keys ---
+            "proof_version": "3.0",
             "run_id": self._run_id,
-            "timestamp": self._timestamp,
-            "protocol_version": "v9",
-            "rounds_requested": self._rounds_requested,
-            "final_status": self._final_status,
-            "synthesis_status": self._synthesis_status,
-            "acceptance_status": self._acceptance_status,
-            "search_decision": self._search_decision,
-            "v3_outcome_class": self._v3_outcome_class,
-            # V9 new sections
+            "timestamp_started": self._timestamp_started,
+            "timestamp_completed": self._timestamp_completed or datetime.now(timezone.utc).isoformat(),
+            "topology": self._topology,
+            "outcome": self._outcome,
+            "error_class": self._error_class,
+            "stage_integrity": self._stage_integrity,
+            "config_snapshot": self._config_snapshot,
             "preflight": self._preflight,
+            "budgeting": None,  # Deferred per user "no budgets" rule
             "dimensions": self._dimensions,
             "perspective_cards": self._perspective_cards,
+            "rounds": self._rounds,
             "divergence": self._divergence,
             "search_log": self._search_log,
             "ungrounded_stats": self._ungrounded_stats,
-            # Evidence (two-tier)
             "evidence": {
                 "active": self._evidence_active,
                 "archive": self._evidence_archive,
@@ -328,38 +352,35 @@ class ProofBuilder:
                 "active_count": len(self._evidence_active),
                 "archive_count": len(self._evidence_archive),
             } if self._evidence_active or self._evidence_archive else None,
-            "evidence_items": self._evidence_items,
-            # Arguments with resolution
             "arguments": self._arguments if self._arguments else None,
+            "blockers": blocker_list,
             "decisive_claims": self._decisive_claims if self._decisive_claims else None,
             "cross_domain_analogies": self._cross_domain_analogies if self._cross_domain_analogies else None,
-            # Contradictions (numeric + semantic)
             "contradictions": {
                 "numeric": self._contradictions_numeric,
                 "semantic": self._contradictions_semantic,
             } if self._contradictions_numeric or self._contradictions_semantic else None,
-            # Synthesis
             "synthesis_packet": self._synthesis_packet,
+            "synthesis_output": self._synthesis_output,
             "synthesis_dispositions": self._synthesis_dispositions if self._synthesis_dispositions else None,
             "residue_verification": self._residue_verification,
-            # Stability
+            "positions": self._positions,
             "stability": self._stability,
-            # Gate 2
-            "gate2": self._gate2_trace,
-            # Stage integrity
-            "stage_integrity": self._stage_integrity,
-            # Analysis mode
             "analysis_map": self._analysis_map if self._analysis_map else None,
             "analysis_debug": self._analysis_debug,
-            # Diagnostics
             "diagnostics": self._diagnostics if self._diagnostics else None,
-            # Existing sections
-            "rounds": self._rounds,
+            "gate2": self._gate2_trace,
+            # --- Extended fields (not in DOD §19 but useful) ---
+            "protocol_version": "v9",
+            "rounds_requested": self._rounds_requested,
+            "final_status": self._final_status,
+            "synthesis_status": self._synthesis_status,
+            "acceptance_status": self._acceptance_status,
+            "search_decision": self._search_decision,
+            "v3_outcome_class": self._v3_outcome_class,
+            "evidence_items": self._evidence_items,
             "research_phases": self._research_phases,
-            "controller_outcome": self._outcome,
-            "model_positions_by_round": self._positions,
             "position_changes": self._position_changes,
-            "blocker_ledger": blocker_list,
             "blocker_summary": blocker_summary,
             "invariant_violations": self._invariant_violations,
             "synthesis_residue_omissions": self._synthesis_residue_omissions,

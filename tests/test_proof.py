@@ -9,7 +9,7 @@ class TestProofBuilder:
     def test_schema_version(self):
         pb = ProofBuilder(run_id="test-001", brief="Test brief", rounds_requested=4)
         proof = pb.build()
-        assert proof["proof_schema_version"] == "3.0"
+        assert proof["proof_version"] == "3.0"
         assert proof["run_id"] == "test-001"
 
     def test_records_round_results(self):
@@ -27,13 +27,13 @@ class TestProofBuilder:
             "glm5": Position("glm5", 1, "O4", confidence=Confidence.HIGH),
         })
         proof = pb.build()
-        assert proof["model_positions_by_round"]["1"]["r1"]["primary_option"] == "O3"
+        assert proof["positions"]["1"]["r1"]["primary_option"] == "O3"
 
     def test_records_outcome(self):
         pb = ProofBuilder(run_id="test-001", brief="Brief", rounds_requested=3)
         pb.set_outcome(Outcome.DECIDE, agreement_ratio=1.0, outcome_class="CONSENSUS")
         proof = pb.build()
-        assert proof["controller_outcome"]["outcome_class"] == "CONSENSUS"
+        assert proof["outcome"]["outcome_class"] == "CONSENSUS"
 
     def test_includes_blocker_summary(self):
         pb = ProofBuilder(run_id="test-001", brief="Brief", rounds_requested=3)
@@ -54,12 +54,18 @@ class TestProofBuilder:
         proof = pb.build()
         assert len(proof["synthesis_residue_omissions"]) == 1
 
-    def test_compatible_with_v7_schema(self):
-        """V8 proof must contain all fields present in V7 proof."""
+    def test_dod_v3_required_fields(self):
+        """Proof must contain all DOD §19 top-level fields."""
         required_fields = [
-            "proof_schema_version", "run_id", "rounds_requested",
-            "final_status", "evidence_items", "controller_outcome",
-            "model_positions_by_round", "blocker_ledger", "blocker_summary",
+            "proof_version", "run_id", "timestamp_started", "timestamp_completed",
+            "topology", "outcome", "error_class", "stage_integrity",
+            "config_snapshot", "preflight", "budgeting", "dimensions",
+            "perspective_cards", "rounds", "divergence", "search_log",
+            "ungrounded_stats", "evidence", "arguments", "blockers",
+            "decisive_claims", "cross_domain_analogies", "contradictions",
+            "synthesis_packet", "synthesis_output", "residue_verification",
+            "positions", "stability", "analysis_map", "analysis_debug",
+            "diagnostics", "gate2",
         ]
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=3)
         proof = pb.build()
