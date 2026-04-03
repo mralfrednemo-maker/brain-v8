@@ -3069,12 +3069,21 @@ class Brain:
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 
-        # DOD §11.3: broken supersession links → ERROR-level violations (BEFORE Gate 2)
+        # DOD §11.3: broken supersession links → ERROR (BEFORE Gate 2)
+        # Register as both violation AND blocker so D1/D6 can see it
         for bl in argument_tracker._broken_supersession_links:
             proof.add_violation(
                 "SUPERSESSION-BROKEN", "ERROR",
                 f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
                 f"but target not found: {bl['reason']}",
+            )
+            blocker_ledger.add(
+                kind=BlockerKind.COVERAGE_GAP,
+                source="supersession_validation",
+                detected_round=self._config.rounds,
+                detail=f"Broken supersession link: {bl['argument_id']} → {bl['claimed_superseded_by']}",
+                models=[],
+                severity="CRITICAL",
             )
 
         # Merge numeric + semantic contradictions for Gate 2 (DOD §16 D8)
@@ -5176,10 +5185,14 @@ def _eval_decide_rules(
     critical_blockers = [b for b in open_blockers
                          if getattr(b, 'severity', 'MEDIUM') == "CRITICAL"]
 
-    # Decisive claims without valid evidence
+    # Decisive claims without valid evidence (DOD §13.4 + D7)
+    # SUPPORTED with empty evidence_refs is also invalid — phantom support
     claims_lacking_evidence = [
         c for c in (decisive_claims or [])
-        if c.material_to_conclusion and c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
+        if c.material_to_conclusion and (
+            c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
+            or (c.evidence_support_status == EvidenceSupportStatus.SUPPORTED and not c.evidence_refs)
+        )
     ]
 
     # HIGH/CRITICAL unresolved contradictions (handle both enum and string severity)

@@ -943,7 +943,7 @@ class Brain:
         all_args = []
         for rnd_args in argument_tracker.arguments_by_round.values():
             all_args.extend(rnd_args)
-        proof.set_arguments(all_args)
+        proof.set_arguments(all_args, blocker_ledger=blocker_ledger)
 
         # --- Synthesis Gate ---
         t0 = time.monotonic()
@@ -1077,14 +1077,11 @@ class Brain:
                 all_evidence_refs.extend(a.evidence_refs)
             phantom_refs = evidence.validate_refs(all_evidence_refs)
             if phantom_refs:
-                # DOD §10.3 + §1.2: phantom evidence is not infrastructure failure → ESCALATE via blocker
-                blocker_ledger.add(
-                    kind=BlockerKind.UNVERIFIED_CLAIM,
-                    source="evidence_validation",
-                    detected_round=self._config.rounds,
-                    detail=f"Cited evidence missing from both stores: {phantom_refs[:5]}",
-                    models=[],
-                    severity="CRITICAL",
+                # DOD §10.3 + §3.3: cited evidence missing = fatal integrity → ERROR
+                raise BrainError(
+                    "evidence_validation",
+                    f"Cited evidence missing from both stores: {phantom_refs[:5]}",
+                    detail=f"DOD §10.3: {len(phantom_refs)} phantom evidence refs. FATAL_INTEGRITY.",
                 )
 
         # --- V9: Disposition Coverage Verification (runs BEFORE Gate 2 per DOD §14.6) ---
@@ -1169,21 +1166,15 @@ class Brain:
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 
-        # DOD §11.3: broken supersession links → ERROR (BEFORE Gate 2)
-        # Register as both violation AND blocker so D1/D6 can see it
+        # DOD §11.3: broken supersession links → ERROR
+        # These are prevented by construction: argument_tracker validates IDs and falls
+        # back to REFINED when Sonnet hallucninates a target. superseded_by is never set
+        # to a bad ID in proof.json. Violations logged for audit transparency.
         for bl in argument_tracker._broken_supersession_links:
             proof.add_violation(
                 "SUPERSESSION-BROKEN", "ERROR",
-                f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
-                f"but target not found: {bl['reason']}",
-            )
-            blocker_ledger.add(
-                kind=BlockerKind.COVERAGE_GAP,
-                source="supersession_validation",
-                detected_round=self._config.rounds,
-                detail=f"Broken supersession link: {bl['argument_id']} → {bl['claimed_superseded_by']}",
-                models=[],
-                severity="CRITICAL",
+                f"Argument {bl['argument_id']}: LLM claimed superseded_by {bl['claimed_superseded_by']} "
+                f"but target not found — fell back to REFINED (link not written to proof)",
             )
 
         # Merge numeric + semantic contradictions for Gate 2 (DOD §16 D8)

@@ -343,6 +343,11 @@ class Contradiction:
     detection_mode: str = "NUMERIC"  # NUMERIC, SEMANTIC
     justification: str = ""
     linked_claim_ids: list[str] = field(default_factory=list)
+    # DOD §12.1 unified schema fields
+    evidence_ref_a: str = ""
+    evidence_ref_b: str = ""
+    same_entity: bool = False
+    same_timeframe: bool = False
 
 
 @dataclass

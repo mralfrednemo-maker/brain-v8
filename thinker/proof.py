@@ -228,17 +228,26 @@ class ProofBuilder:
             ev.to_dict() if hasattr(ev, 'to_dict') else ev for ev in eviction_log
         ]
 
-    def set_arguments(self, arguments: list) -> None:
+    def set_arguments(self, arguments: list, blocker_ledger=None) -> None:
         """Set argument map with resolution status (DOD §19: object keyed by argument_id)."""
+        # Build dimension→blocker mapping for blocker_link_ids
+        dim_blockers: dict[str, list[str]] = {}
+        if blocker_ledger:
+            for b in blocker_ledger.blockers:
+                if b.source.startswith("dimension:"):
+                    dim_id = b.source.split(":", 1)[1]
+                    dim_blockers.setdefault(dim_id, []).append(b.blocker_id)
+
         self._arguments = {}
         for a in arguments:
             if hasattr(a, 'argument_id'):
+                links = dim_blockers.get(a.dimension_id, []) if a.dimension_id else []
                 self._arguments[a.argument_id] = {
                     "argument_id": a.argument_id, "round_origin": a.round_num,
                     "model_id": a.model, "text": a.text,
                     "status": a.status.value, "resolution_status": a.resolution_status.value,
                     "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
-                    "blocker_link_ids": [], "evidence_refs": a.evidence_refs, "open": a.open,
+                    "blocker_link_ids": links, "evidence_refs": a.evidence_refs, "open": a.open,
                 }
             else:
                 key = a.get("argument_id", f"arg-{len(self._arguments)}")
@@ -257,8 +266,10 @@ class ProofBuilder:
         self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
             {"contradiction_id": c.contradiction_id, "evidence_ids": c.evidence_ids,
+             "evidence_ref_a": c.evidence_ref_a, "evidence_ref_b": c.evidence_ref_b,
+             "same_entity": c.same_entity, "same_timeframe": c.same_timeframe,
              "topic": c.topic, "severity": c.severity, "status": c.status,
-             "detection_mode": c.detection_mode}
+             "detection_mode": c.detection_mode, "linked_claim_ids": c.linked_claim_ids}
             if hasattr(c, 'contradiction_id') else c
             for c in numeric
         ]

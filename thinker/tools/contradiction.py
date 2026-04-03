@@ -51,4 +51,8 @@ def detect_contradiction(
         evidence_ids=[item_a.evidence_id, item_b.evidence_id],
         topic=item_a.topic,
         severity=severity,
+        evidence_ref_a=item_a.evidence_id,
+        evidence_ref_b=item_b.evidence_id,
+        same_entity=item_a.topic_cluster == item_b.topic_cluster if item_a.topic_cluster else False,
+        same_timeframe=True,  # Numeric contradictions on same topic assumed same timeframe
     )

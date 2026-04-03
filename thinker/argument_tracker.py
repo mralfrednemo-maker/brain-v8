@@ -226,20 +226,24 @@ class ArgumentTracker:
                 # Set superseded_by if valid (DOD §11.3)
                 if superseded_by_id:
                     if superseded_by_id in valid_curr_ids:
+                        # Fully resolved: explicit lineage link
                         arg.resolution_status = ResolutionStatus.SUPERSEDED
                         arg.superseded_by = superseded_by_id
+                        arg.open = False
                     else:
-                        # DOD §11.3: "Supersession link broken → ERROR"
-                        # Log as broken link; fall back to REFINED since LLM may hallucinate IDs
+                        # DOD §11.3: broken link — log and keep open
                         arg.resolution_status = ResolutionStatus.REFINED
+                        arg.open = True  # DOD §11.2: no lineage = not resolved
                         self._broken_supersession_links.append({
                             "argument_id": arg.argument_id,
                             "claimed_superseded_by": superseded_by_id,
                             "reason": "target ID not found in current round arguments",
                         })
                 else:
+                    # DOD §11.2: "Restatement without explicit linkage is NOT resolution"
+                    # ADDRESSED without supersession tag = engaged but not formally resolved
                     arg.resolution_status = ResolutionStatus.REFINED
-                arg.open = False
+                    arg.open = True
 
         # Accumulate: add newly unaddressed args, remove any that were addressed
         addressed_ids = {a.argument_id for a in prev_args if a.status == ArgumentStatus.ADDRESSED}
