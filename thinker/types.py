@@ -285,6 +285,7 @@ class Blocker:
     source: str
     detected_round: int
     status: BlockerStatus = BlockerStatus.OPEN
+    severity: str = "MEDIUM"  # LOW, MEDIUM, HIGH, CRITICAL
     status_history: list[dict] = field(default_factory=list)
     models_involved: list[str] = field(default_factory=list)
     evidence_ids: list[str] = field(default_factory=list)

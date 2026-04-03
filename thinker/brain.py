@@ -614,6 +614,7 @@ class Brain:
                 t0 = time.monotonic()
                 divergence_result.alt_frames = await run_frame_survival_check(
                     self._llm, divergence_result.alt_frames, round_result.texts, round_num=2,
+                    is_analysis_mode=is_analysis_mode,
                 )
                 alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
                 st.divergence = divergence_result.to_dict()
@@ -626,6 +627,7 @@ class Brain:
                 t0 = time.monotonic()
                 divergence_result.alt_frames = await run_frame_survival_check(
                     self._llm, divergence_result.alt_frames, round_result.texts, round_num=3,
+                    is_analysis_mode=is_analysis_mode,
                 )
                 alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
                 st.divergence = divergence_result.to_dict()

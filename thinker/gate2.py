@@ -123,10 +123,9 @@ def _eval_decide_rules(
     groupthink_warning = stability.groupthink_warning
     independent_evidence = stability.independent_evidence_present
 
-    # CRITICAL blockers (includes COVERAGE_GAP, UNVERIFIED_CLAIM)
+    # CRITICAL blockers — any kind with severity CRITICAL (DOD Section 13.1)
     critical_blockers = [b for b in open_blockers
-                         if getattr(b, 'kind', None) and b.kind.value in
-                         ("COVERAGE_GAP", "UNVERIFIED_CLAIM", "CONTRADICTION")]
+                         if getattr(b, 'severity', 'MEDIUM') in ("HIGH", "CRITICAL")]
 
     # Decisive claims without valid evidence
     claims_lacking_evidence = [
@@ -134,11 +133,11 @@ def _eval_decide_rules(
         if c.material_to_conclusion and c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
     ]
 
-    # HIGH/CRITICAL unresolved contradictions
+    # HIGH/CRITICAL unresolved contradictions (handle both enum and string severity)
     high_contradictions = [
         c for c in contradictions
         if getattr(c, "status", "OPEN") in ("OPEN", "open")
-        and getattr(c, "severity", "LOW") in ("HIGH", "CRITICAL")
+        and str(getattr(getattr(c, "severity", "LOW"), "value", getattr(c, "severity", "LOW"))) in ("HIGH", "CRITICAL")
     ]
 
     # Unresolved CRITICAL premise flags
@@ -153,8 +152,9 @@ def _eval_decide_rules(
                     and f.synthesis_disposition_status == "UNADDRESSED"):
                 material_frames_unresolved.append(f)
 
-    # --- D1: Fatal integrity or infrastructure failure ---
-    if _t("D1", total_arguments == 0 and len(positions) == 0,
+    # --- D1: Fatal integrity or infrastructure failure (DOD 3.3) ---
+    fatal_integrity = (total_arguments == 0 and len(positions) == 0)
+    if _t("D1", fatal_integrity,
           f"models={len(positions)}, args={total_arguments}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace

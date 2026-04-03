@@ -303,6 +303,7 @@ class ProofBuilder:
 
         proof = {
             "proof_schema_version": "3.0",
+            "proof_version": "3.0",  # DOD Section 19 canonical key
             "run_id": self._run_id,
             "timestamp": self._timestamp,
             "protocol_version": "v9",

@@ -45,11 +45,12 @@ def score_evidence(item: EvidenceItem, brief_keywords: set[str]) -> float:
             kw_hits += 1
     score += min(kw_hits, 5)
 
-    # Source authority
+    # Source authority + set authority_tier
     try:
         domain = urlparse(item.url).netloc.lower()
         if any(auth in domain for auth in _AUTHORITY_DOMAINS):
             score += 2.0
+            item.authority_tier = "HIGH"
     except Exception:
         pass
 

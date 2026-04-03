@@ -1,0 +1,113 @@
+=== BRIEF: Brain V8 DoD v2.0 — Sections for Common Sense and Out-of-the-Box Thinking ===
+
+GOAL: Brain V8's current DoD v2.0 defines a rigorous, zero-tolerance deliberation engine with 18 sections covering outcome contract, pipeline gates, evidence, argument tracking, proof artifacts, and more. It does NOT address two capabilities needed for the system to behave intelligently rather than uniformly: "common sense" and "out-of-the-box thinking." This brief provides agreed operational definitions of these capabilities and asks for the exact DoD sections to be written for them.
+
+CONTEXT: The following definitions were agreed by a multi-platform facilitation (Brain V8 R1, ChatGPT, Claude) on 2026-03-31:
+
+COMMON SENSE (agreed definition):
+The controller's ability to calibrate the pipeline's behavior to the actual nature of the question. Four components:
+1. Effort calibration: trivial/well-established questions short-circuit; high-stakes questions get elevated deliberation effort
+2. Premise validation: the brief's assumptions are checked for defects before deliberation begins
+3. Groupthink detection: fast unanimous agreement is a WARNING SIGNAL on non-trivial questions, not a positive outcome
+4. Settlement discrimination: distinguishes "well-established fact" from "genuine uncertainty requiring deliberation"
+
+OUT-OF-THE-BOX THINKING (agreed definition):
+The pipeline's ability to generate and test credible non-default frames, adversarial positions, and cross-domain analogies. Four components:
+1. Adversarial role: at least one model in R1 is assigned to argue the unconventional/contrarian position via prompt modification
+2. Premise challenge: at least one perspective must question whether the brief's framing is the right question
+3. Frame survival tracking: alternative framings have their own argument lineage and are protected from premature convergence (≥2 models must vote to drop an alternative frame, not just plurality)
+4. Cross-domain analogy tracking: analogies from other domains are tracked and tested against evidence, not just mentioned
+
+AGREED ARCHITECTURE (from facilitation):
+- Common Sense Audit: post-Gate1, pre-R1. Outputs: stakes_class (low/medium/high), question_class (settled_fact/open_empirical/strategic_tradeoff/underspecified/false_premise_risk), premise_flags[], required_effort_tier (minimal/standard/elevated), fast_consensus_allowed (bool)
+- Adversarial Slot: in R1 prompt — one model assigned contrarian/reframing role
+- Divergent Framing Pass: post-R1, pre-R2 — collects alt_frames[], frame_types[], owner_model, support_status, survival_status
+- Gate 2 extension: DECIDE requires agreement_ratio threshold AND no unresolved premise flags AND required alt framing considered/rebutted
+- proof.json additions: commonsense.* and divergence.* sections
+
+EXISTING DoD v2.0 structure (current 18 sections):
+Section 1: Authoritative Outcome Contract (DECIDE/ESCALATE/NO_CONSENSUS/ERROR)
+Section 2: Outcome Decision Rules (Gate 2 thresholds and ordering)
+Section 3: Minimum Viable Deliberation (topology, quorum)
+Section 4: Model Independence and Isolation
+Section 5: Pipeline Gates (Gate 1 + Gate 2)
+Section 6: Evidence Acquisition and Source Policy
+Section 7: Claim-Level Evidence Traceability
+Section 8: Argument, Position, and Objection Lineage
+Section 9: Proof Artifact Contract
+Section 10: Fatal Error Semantics and Failure Artifact
+Section 11: Checkpoint and Resume Integrity
+Section 12: Reproducibility and Replayability
+Section 13: Credibility Requirements
+Section 14: Determinism Policy for Gates
+Section 15: Contradiction Handling Policy
+Section 16: Test and Verification Requirements
+Section 17: Out of Scope (deferred)
+Section 18: Release Evidence Appendix
+
+TASK:
+
+1. SECTION PLACEMENT: Where exactly do the new capabilities belong in the DoD? Should they be new sections (19, 20), extensions of existing sections (e.g., Section 5 for CS Audit as a new gate, Section 8 for OOTB tracking), or both? Justify each placement.
+
+2. COMMON SENSE AUDIT — DoD section text: Write the exact requirements for the Common Sense Audit as DoD-grade acceptance criteria. Include: pass/fail criteria, what it must output, what happens when premise_flags are present, what fast_consensus_allowed=false means for Gate 2, when short-circuit is allowed and what it produces.
+
+3. OUT-OF-THE-BOX THINKING — DoD section text: Write the exact requirements for the Adversarial Slot + Divergent Framing Pass. Include: what triggers it, minimum required alt frames, how frame survival tracking works, what the override counter rule is, how it interacts with the argument tracker, and what Gate 2 must check.
+
+4. GATE 2 EXTENSION: Write the updated Gate 2 outcome decision rules that incorporate both capabilities. The existing Section 2 rules must remain in place. The new rules should extend (not replace) them.
+
+5. PROOF.JSON ADDITIONS: List every new field that must be added to proof.json (Section 9) for both capabilities. Include field names, types, and what constitutes "complete" for each.
+
+6. TEST REQUIREMENTS: For each new DoD section, propose at least 2 automated tests that verify the requirement, not just the implementation (per Section 16 criteria).
+
+Be specific. Write in the same style as DoD v2.0 (requirements-based, no prose). Use SHALL / MUST / MUST NOT language.
+
+=== CURRENT DoD v2.0 (relevant sections) ===
+
+## Section 2 — Outcome Decision Rules
+
+Gate 2 must determine the outcome deterministically using the following rules in strict order:
+
+1. Fatal integrity failure detected → ERROR
+2. agreement_ratio < 0.50 → NO_CONSENSUS
+3. agreement_ratio < 0.75 → ESCALATE
+4. Any unresolved critical argument or blocker → ESCALATE
+5. Decisive claims lack required evidence support → ESCALATE
+6. Critical evidence contradictions unresolved → ESCALATE
+7. Otherwise → DECIDE
+
+## Section 5 — Pipeline Gates
+
+| Gate | Type | Purpose | Pass Condition | Fail Action |
+|------|------|---------|---------------|-------------|
+| Gate 1 | LLM (Sonnet) | Pre-run admission + search decision | Brief is specific, contains sufficient context, has clear deliverable | NEED_MORE pre-run rejection |
+| Gate 2 | Deterministic | Outcome classification | See Section 2 rules | Outcome classified per Section 2 |
+
+Gate 1 must also output a search recommendation (YES/NO) with one-sentence reasoning.
+
+## Section 8 — Argument, Position, and Objection Lineage
+
+All arguments extracted from each round must be tracked with round-prefixed IDs (R1-ARG-N).
+No argument may disappear without an explicit lineage status.
+Arguments are classified as critical or non-critical.
+Any argument marked as a critical blocker (BLK-N) must record: origin round, reason, resolution evidence or reasoning.
+
+## Section 9 — Proof Artifact Contract (current required fields)
+
+proof.json is complete if and only if it contains:
+- run_id, timestamp, protocol_version, proof_schema_version
+- brief (full text)
+- Model identities and exact version strings
+- Gate 1: pass/fail, reasoning, search recommendation, search_decision
+- Gate 2: outcome, thresholds used, agreement_ratio, ignored_arguments count
+- Per round: models invited, responded, failed
+- Per round: all arguments with IDs and classifications
+- Per round: all positions per model
+- Evidence ledger
+- Claim-to-evidence bindings for decisive claims
+- Final outcome and rationale
+- Invariant violations and severities
+- Synthesis residue omissions
+- Config snapshot
+- Input fingerprint
+
+=== END BRIEF ===

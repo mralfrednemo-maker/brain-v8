@@ -152,6 +152,7 @@ async def run_frame_survival_check(
     frames: list[FrameInfo],
     round_texts: dict[str, str],
     round_num: int,
+    is_analysis_mode: bool = False,
 ) -> list[FrameInfo]:
     """Check frame survival against a round's outputs.
 
@@ -216,6 +217,10 @@ async def run_frame_survival_check(
         except ValueError:
             new_status = FrameSurvivalStatus.ACTIVE
 
+        # ANALYSIS mode: frames are NEVER dropped (DOD 18.2)
+        if is_analysis_mode and new_status == FrameSurvivalStatus.DROPPED:
+            new_status = FrameSurvivalStatus.CONTESTED
+
         # R3/R4: never allow DROPPED
         if round_num >= 3 and new_status == FrameSurvivalStatus.DROPPED:
             new_status = FrameSurvivalStatus.CONTESTED
@@ -245,7 +250,8 @@ def check_exploration_stress(
     """
     if agreement_ratio <= 0.75:
         return False
-    if question_class in (QuestionClass.OPEN, QuestionClass.AMBIGUOUS):
+    # DOD Section 8.3: OPEN OR HIGH (not AMBIGUOUS)
+    if question_class == QuestionClass.OPEN:
         return True
     if stakes_class == StakesClass.HIGH:
         return True

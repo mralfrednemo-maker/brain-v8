@@ -367,7 +367,7 @@ class TestDecideRules:
         """D6: CRITICAL blockers (COVERAGE_GAP/UNVERIFIED_CLAIM/CONTRADICTION) -> ESCALATE."""
         blocker = Blocker(
             "B-1", BlockerKind.COVERAGE_GAP, "r1", 2,
-            status=BlockerStatus.OPEN,
+            status=BlockerStatus.OPEN, severity="CRITICAL",
         )
         result = run_gate2_deterministic(
             **_base_decide_kwargs(open_blockers=[blocker]),
