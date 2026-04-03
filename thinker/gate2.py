@@ -123,9 +123,9 @@ def _eval_decide_rules(
     groupthink_warning = stability.groupthink_warning
     independent_evidence = stability.independent_evidence_present
 
-    # CRITICAL blockers — any kind with severity CRITICAL (DOD Section 13.1)
+    # CRITICAL blockers — DOD Section 16 D6: "any unresolved CRITICAL blocker"
     critical_blockers = [b for b in open_blockers
-                         if getattr(b, 'severity', 'MEDIUM') in ("HIGH", "CRITICAL")]
+                         if getattr(b, 'severity', 'MEDIUM') == "CRITICAL"]
 
     # Decisive claims without valid evidence
     claims_lacking_evidence = [

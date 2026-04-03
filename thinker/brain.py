@@ -360,7 +360,16 @@ class Brain:
             for flag in preflight_result.premise_flags:
                 if flag.resolved:
                     continue
-                if flag.routing == PremiseFlagRouting.MANAGEABLE_UNKNOWN:
+                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE:
+                    # DOD 4.3: REQUESTER_FIXABLE → NEED_MORE (must not be admitted)
+                    log._print(f"  [DEFECT] {flag.flag_id}: REQUESTER_FIXABLE → rejecting brief")
+                    proof.set_preflight(preflight_result)
+                    proof.set_final_status("PREFLIGHT_REJECTED")
+                    return BrainResult(
+                        outcome=Outcome.NEED_MORE, proof=proof.build(),
+                        report="", preflight=preflight_result,
+                    )
+                elif flag.routing == PremiseFlagRouting.MANAGEABLE_UNKNOWN:
                     blocker_ledger.add(
                         kind=BlockerKind.COVERAGE_GAP,
                         source=f"preflight:{flag.flag_id}",
@@ -540,6 +549,10 @@ class Brain:
                 # Extract arguments
                 t0 = time.monotonic()
                 args = await argument_tracker.extract_arguments(round_num, round_result.texts)
+                # Assign dimension_id by keyword matching
+                if dimension_result and dimension_result.items:
+                    dim_names = {d.dimension_id: d.name for d in dimension_result.items}
+                    argument_tracker.assign_dimensions(args, dim_names)
                 log.arg_extract(round_num, args, time.monotonic() - t0, argument_tracker.last_raw_response)
                 st.arguments_by_round[str(round_num)] = [
                     {"id": a.argument_id, "model": a.model, "text": a.text} for a in args

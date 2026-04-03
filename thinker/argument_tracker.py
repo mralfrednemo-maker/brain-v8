@@ -116,6 +116,27 @@ class ArgumentTracker:
         self.all_unaddressed: list[Argument] = []  # Cumulative across all rounds
         self.last_raw_response: str = ""  # For debug logging
 
+    def assign_dimensions(self, arguments: list[Argument], dimension_names: dict[str, str]) -> None:
+        """Post-hoc assignment of dimension_id to arguments by keyword matching.
+
+        dimension_names: {dimension_id: name} e.g. {"DIM-1": "Technical Severity"}
+        """
+        for arg in arguments:
+            if arg.dimension_id:
+                continue  # Already assigned
+            text_lower = arg.text.lower()
+            best_match = ""
+            best_score = 0
+            for dim_id, dim_name in dimension_names.items():
+                # Count keyword hits from dimension name
+                keywords = [w.lower() for w in dim_name.split() if len(w) >= 3]
+                score = sum(1 for kw in keywords if kw in text_lower)
+                if score > best_score:
+                    best_score = score
+                    best_match = dim_id
+            if best_match and best_score > 0:
+                arg.dimension_id = best_match
+
     async def extract_arguments(
         self, round_num: int, model_outputs: dict[str, str],
     ) -> list[Argument]:
