@@ -128,10 +128,14 @@ def _eval_decide_rules(
     critical_blockers = [b for b in open_blockers
                          if getattr(b, 'severity', 'MEDIUM') == "CRITICAL"]
 
-    # Decisive claims without valid evidence
+    # Decisive claims without valid evidence (DOD §13.4 + D7)
+    # SUPPORTED with empty evidence_refs is also invalid — phantom support
     claims_lacking_evidence = [
         c for c in (decisive_claims or [])
-        if c.material_to_conclusion and c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
+        if c.material_to_conclusion and (
+            c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
+            or (c.evidence_support_status == EvidenceSupportStatus.SUPPORTED and not c.evidence_refs)
+        )
     ]
 
     # HIGH/CRITICAL unresolved contradictions (handle both enum and string severity)

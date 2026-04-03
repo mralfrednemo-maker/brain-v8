@@ -1169,12 +1169,21 @@ class Brain:
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 
-        # DOD §11.3: broken supersession links → ERROR-level violations (BEFORE Gate 2)
+        # DOD §11.3: broken supersession links → ERROR (BEFORE Gate 2)
+        # Register as both violation AND blocker so D1/D6 can see it
         for bl in argument_tracker._broken_supersession_links:
             proof.add_violation(
                 "SUPERSESSION-BROKEN", "ERROR",
                 f"Argument {bl['argument_id']} claimed superseded_by {bl['claimed_superseded_by']} "
                 f"but target not found: {bl['reason']}",
+            )
+            blocker_ledger.add(
+                kind=BlockerKind.COVERAGE_GAP,
+                source="supersession_validation",
+                detected_round=self._config.rounds,
+                detail=f"Broken supersession link: {bl['argument_id']} → {bl['claimed_superseded_by']}",
+                models=[],
+                severity="CRITICAL",
             )
 
         # Merge numeric + semantic contradictions for Gate 2 (DOD §16 D8)

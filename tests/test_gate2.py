@@ -73,6 +73,7 @@ def _decisive_claims_supported(n: int = 2) -> list[DecisiveClaim]:
         DecisiveClaim(
             claim_id=f"DC-{i+1}", text=f"Claim {i+1}",
             material_to_conclusion=True,
+            evidence_refs=[f"E{i+1:03d}"],  # DOD: SUPPORTED must have evidence_refs
             evidence_support_status=EvidenceSupportStatus.SUPPORTED,
         )
         for i in range(n)

@@ -2977,10 +2977,14 @@ class Brain:
                 all_evidence_refs.extend(a.evidence_refs)
             phantom_refs = evidence.validate_refs(all_evidence_refs)
             if phantom_refs:
-                raise BrainError(
-                    "evidence_validation",
-                    f"Cited evidence missing from both stores: {phantom_refs[:5]}",
-                    detail=f"DOD §10.3: {len(phantom_refs)} phantom evidence refs detected.",
+                # DOD §10.3 + §1.2: phantom evidence is not infrastructure failure → ESCALATE via blocker
+                blocker_ledger.add(
+                    kind=BlockerKind.UNVERIFIED_CLAIM,
+                    source="evidence_validation",
+                    detected_round=self._config.rounds,
+                    detail=f"Cited evidence missing from both stores: {phantom_refs[:5]}",
+                    models=[],
+                    severity="CRITICAL",
                 )
 
         # --- V9: Disposition Coverage Verification (runs BEFORE Gate 2 per DOD §14.6) ---
@@ -3052,9 +3056,13 @@ class Brain:
             required_stages.append(f"r{i}")
             required_stages.append(f"track{i}")
             if i == 1:
-                required_stages.extend(["perspective_cards", "framing_pass", "ungrounded_r1"])
+                required_stages.extend(["perspective_cards", "framing_pass"])
+                if not is_analysis_mode:  # DOD §9.3: ungrounded DECIDE only
+                    required_stages.append("ungrounded_r1")
             if i == 2:
-                required_stages.extend(["frame_survival_r2", "ungrounded_r2"])
+                required_stages.append("frame_survival_r2")
+                if not is_analysis_mode:
+                    required_stages.append("ungrounded_r2")
             if i == 3:
                 required_stages.append("frame_survival_r3")
         required_stages.extend(["semantic_contradiction", "decisive_claims", "synthesis_packet", "synthesis"])
@@ -3998,7 +4006,13 @@ async def run_frame_survival_check(
     )
     round_formatted = "\n\n".join(f"### {m}\n{t}" for m, t in round_texts.items())
 
-    if round_num == 2:
+    if is_analysis_mode:
+        # DOD §18.2: ANALYSIS frames use EXPLORED/NOTED/UNEXPLORED, never dropped
+        rules = ("- ANALYSIS mode: frames are NEVER dropped.\n"
+                 "- Use statuses: EXPLORED (substantively investigated), NOTED (acknowledged but not deep), "
+                 "UNEXPLORED (identified but not investigated).\n"
+                 "- Do NOT use ACTIVE/CONTESTED/DROPPED in ANALYSIS mode.")
+    elif round_num == 2:
         rules = "- A frame is DROPPED only if 3 or more models explicitly reject it with traceable reasoning.\n- A frame is CONTESTED if at least 1 model challenges it but fewer than 3.\n- A frame is ADOPTED if a model explicitly takes it up.\n- A frame is REBUTTED if substantively countered."
     else:
         rules = "- Frames are NEVER dropped in R3/R4. They can only be CONTESTED, ADOPTED, or remain ACTIVE.\n- CONTESTED frames stay CONTESTED (never downgraded to DROPPED)."
@@ -5917,6 +5931,15 @@ class EvidenceLedger:
         self._seen_urls.add(item.url)
         item.content_hash = content_hash
         self.active_items.append(item)
+
+        # DOD §10.3: "Active exceeds 10 → ERROR" — post-condition check
+        if len(self.active_items) > self.max_items:
+            from thinker.types import BrainError
+            raise BrainError(
+                "evidence_ledger",
+                f"Active evidence exceeds cap: {len(self.active_items)} > {self.max_items}",
+                detail="DOD §10.3: Active exceeds 10 → ERROR",
+            )
 
         # Check for contradictions with existing active items
         from thinker.tools.contradiction import detect_contradiction
