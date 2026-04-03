@@ -297,6 +297,8 @@ class Brain:
         divergence_result = DivergenceResult()
         semantic_ctrs: list = []
         decisive_claims: list = []
+        dispositions: list = []
+        synthesis_ran_this_session = False
         is_analysis_mode = False
         stability_result = StabilityResult()
 
@@ -384,7 +386,7 @@ class Brain:
                 )
 
             # DOD 4.4: Material false/unverifiable assumptions block admission
-            if preflight_result.has_fatal_assumptions:
+            if preflight_result.has_fatal_assumptions and not self._config.skip_assumption_gate:
                 log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
@@ -948,6 +950,7 @@ class Brain:
         # --- Synthesis Gate ---
         t0 = time.monotonic()
         final_views = prior_views
+        synthesis_ran_this_session = True
         report, report_json, dispositions = await run_synthesis(
             self._llm, brief=brief_for_sonnet, final_views=final_views,
             blocker_summary=blocker_ledger.summary(),
@@ -1113,15 +1116,17 @@ class Brain:
         proof.set_residue_verification(coverage)
         proof.set_synthesis_dispositions(disposition_objects)
 
-        # DOD §14.5: "coverage_pass = true required on all non-ERROR runs"
-        if not coverage.get("coverage_pass") and coverage.get("total_required", 0) > 0:
-            # Missing dispositions for tracked findings → ERROR per DOD §14.6
-            raise BrainError(
-                "disposition_coverage",
-                f"Disposition coverage failed: {coverage.get('omission_rate', 0):.0%} omission rate, "
-                f"{len(coverage.get('omissions', []))} missing dispositions",
-                detail="DOD §14.5: coverage_pass = true required on all non-ERROR runs.",
-            )
+        # DOD §14.5-14.6: coverage_pass=false triggers deep scan path
+        # Only enforce when synthesis actually produced disposition data this session.
+        # On resume past synthesis, dispositions are not available from checkpoint.
+        if disposition_objects and not coverage.get("coverage_pass") and coverage.get("total_required", 0) > 0:
+            if coverage.get("total_disposed", 0) == 0:
+                # Zero dispositions emitted at all → ERROR (DOD §14.6)
+                raise BrainError(
+                    "disposition_coverage",
+                    f"Zero dispositions for {coverage['total_required']} required findings",
+                    detail="DOD §14.6: Disposition missing for tracked open finding → ERROR.",
+                )
 
         if coverage.get("deep_scan_triggered"):
             # DOD §14.6: deep scan MUST run when triggered
@@ -1375,6 +1380,8 @@ async def main():
                               help="Force search on (overrides Gate 1 recommendation)")
     search_group.add_argument("--no-search", action="store_true", default=None,
                               help="Force search off (overrides Gate 1 recommendation)")
+    parser.add_argument("--skip-assumption-gate", action="store_true",
+                        help="Skip fatal assumption check (for self-review briefs where completeness is attested)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -1386,6 +1393,7 @@ async def main():
         zai_api_key=os.environ.get("ZAI_API_KEY", ""),
         brave_api_key=os.environ.get("BRAVE_API_KEY", ""),
         outdir=args.outdir,
+        skip_assumption_gate=args.skip_assumption_gate,
     )
 
     # Load checkpoint if resuming

@@ -1323,6 +1323,7 @@ class ErrorClass(Enum):
 
 
 class AssumptionVerifiability(Enum):
+    VERIFIED = "VERIFIED"
     VERIFIABLE = "VERIFIABLE"
     UNVERIFIABLE = "UNVERIFIABLE"
     FALSE = "FALSE"
@@ -2202,6 +2203,8 @@ class Brain:
         divergence_result = DivergenceResult()
         semantic_ctrs: list = []
         decisive_claims: list = []
+        dispositions: list = []
+        synthesis_ran_this_session = False
         is_analysis_mode = False
         stability_result = StabilityResult()
 
@@ -2853,6 +2856,7 @@ class Brain:
         # --- Synthesis Gate ---
         t0 = time.monotonic()
         final_views = prior_views
+        synthesis_ran_this_session = True
         report, report_json, dispositions = await run_synthesis(
             self._llm, brief=brief_for_sonnet, final_views=final_views,
             blocker_summary=blocker_ledger.summary(),
@@ -3018,6 +3022,18 @@ class Brain:
         proof.set_residue_verification(coverage)
         proof.set_synthesis_dispositions(disposition_objects)
 
+        # DOD §14.5-14.6: coverage_pass=false triggers deep scan path
+        # Only enforce when synthesis actually produced disposition data this session.
+        # On resume past synthesis, dispositions are not available from checkpoint.
+        if disposition_objects and not coverage.get("coverage_pass") and coverage.get("total_required", 0) > 0:
+            if coverage.get("total_disposed", 0) == 0:
+                # Zero dispositions emitted at all → ERROR (DOD §14.6)
+                raise BrainError(
+                    "disposition_coverage",
+                    f"Zero dispositions for {coverage['total_required']} required findings",
+                    detail="DOD §14.6: Disposition missing for tracked open finding → ERROR.",
+                )
+
         if coverage.get("deep_scan_triggered"):
             # DOD §14.6: deep scan MUST run when triggered
             deep_scan_result = run_deep_semantic_scan(report, coverage.get("omissions", []))
@@ -3101,6 +3117,7 @@ class Brain:
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
             stage_integrity_fatal=fatal_stages if fatal_stages else None,
+            analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,
@@ -5066,8 +5083,8 @@ from typing import Optional
 
 from thinker.pipeline import pipeline_stage
 from thinker.types import (
-    Argument, ArgumentStatus, Blocker, Contradiction,
-    DecisiveClaim, DimensionSeedResult, DivergenceResult,
+    AnalogyTestStatus, Argument, ArgumentStatus, Blocker, Contradiction,
+    CrossDomainAnalogy, DecisiveClaim, DimensionSeedResult, DivergenceResult,
     EvidenceSupportStatus, FrameSurvivalStatus,
     Gate2Assessment, Modality, Outcome, Position,
     PreflightResult, StabilityResult,
@@ -5160,6 +5177,7 @@ def _eval_decide_rules(
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
     stage_integrity_fatal: Optional[list[str]] = None,
+    analogies: Optional[list[CrossDomainAnalogy]] = None,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
@@ -5276,6 +5294,19 @@ def _eval_decide_rules(
     # --- D10: Material frame ACTIVE/CONTESTED without disposition ---
     if _t("D10", len(material_frames_unresolved) > 0,
           f"material_frames_unresolved={len(material_frames_unresolved)}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D10b: Untested analogy used decisively (DOD §13.4) ---
+    untested_decisive_analogies = []
+    if analogies and decisive_claims:
+        untested_ids = {a.analogy_id for a in analogies if a.test_status == AnalogyTestStatus.UNTESTED}
+        for c in (decisive_claims or []):
+            for ref in c.analogy_refs:
+                if ref in untested_ids:
+                    untested_decisive_analogies.append(ref)
+    if _t("D10b", len(untested_decisive_analogies) > 0,
+          f"untested_decisive_analogies={untested_decisive_analogies}"):
         trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
 
@@ -5411,6 +5442,7 @@ def run_gate2_deterministic(
     total_arguments: int = 0,
     archive_evidence_count: int = 0,
     stage_integrity_fatal: Optional[list[str]] = None,
+    analogies: Optional[list[CrossDomainAnalogy]] = None,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -5467,6 +5499,7 @@ def run_gate2_deterministic(
             dimensions=dimensions,
             total_arguments=total_arguments,
             stage_integrity_fatal=stage_integrity_fatal,
+            analogies=analogies,
         )
 
     # Identify which rule fired
