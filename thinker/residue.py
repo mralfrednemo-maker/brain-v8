@@ -70,6 +70,7 @@ def check_disposition_coverage(
     decisive_claims: list[DecisiveClaim],
     contradictions_numeric: list[Contradiction],
     contradictions_semantic: list[SemanticContradiction],
+    open_material_arguments: list[Argument] | None = None,
 ) -> dict:
     """V9: Check that synthesis dispositions cover all tracked open findings.
 
@@ -96,6 +97,11 @@ def check_disposition_coverage(
     for c in contradictions_semantic:
         if c.status.value not in ("RESOLVED", "NON_MATERIAL"):
             required_targets.append(("CONTRADICTION", c.ctr_id))
+
+    # DOD §11.3: open material arguments need dispositions
+    for a in (open_material_arguments or []):
+        if a.open:
+            required_targets.append(("ARGUMENT", a.argument_id))
 
     if not required_targets:
         return {

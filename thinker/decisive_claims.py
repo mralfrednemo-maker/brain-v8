@@ -85,7 +85,8 @@ async def extract_decisive_claims(
     text = text.strip()
 
     try:
-        data = json.loads(text)
+        from thinker.types import extract_json
+        data = extract_json(text)
     except json.JSONDecodeError:
         return []
 

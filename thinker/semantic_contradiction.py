@@ -133,7 +133,8 @@ async def run_semantic_contradiction_pass(
         text = text.strip()
 
         try:
-            data = json.loads(text)
+            from thinker.types import extract_json
+            data = extract_json(text)
         except json.JSONDecodeError as e:
             raise BrainError("semantic_contradiction",
                              f"Failed to parse contradiction JSON for {ev_a.evidence_id} vs {ev_b.evidence_id}: {e}",

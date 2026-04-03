@@ -116,7 +116,8 @@ async def run_preflight(client, brief: str) -> PreflightResult:
     text = text.strip()
 
     try:
-        data = json.loads(text)
+        from thinker.types import extract_json
+        data = extract_json(text)
     except json.JSONDecodeError as e:
         raise BrainError("preflight", f"Failed to parse PreflightAssessment JSON: {e}",
                          detail=resp.text[:500])

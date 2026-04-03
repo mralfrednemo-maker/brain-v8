@@ -1,9 +1,47 @@
 """Core types for the Thinker V8 Brain engine."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+
+def extract_json(text: str) -> dict:
+    """Extract JSON object from LLM response text.
+
+    Handles: raw JSON, code-fenced JSON, JSON with trailing commentary.
+    Raises json.JSONDecodeError if no valid JSON object found.
+    """
+    # Strip code fences
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(cleaned.split("\n")[1:])
+    if cleaned.endswith("```"):
+        cleaned = "\n".join(cleaned.split("\n")[:-1])
+    cleaned = cleaned.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Find first { and match to closing }
+    start = cleaned.find("{")
+    if start < 0:
+        raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+
+    depth = 0
+    for i, ch in enumerate(cleaned[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(cleaned[start:i + 1])
+
+    raise json.JSONDecodeError("Unterminated JSON object", cleaned, start)
 
 
 class BrainError(Exception):
@@ -208,6 +246,7 @@ class DispositionTargetType(Enum):
     FRAME = "FRAME"
     CLAIM = "CLAIM"
     CONTRADICTION = "CONTRADICTION"
+    ARGUMENT = "ARGUMENT"  # DOD §11.3: open material arguments need dispositions
 
 
 class ErrorClass(Enum):

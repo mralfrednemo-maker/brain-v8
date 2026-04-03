@@ -52,7 +52,9 @@ Given the brief below, identify 3-5 mandatory exploration dimensions that models
 )
 async def run_dimension_seeder(client, brief: str) -> DimensionSeedResult:
     """Run the Dimension Seeder. Returns DimensionSeedResult."""
-    prompt = SEEDER_PROMPT.format(brief=brief)
+    # Truncate brief for seeder — it needs the question, not full source code
+    brief_for_seeder = brief[:15000] if len(brief) > 15000 else brief
+    prompt = SEEDER_PROMPT.format(brief=brief_for_seeder)
     resp = await client.call("sonnet", prompt)
 
     if not resp.ok:
@@ -66,7 +68,8 @@ async def run_dimension_seeder(client, brief: str) -> DimensionSeedResult:
     text = text.strip()
 
     try:
-        data = json.loads(text)
+        from thinker.types import extract_json
+        data = extract_json(text)
     except json.JSONDecodeError as e:
         raise BrainError("dimension_seeder", f"Failed to parse Dimension Seeder JSON: {e}",
                          detail=resp.text[:500])

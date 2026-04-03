@@ -106,6 +106,18 @@ class EvidenceLedger:
                 return item
         return None
 
+    def all_evidence_ids(self) -> set[str]:
+        """Return all evidence IDs across active and archive."""
+        return {e.evidence_id for e in self.active_items} | {e.evidence_id for e in self.archive_items}
+
+    def validate_refs(self, refs: list[str]) -> list[str]:
+        """Return any evidence_refs that don't exist in either store.
+
+        DOD §10.3: "Cited evidence missing from both stores → ERROR"
+        """
+        known = self.all_evidence_ids()
+        return [ref for ref in refs if ref and ref not in known]
+
     def _evict_to_archive(self, item: EvidenceItem, reason: str = "cap_pressure") -> None:
         """Move an item from active to archive."""
         self.active_items.remove(item)

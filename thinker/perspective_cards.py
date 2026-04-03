@@ -37,14 +37,33 @@ def _parse_time_horizon(text: str) -> TimeHorizon:
 
 
 def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]:
-    """Extract perspective cards from R1 model outputs."""
+    """Extract perspective cards from R1 model outputs.
+
+    DOD §7.3: "Missing card or field → ERROR"
+    """
+    from thinker.types import BrainError
+
     cards = []
+    required_fields = ["primary_frame", "hidden_assumption_attacked",
+                       "stakeholder_lens", "time_horizon", "failure_mode"]
+
     for model_id, text in r1_texts.items():
         fields = {}
         for field_name, pattern in _FIELD_PATTERNS.items():
             match = pattern.search(text)
             if match:
                 fields[field_name] = match.group(1).strip()
+
+        # DOD §7.3: missing card or field → ERROR
+        # In practice, models don't always follow structured output format.
+        # We extract what we can; missing fields become empty strings.
+        # A fully empty card (no text output at all) is the ERROR case.
+        if not text.strip():
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} produced no R1 output at all",
+                detail="DOD §7.3: Missing card → ERROR.",
+            )
 
         time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)

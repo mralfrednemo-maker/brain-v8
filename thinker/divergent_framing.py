@@ -110,7 +110,8 @@ async def run_framing_extract(client, brief: str, r1_texts: dict[str, str]) -> D
     text = text.strip()
 
     try:
-        data = json.loads(text)
+        from thinker.types import extract_json
+        data = extract_json(text)
     except json.JSONDecodeError as e:
         raise BrainError("framing_pass", f"Failed to parse framing extract JSON: {e}",
                          detail=resp.text[:500])
@@ -198,7 +199,8 @@ async def run_frame_survival_check(
     text = text.strip()
 
     try:
-        data = json.loads(text)
+        from thinker.types import extract_json
+        data = extract_json(text)
     except json.JSONDecodeError as e:
         raise BrainError(f"frame_survival_r{round_num}",
                          f"Failed to parse frame survival JSON: {e}",
