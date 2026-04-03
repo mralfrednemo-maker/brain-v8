@@ -10,13 +10,15 @@ class BlockerLedger:
         self._counter = 0
 
     def add(self, kind: BlockerKind, source: str, detected_round: int,
-            detail: str = "", models: list[str] | None = None) -> Blocker:
+            detail: str = "", models: list[str] | None = None,
+            severity: str = "MEDIUM") -> Blocker:
         self._counter += 1
         blocker = Blocker(
             blocker_id=f"BLK{self._counter:03d}",
             kind=kind,
             source=source,
             detected_round=detected_round,
+            severity=severity,
             detail=detail,
             models_involved=models or [],
             status_history=[{"status": "OPEN", "round": detected_round, "trigger": "detected"}],

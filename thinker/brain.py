@@ -54,7 +54,7 @@ from thinker.analysis_mode import get_analysis_round_preamble, get_analysis_synt
 from thinker.synthesis_packet import build_synthesis_packet, format_synthesis_packet_for_prompt
 from thinker.residue import check_disposition_coverage
 from thinker.types import (
-    DimensionSeedResult, DivergenceResult, Modality, PreflightResult, StabilityResult,
+    DimensionSeedResult, DivergenceResult, FrameSurvivalStatus, Modality, PreflightResult, StabilityResult,
 )
 
 
@@ -275,7 +275,7 @@ class Brain:
             # Restore V9 state from checkpoint
             from thinker.types import (
                 Answerability, QuestionClass, StakesClass, EffortTier, SearchScope,
-                DimensionItem, FrameInfo, FrameType, FrameSurvivalStatus,
+                DimensionItem, FrameInfo, FrameType,
             )
             if st.preflight:
                 pf = st.preflight
@@ -350,6 +350,16 @@ class Brain:
                     report="", preflight=preflight_result,
                 )
 
+            # DOD 4.4: Material false/unverifiable assumptions block admission
+            if preflight_result.has_fatal_assumptions:
+                log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
+                proof.set_preflight(preflight_result)
+                proof.set_final_status("PREFLIGHT_REJECTED")
+                return BrainResult(
+                    outcome=Outcome.NEED_MORE, proof=proof.build(),
+                    report="", preflight=preflight_result,
+                )
+
             st.preflight = preflight_result.to_dict()
             st.modality = preflight_result.modality.value
             is_analysis_mode = preflight_result.modality == Modality.ANALYSIS
@@ -376,6 +386,7 @@ class Brain:
                         detected_round=0,
                         detail=f"Manageable unknown: {flag.summary}",
                         models=[],
+                        severity="HIGH" if flag.severity.value == "CRITICAL" else "MEDIUM",
                     )
                     log._print(f"  [DEFECT] {flag.flag_id}: MANAGEABLE_UNKNOWN → blocker registered")
                 elif flag.routing == PremiseFlagRouting.FRAMING_DEFECT:
@@ -667,6 +678,7 @@ class Brain:
                         source="ungrounded_stat_detector",
                         detected_round=3,
                         detail=f"Unverified numeric claim persists after R3: {stat}",
+                        severity="CRITICAL",
                         models=[],
                     )
                 if ungrounded_r3:
@@ -927,9 +939,58 @@ class Brain:
                         detected_round=self._config.rounds,
                         detail=f"Zero arguments for mandatory dimension: {dim.name}",
                         models=[],
+                        severity="CRITICAL",
                     )
             covered = sum(1 for d in dimension_result.items if d.argument_count >= 2)
             dimension_result.dimension_coverage_score = covered / len(dimension_result.items) if dimension_result.items else 0.0
+
+        # --- V9: Disposition Coverage Verification (runs BEFORE Gate 2 per DOD §14.6) ---
+        from thinker.types import DispositionObject, DispositionTargetType
+        disposition_objects = []
+        for d in dispositions:
+            try:
+                disposition_objects.append(DispositionObject(
+                    target_type=DispositionTargetType(d["target_type"]),
+                    target_id=d["target_id"],
+                    status=d["status"],
+                    importance=d["importance"],
+                    narrative_explanation=d["narrative_explanation"],
+                ))
+            except (ValueError, KeyError):
+                pass
+
+        active_frames_for_residue = [f for f in divergence_result.alt_frames
+                         if f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
+        coverage = check_disposition_coverage(
+            dispositions=disposition_objects,
+            open_blockers=blocker_ledger.blockers,
+            active_frames=active_frames_for_residue,
+            decisive_claims=decisive_claims,
+            contradictions_numeric=evidence.contradictions,
+            contradictions_semantic=semantic_ctrs,
+        )
+        proof.set_residue_verification(coverage)
+        proof.set_synthesis_dispositions(disposition_objects)
+
+        if coverage.get("deep_scan_triggered"):
+            proof.add_violation(
+                "RESIDUE-COVERAGE", "WARN",
+                f"Disposition omission rate {coverage['omission_rate']:.0%} > 20% threshold",
+            )
+
+        # Legacy string-match residue check (supplementary)
+        residue_omissions = check_synthesis_residue(
+            report=report,
+            blockers=blocker_ledger.blockers,
+            contradictions=evidence.contradictions,
+            unaddressed_arguments=argument_tracker.all_unaddressed,
+        )
+        proof.set_synthesis_residue(residue_omissions)
+        if any(o.get("threshold_violation") for o in residue_omissions):
+            proof.add_violation(
+                "RESIDUE-THRESHOLD", "WARN",
+                f"Synthesis omitted >30% of structural findings ({len(residue_omissions)} omissions)",
+            )
 
         # --- Gate 2 (deterministic) ---
         gate2 = run_gate2_deterministic(
@@ -975,54 +1036,6 @@ class Brain:
         )
         for v in inv_violations:
             proof.add_violation(v["id"], v["severity"], v["detail"])
-
-        # --- V9: Disposition Coverage Verification ---
-        from thinker.types import DispositionObject, DispositionTargetType, FrameSurvivalStatus
-        disposition_objects = []
-        for d in dispositions:
-            try:
-                disposition_objects.append(DispositionObject(
-                    target_type=DispositionTargetType(d["target_type"]),
-                    target_id=d["target_id"],
-                    status=d["status"],
-                    importance=d["importance"],
-                    narrative_explanation=d["narrative_explanation"],
-                ))
-            except (ValueError, KeyError):
-                pass
-
-        active_frames = [f for f in divergence_result.alt_frames
-                         if f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
-        coverage = check_disposition_coverage(
-            dispositions=disposition_objects,
-            open_blockers=blocker_ledger.blockers,
-            active_frames=active_frames,
-            decisive_claims=decisive_claims,
-            contradictions_numeric=evidence.contradictions,
-            contradictions_semantic=semantic_ctrs,
-        )
-        proof.set_residue_verification(coverage)
-        proof.set_synthesis_dispositions(disposition_objects)
-
-        if coverage.get("deep_scan_triggered"):
-            proof.add_violation(
-                "RESIDUE-COVERAGE", "WARN",
-                f"Disposition omission rate {coverage['omission_rate']:.0%} > 20% threshold",
-            )
-
-        # --- Legacy string-match residue check (supplementary) ---
-        residue_omissions = check_synthesis_residue(
-            report=report,
-            blockers=blocker_ledger.blockers,
-            contradictions=evidence.contradictions,
-            unaddressed_arguments=argument_tracker.all_unaddressed,
-        )
-        proof.set_synthesis_residue(residue_omissions)
-        if any(o.get("threshold_violation") for o in residue_omissions):
-            proof.add_violation(
-                "RESIDUE-THRESHOLD", "WARN",
-                f"Synthesis omitted >30% of structural findings ({len(residue_omissions)} omissions)",
-            )
 
         # --- Final: Wire all remaining proof sections ---
         outcome = gate2.outcome
