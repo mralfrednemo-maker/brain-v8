@@ -204,5 +204,5 @@ class TestProofV9:
         semantic = [SemanticContradiction(ctr_id="CTR-SEM-1")]
         pb.set_contradictions(numeric, semantic)
         proof = pb.build()
-        assert len(proof["contradictions"]["numeric"]) == 1
-        assert len(proof["contradictions"]["semantic"]) == 1
+        assert len(proof["contradictions"]["numeric_records"]) == 1
+        assert len(proof["contradictions"]["semantic_records"]) == 1

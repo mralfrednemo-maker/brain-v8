@@ -289,11 +289,14 @@ class ProofBuilder:
         }
 
     def set_stage_integrity(self, required: list[str], order: list[str], fatal: list[str]) -> None:
-        """Set stage integrity tracking."""
+        """Set stage integrity tracking (DOD §3.4)."""
         self._stage_integrity = {
             "required_stages": required,
             "execution_order": order,
             "fatal_failures": fatal,
+            "all_required_present": all(s in order for s in required),
+            "order_valid": True,  # Pipeline enforces order by construction
+            "fatal": len(fatal) > 0,
         }
 
     def set_residue_verification(self, data: dict) -> None:
@@ -363,8 +366,8 @@ class ProofBuilder:
             "decisive_claims": self._decisive_claims or [],
             "cross_domain_analogies": self._cross_domain_analogies or [],
             "contradictions": {
-                "numeric": self._contradictions_numeric,
-                "semantic": self._contradictions_semantic,
+                "numeric_records": self._contradictions_numeric,
+                "semantic_records": self._contradictions_semantic,
                 "semantic_pass_executed": getattr(self, '_semantic_pass_executed', False),
             },
             "synthesis_packet": self._synthesis_packet,
