@@ -93,8 +93,11 @@ class EvidenceLedger:
 
     @property
     def high_authority_evidence_present(self) -> bool:
-        """Whether any active evidence has HIGH or AUTHORITATIVE authority tier."""
-        return any(e.authority_tier in ("HIGH", "AUTHORITATIVE") for e in self.active_items)
+        """Whether any evidence (active or archive) has HIGH or AUTHORITATIVE authority tier."""
+        return any(
+            e.authority_tier in ("HIGH", "AUTHORITATIVE")
+            for e in self.active_items + self.archive_items
+        )
 
     def get_from_any(self, evidence_id: str) -> Optional[EvidenceItem]:
         """Search both active and archive for an evidence item by ID."""

@@ -54,25 +54,31 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             if match:
                 fields[field_name] = match.group(1).strip()
 
-        # DOD §7.3 + zero-tolerance: missing card → ERROR. No silent skips.
+        # DOD §7.3 + zero-tolerance: missing card or field → ERROR
         if not text.strip():
-            from thinker.types import BrainError
             raise BrainError(
                 "perspective_cards",
                 f"Model {model_id} produced no R1 output — zero tolerance",
-                detail="DOD §7.3: Missing card or field → ERROR.",
+                detail="DOD §7.3: Missing card → ERROR.",
+            )
+        missing = [f for f in required_fields if not fields.get(f)]
+        if missing:
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} missing perspective card fields: {missing}",
+                detail=f"DOD §7.3: Missing field → ERROR. Extracted: {list(fields.keys())}",
             )
 
-        time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
+        time_horizon = _parse_time_horizon(fields["time_horizon"])
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
 
         card = PerspectiveCard(
             model_id=model_id,
-            primary_frame=fields.get("primary_frame", ""),
-            hidden_assumption_attacked=fields.get("hidden_assumption_attacked", ""),
-            stakeholder_lens=fields.get("stakeholder_lens", ""),
+            primary_frame=fields["primary_frame"],
+            hidden_assumption_attacked=fields["hidden_assumption_attacked"],
+            stakeholder_lens=fields["stakeholder_lens"],
             time_horizon=time_horizon,
-            failure_mode=fields.get("failure_mode", ""),
+            failure_mode=fields["failure_mode"],
             coverage_obligation=obligation,
         )
         cards.append(card)

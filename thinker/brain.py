@@ -370,6 +370,8 @@ class Brain:
             if preflight_result.answerability.value in ("NEED_MORE", "INVALID_FORM"):
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
+                proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                proof.set_timestamp_completed()
                 return BrainResult(
                     outcome=Outcome.NEED_MORE, proof=proof.build(),
                     report="", preflight=preflight_result,
@@ -380,6 +382,8 @@ class Brain:
                 log._print("  [PREFLIGHT] FATAL_PREMISE detected but answerability=ANSWERABLE — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
+                proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                proof.set_timestamp_completed()
                 return BrainResult(
                     outcome=Outcome.NEED_MORE, proof=proof.build(),
                     report="", preflight=preflight_result,
@@ -390,6 +394,8 @@ class Brain:
                 log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
+                proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                proof.set_timestamp_completed()
                 return BrainResult(
                     outcome=Outcome.NEED_MORE, proof=proof.build(),
                     report="", preflight=preflight_result,
@@ -425,6 +431,8 @@ class Brain:
                     log._print(f"  [DEFECT] {flag.flag_id}: REQUESTER_FIXABLE → rejecting brief")
                     proof.set_preflight(preflight_result)
                     proof.set_final_status("PREFLIGHT_REJECTED")
+                    proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                    proof.set_timestamp_completed()
                     return BrainResult(
                         outcome=Outcome.NEED_MORE, proof=proof.build(),
                         report="", preflight=preflight_result,

@@ -2308,6 +2308,21 @@ class Brain:
             is_analysis_mode = preflight_result.modality == Modality.ANALYSIS
             proof.set_preflight(preflight_result)
 
+            # DOD §5.1: populate budgeting from preflight + config
+            proof.set_budgeting({
+                "effort_tier": preflight_result.effort_tier.value,
+                "per_round_token_budgets": {
+                    str(r): {"models": models, "max_tokens": 30000 if any(
+                        m in ("r1", "reasoner") for m in models
+                    ) else 16000} for r, models in ROUND_TOPOLOGY.items()
+                },
+                "search_budget_policy": preflight_result.search_scope.value,
+                "speculative_expansion_allowed": preflight_result.effort_tier.value == "ELEVATED",
+                "high_authority_evidence_required": preflight_result.search_scope.value != "NONE",
+                "short_circuit_taken": False,
+                "fallback_from_short_circuit": False,
+            })
+
             # --- Defect Routing (V9, DESIGN-V3.md Section 1.1) ---
             from thinker.types import PremiseFlagRouting
             for flag in preflight_result.premise_flags:
@@ -3810,9 +3825,14 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             if match:
                 fields[field_name] = match.group(1).strip()
 
-        # Skip models that produced no output — they're already in round_result.failed
+        # DOD §7.3 + zero-tolerance: missing card → ERROR. No silent skips.
         if not text.strip():
-            continue
+            from thinker.types import BrainError
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} produced no R1 output — zero tolerance",
+                detail="DOD §7.3: Missing card or field → ERROR.",
+            )
 
         time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
@@ -6417,6 +6437,7 @@ class ProofBuilder:
         self._diagnostics: dict = {}
         self._residue_verification: Optional[dict] = None
         self._synthesis_output: Optional[dict] = None
+        self._budgeting: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -6533,6 +6554,10 @@ class ProofBuilder:
     def set_synthesis_output(self, output: dict) -> None:
         """Set synthesis_output (DOD §19: synthesis report + JSON)."""
         self._synthesis_output = output
+
+    def set_budgeting(self, data: dict) -> None:
+        """Set budgeting data (DOD §5.1)."""
+        self._budgeting = data
 
     def set_preflight(self, result) -> None:
         """Set preflight assessment result (PreflightResult.to_dict())."""
@@ -6714,7 +6739,7 @@ class ProofBuilder:
             "stage_integrity": self._stage_integrity,
             "config_snapshot": self._config_snapshot,
             "preflight": self._preflight,
-            "budgeting": None,  # Deferred per user "no budgets" rule
+            "budgeting": self._budgeting,
             "dimensions": self._dimensions,
             "perspective_cards": self._perspective_cards,
             "rounds": self._rounds,

@@ -118,7 +118,8 @@ def compute_groupthink_warning(
     if not fast_consensus:
         return False
 
-    non_trivial = question_class in (QuestionClass.OPEN, QuestionClass.AMBIGUOUS)
+    # DOD §15.2: question_class = OPEN OR stakes_class = HIGH (not AMBIGUOUS)
+    non_trivial = question_class == QuestionClass.OPEN
     high_stakes = stakes_class == StakesClass.HIGH
 
     if not (non_trivial or high_stakes):

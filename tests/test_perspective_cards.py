@@ -17,7 +17,8 @@ def test_extract_cards_from_r1():
     assert all(c.failure_mode for c in cards)
 
 
-def test_extract_cards_missing_fields_uses_defaults():
+def test_extract_cards_missing_fields_raises_error():
+    """DOD §7.3 + zero tolerance: missing perspective card fields → ERROR."""
     from thinker.perspective_cards import extract_perspective_cards
     r1_texts = {
         "kimi": "Some analysis without structured fields",
@@ -25,8 +26,8 @@ def test_extract_cards_missing_fields_uses_defaults():
         "reasoner": "Third analysis",
         "glm5": "Fourth analysis",
     }
-    cards = extract_perspective_cards(r1_texts)
-    assert len(cards) == 4
+    with pytest.raises(BrainError, match="missing perspective card fields"):
+        extract_perspective_cards(r1_texts)
 
 
 def test_coverage_obligations_assigned():
