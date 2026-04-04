@@ -4964,17 +4964,17 @@ def compute_reason_stability(
     if not all(c.evidence_support_status.value == "SUPPORTED" for c in material_claims):
         return False
 
-    # If model attribution is available, check that surviving models share claims
     # DOD §15.2: "Models converge for the same reasons (shared decisive claim set)"
+    # All surviving models must endorse the SAME set of material claims.
     surviving_models = set(positions.keys()) if positions else set()
     if surviving_models and any(c.supporting_model_ids for c in material_claims):
-        # Each surviving model must support at least one material claim
-        for model in surviving_models:
-            model_supports = any(
-                model in c.supporting_model_ids for c in material_claims
-            )
-            if not model_supports:
-                return False  # This model doesn't share any decisive claim
+        for claim in material_claims:
+            if not claim.supporting_model_ids:
+                continue  # No attribution data — can't check
+            # Every surviving model must endorse every material claim
+            claim_models = set(claim.supporting_model_ids)
+            if not surviving_models.issubset(claim_models):
+                return False  # Not all models share this decisive claim
 
     return True
 
@@ -6563,14 +6563,18 @@ class ProofBuilder:
         self._evidence_active = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
              "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
-             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
+             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier,
+             "is_active": e.is_active, "is_archived": e.is_archived,
+             "referenced_by": e.referenced_by}
             if hasattr(e, 'evidence_id') else e
             for e in active
         ]
         self._evidence_archive = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
              "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
-             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
+             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier,
+             "is_active": e.is_active, "is_archived": e.is_archived,
+             "referenced_by": e.referenced_by}
             if hasattr(e, 'evidence_id') else e
             for e in archive
         ]

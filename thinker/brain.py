@@ -400,6 +400,21 @@ class Brain:
             is_analysis_mode = preflight_result.modality == Modality.ANALYSIS
             proof.set_preflight(preflight_result)
 
+            # DOD §5.1: populate budgeting from preflight + config
+            proof.set_budgeting({
+                "effort_tier": preflight_result.effort_tier.value,
+                "per_round_token_budgets": {
+                    str(r): {"models": models, "max_tokens": 30000 if any(
+                        m in ("r1", "reasoner") for m in models
+                    ) else 16000} for r, models in ROUND_TOPOLOGY.items()
+                },
+                "search_budget_policy": preflight_result.search_scope.value,
+                "speculative_expansion_allowed": preflight_result.effort_tier.value == "ELEVATED",
+                "high_authority_evidence_required": preflight_result.search_scope.value != "NONE",
+                "short_circuit_taken": False,
+                "fallback_from_short_circuit": False,
+            })
+
             # --- Defect Routing (V9, DESIGN-V3.md Section 1.1) ---
             from thinker.types import PremiseFlagRouting
             for flag in preflight_result.premise_flags:

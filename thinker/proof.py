@@ -67,6 +67,7 @@ class ProofBuilder:
         self._diagnostics: dict = {}
         self._residue_verification: Optional[dict] = None
         self._synthesis_output: Optional[dict] = None
+        self._budgeting: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -183,6 +184,10 @@ class ProofBuilder:
     def set_synthesis_output(self, output: dict) -> None:
         """Set synthesis_output (DOD §19: synthesis report + JSON)."""
         self._synthesis_output = output
+
+    def set_budgeting(self, data: dict) -> None:
+        """Set budgeting data (DOD §5.1)."""
+        self._budgeting = data
 
     def set_preflight(self, result) -> None:
         """Set preflight assessment result (PreflightResult.to_dict())."""
@@ -364,7 +369,7 @@ class ProofBuilder:
             "stage_integrity": self._stage_integrity,
             "config_snapshot": self._config_snapshot,
             "preflight": self._preflight,
-            "budgeting": None,  # Deferred per user "no budgets" rule
+            "budgeting": self._budgeting,
             "dimensions": self._dimensions,
             "perspective_cards": self._perspective_cards,
             "rounds": self._rounds,
