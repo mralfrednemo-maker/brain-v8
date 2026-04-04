@@ -31,6 +31,7 @@ def test_build_packet_basic():
     )
     assert "final_positions" in packet
     assert len(packet["final_positions"]) == 2
+    assert packet["final_positions"][0]["model_id"] == "r1"
     assert packet["argument_count_total"] == 0
 
 
@@ -120,4 +121,5 @@ def test_format_packet_for_prompt():
     text = format_synthesis_packet_for_prompt(packet)
     assert "Final Positions" in text
     assert "Option A" in text
+    assert "r1" in text
     assert "Disposition Requirements" in text

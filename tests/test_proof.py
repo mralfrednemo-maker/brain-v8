@@ -220,9 +220,10 @@ class TestProofV9:
 
     def test_argument_wire_format_uses_model_id(self):
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
-        pb.set_arguments([Argument("ARG-1", 1, "r1", "text")])
+        pb.set_arguments([Argument("ARG-1", 1, "r1", "text", refines="ARG-0")])
         wire = pb.build()["arguments"]["ARG-1"]
         assert wire["model_id"] == "r1"
+        assert wire["refines"] == "ARG-0"
         assert "model" not in wire
 
     def test_blocker_wire_format_uses_dod_field_names(self):

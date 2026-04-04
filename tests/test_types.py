@@ -153,6 +153,7 @@ def test_evidence_item_has_two_tier_fields():
 def test_argument_has_resolution_status():
     a = Argument(argument_id="R1-ARG-1", round_num=1, model="r1", text="test")
     assert a.resolution_status == ResolutionStatus.ORIGINAL
+    assert a.refines is None
     assert a.superseded_by is None
     assert a.open is True
 
@@ -233,6 +234,7 @@ def test_argument_to_dict_uses_dod_field_names():
     payload = Argument(argument_id="ARG-1", round_num=1, model="r1", text="claim").to_dict()
     assert payload["round_origin"] == 1
     assert payload["model_id"] == "r1"
+    assert "refines" in payload
     assert "round_num" not in payload
     assert "model" not in payload
 

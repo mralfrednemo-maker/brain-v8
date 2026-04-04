@@ -179,6 +179,27 @@ class TestBrainE2E:
         # Should NOT have called any deliberation models
         assert len(mock.calls_for("r1")) == 0
 
+    async def test_fatal_assumptions_still_block_when_skip_gate_enabled(self):
+        mock = MockLLMClient()
+        mock.add_response("sonnet", (
+            '{"answerability": "ANSWERABLE", "question_class": "OPEN", '
+            '"stakes_class": "STANDARD", "effort_tier": "STANDARD", "modality": "DECIDE", '
+            '"search_scope": "TARGETED", "exploration_required": false, '
+            '"short_circuit_allowed": false, "fatal_premise": false, '
+            '"follow_up_questions": [], "premise_flags": [], "hidden_context_gaps": [], '
+            '"critical_assumptions": [{"assumption_id": "CA-1", "text": "Core premise is true", '
+            '"verifiability": "FALSE", "material": true}], '
+            '"reasoning": "Answerable except for a material false assumption."}'
+        ))
+        brain = Brain(
+            config=BrainConfig(rounds=3, skip_assumption_gate=True),
+            llm_client=mock,
+            search_fn=None,
+        )
+        result = await brain.run(brief="Proceed despite a false premise.")
+        assert result.outcome == Outcome.NEED_MORE
+        assert len(mock.calls_for("r1")) == 0
+
     async def test_proof_has_round_data(self):
         mock = MockLLMClient()
         _setup_full_mock(mock, rounds=3)

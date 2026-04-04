@@ -322,6 +322,7 @@ class Argument:
     status: ArgumentStatus = ArgumentStatus.IGNORED
     addressed_in_round: Optional[int] = None
     resolution_status: ResolutionStatus = ResolutionStatus.ORIGINAL
+    refines: Optional[str] = None
     superseded_by: Optional[str] = None
     dimension_id: str = ""
     evidence_refs: list[str] = field(default_factory=list)
@@ -337,6 +338,7 @@ class Argument:
             "status": self.status.value,
             "addressed_in_round": self.addressed_in_round,
             "resolution_status": self.resolution_status.value,
+            "refines": self.refines,
             "superseded_by": self.superseded_by,
             "dimension_id": self.dimension_id,
             "blocker_link_ids": self.blocker_link_ids,
@@ -941,7 +943,7 @@ class SynthesisPacket:
     """DOD §14.1 controller-curated synthesis packet."""
     packet_complete: bool = False
     brief_excerpt: str = ""
-    final_positions: dict = field(default_factory=dict)
+    final_positions: list[dict] = field(default_factory=list)
     argument_lifecycle: list[dict] = field(default_factory=list)
     argument_count_total: int = 0
     argument_count_open: int = 0

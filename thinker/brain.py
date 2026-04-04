@@ -399,7 +399,7 @@ class Brain:
                 )
 
             # DOD 4.4: Material false/unverifiable assumptions block admission
-            if preflight_result.has_fatal_assumptions and not self._config.skip_assumption_gate:
+            if preflight_result.has_fatal_assumptions:
                 log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
@@ -681,8 +681,10 @@ class Brain:
 
             # --- V9: Mark adversarial slot assigned (DOD §10) ---
             if round_num == 1:
-                divergence_result.adversarial_slot_assigned = True
-                divergence_result.adversarial_model_id = "kimi"
+                divergence_required = not is_analysis_mode and not preflight_result.short_circuit_allowed
+                divergence_result.required = divergence_required
+                divergence_result.adversarial_slot_assigned = divergence_required
+                divergence_result.adversarial_model_id = "kimi" if divergence_required else None
 
             # --- V9: Post-R1 perspective cards + framing pass ---
             if round_num == 1 and not self._stage_done("perspective_cards"):
@@ -699,6 +701,9 @@ class Brain:
                 log._print("  [FRAMING] Running framing extract...")
                 t0 = time.monotonic()
                 divergence_result = await run_framing_extract(self._llm, brief_for_sonnet, round_result.texts)
+                divergence_result.required = not is_analysis_mode and not preflight_result.short_circuit_allowed
+                divergence_result.adversarial_slot_assigned = divergence_result.required
+                divergence_result.adversarial_model_id = "kimi" if divergence_result.required else None
                 # Check exploration stress (use R1 agreement)
                 r1_agreement = position_tracker.agreement_ratio(1)
                 if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):

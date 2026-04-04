@@ -1363,6 +1363,22 @@ class EvidenceItem:
     is_archived: bool = False
     referenced_by: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict:
+        return {
+            "evidence_id": self.evidence_id,
+            "topic": self.topic,
+            "fact": self.fact,
+            "source_url": self.url,
+            "confidence": self.confidence.value,
+            "content_hash": self.content_hash,
+            "score": self.score,
+            "topic_cluster": self.topic_cluster,
+            "authority_tier": self.authority_tier,
+            "is_active": self.is_active,
+            "is_archived": self.is_archived,
+            "referenced_by": self.referenced_by,
+        }
+
 
 @dataclass
 class Argument:
@@ -1379,6 +1395,22 @@ class Argument:
     evidence_refs: list[str] = field(default_factory=list)
     open: bool = True
     blocker_link_ids: list[str] = field(default_factory=list)  # DOD §11.1
+
+    def to_dict(self) -> dict:
+        return {
+            "argument_id": self.argument_id,
+            "round_origin": self.round_num,
+            "model_id": self.model,
+            "text": self.text,
+            "status": self.status.value,
+            "addressed_in_round": self.addressed_in_round,
+            "resolution_status": self.resolution_status.value,
+            "superseded_by": self.superseded_by,
+            "dimension_id": self.dimension_id,
+            "blocker_link_ids": self.blocker_link_ids,
+            "evidence_refs": self.evidence_refs,
+            "open": self.open,
+        }
 
 
 @dataclass
@@ -1407,6 +1439,28 @@ class Blocker:
     evidence_ids: list[str] = field(default_factory=list)
     detail: str = ""
     resolution_note: str = ""
+
+    def to_dict(self) -> dict:
+        serialized_history = []
+        for entry in self.status_history:
+            status = entry.get("status")
+            serialized_history.append({
+                **entry,
+                "status": "DEFERRED" if status == "DROPPED" else status,
+            })
+        return {
+            "blocker_id": self.blocker_id,
+            "type": self.kind.value,
+            "source_dimension": self.source,
+            "detected_round": self.detected_round,
+            "status": "DEFERRED" if self.status.value == "DROPPED" else self.status.value,
+            "severity": self.severity,
+            "status_history": serialized_history,
+            "models_involved": self.models_involved,
+            "linked_ids": self.evidence_ids,
+            "detail": self.detail,
+            "resolution_summary": self.resolution_note,
+        }
 
 
 @dataclass
@@ -3423,6 +3477,7 @@ class Brain:
             synthesis_present=bool(report),
             analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
             analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
+            known_evidence_ids=evidence.all_evidence_ids(),
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,
@@ -3851,6 +3906,7 @@ def _eval_decide_rules(
     total_arguments: int,
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
+    known_evidence_ids: Optional[set[str]] = None,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
@@ -3878,7 +3934,13 @@ def _eval_decide_rules(
         c for c in (decisive_claims or [])
         if c.material_to_conclusion and (
             c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
-            or (c.evidence_support_status == EvidenceSupportStatus.SUPPORTED and not c.evidence_refs)
+            or (c.evidence_support_status == EvidenceSupportStatus.SUPPORTED and (
+                not c.evidence_refs
+                or (
+                    known_evidence_ids is not None
+                    and any(ref not in known_evidence_ids for ref in c.evidence_refs)
+                )
+            ))
         )
     ]
 
@@ -4126,6 +4188,7 @@ def run_gate2_deterministic(
     analogies: Optional[list[CrossDomainAnalogy]] = None,
     synthesis_present: bool = True,
     analysis_map_present: bool = True,
+    known_evidence_ids: Optional[set[str]] = None,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -4186,6 +4249,7 @@ def run_gate2_deterministic(
             total_arguments=total_arguments,
             stage_integrity_fatal=stage_integrity_fatal,
             analogies=analogies,
+            known_evidence_ids=known_evidence_ids,
         )
 
     # Identify which rule fired
@@ -4624,6 +4688,38 @@ class ProofBuilder:
 
     def set_analysis_map(self, entries: list) -> None:
         """Set analysis map entries (ANALYSIS mode)."""
+        if not isinstance(entries, dict):
+            raise ValueError("analysis_map must be an object")
+        if entries.get("header") != "EXPLORATORY MAP — NOT A DECISION":
+            raise ValueError("analysis_map.header must match DOD header")
+        if not isinstance(entries.get("dimensions"), dict):
+            raise ValueError("analysis_map.dimensions must be an object")
+        if not isinstance(entries.get("hypothesis_ledger"), list):
+            raise ValueError("analysis_map.hypothesis_ledger must be a list")
+        if not isinstance(entries.get("total_argument_count"), int):
+            raise ValueError("analysis_map.total_argument_count must be an int")
+        if not isinstance(entries.get("dimension_coverage_score"), (int, float)):
+            raise ValueError("analysis_map.dimension_coverage_score must be numeric")
+
+        for dim_id, dim_data in entries["dimensions"].items():
+            if not isinstance(dim_data, dict):
+                raise ValueError(f"analysis_map dimension {dim_id} must be an object")
+            for field in ("knowns", "inferred", "unknowns", "evidence_for", "evidence_against", "competing_lenses"):
+                if not isinstance(dim_data.get(field), list):
+                    raise ValueError(f"analysis_map dimension {dim_id}.{field} must be a list")
+            if not isinstance(dim_data.get("argument_count"), int):
+                raise ValueError(f"analysis_map dimension {dim_id}.argument_count must be an int")
+
+        for idx, hypothesis in enumerate(entries["hypothesis_ledger"]):
+            if not isinstance(hypothesis, dict):
+                raise ValueError(f"analysis_map hypothesis {idx} must be an object")
+            for field in ("hypothesis_id", "dimension_id", "text", "status"):
+                value = hypothesis.get(field)
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"analysis_map hypothesis {idx}.{field} must be a non-empty string")
+            if not isinstance(hypothesis.get("evidence_refs", []), list):
+                raise ValueError(f"analysis_map hypothesis {idx}.evidence_refs must be a list")
+
         self._analysis_map = entries
 
     def set_analysis_debug(self, data: dict) -> None:
@@ -5118,6 +5214,17 @@ async def run_preflight(client, brief: str) -> PreflightResult:
             or result.has_critical_flags):
         if result.effort_tier != EffortTier.ELEVATED:
             result.effort_tier = EffortTier.ELEVATED
+
+    requester_fixable = [
+        flag for flag in result.premise_flags
+        if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE
+    ]
+    if requester_fixable and not result.follow_up_questions:
+        raise BrainError(
+            "preflight",
+            "REQUESTER_FIXABLE defects require follow_up_questions",
+            detail=f"Flags: {[flag.flag_id for flag in requester_fixable]}",
+        )
 
     return result
 
@@ -5925,6 +6032,7 @@ FRAME_SURVIVAL_PROMPT = """Evaluate whether each alternative frame survives this
       "frame_id": "FRAME-1",
       "status": "ACTIVE | CONTESTED | DROPPED | ADOPTED | REBUTTED",
       "drop_vote_models": ["model_id"],
+      "drop_vote_refs": ["argument_id:R2-ARG-1", "evidence_id:E001"],
       "reasoning": "why this status"
     }}
   ]
@@ -6096,11 +6204,12 @@ async def run_frame_survival_check(
         # R2: require 3 drop votes for DROPPED
         if round_num == 2 and new_status == FrameSurvivalStatus.DROPPED:
             drop_models = ev.get("drop_vote_models", [])
-            if len(drop_models) < 3:
+            drop_refs = _valid_drop_vote_refs(ev.get("drop_vote_refs", []))
+            if len(drop_models) < 3 or len(drop_refs) < 3:
                 new_status = FrameSurvivalStatus.CONTESTED
             else:
                 frame.r2_drop_vote_count = len(drop_models)
-                frame.r2_drop_vote_refs = []
+                frame.r2_drop_vote_refs = drop_refs
 
         frame.survival_status = new_status
 
@@ -6152,6 +6261,18 @@ def format_r2_frame_enforcement() -> str:
         "3. GENERATE at least one NEW alternative frame not yet proposed\n"
         "\nFor each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
     )
+
+
+def _valid_drop_vote_refs(refs: list[str]) -> list[str]:
+    """Keep only traceable drop-vote refs tied to arguments or evidence."""
+    valid = []
+    for ref in refs:
+        if not isinstance(ref, str):
+            continue
+        normalized = ref.strip()
+        if normalized.startswith("argument_id:") or normalized.startswith("evidence_id:"):
+            valid.append(normalized)
+    return valid
 
 ```
 

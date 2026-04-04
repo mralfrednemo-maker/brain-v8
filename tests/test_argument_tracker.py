@@ -2,7 +2,7 @@
 import pytest
 
 from thinker.argument_tracker import ArgumentTracker, parse_arguments, parse_comparison
-from thinker.types import Argument, ArgumentStatus
+from thinker.types import Argument, ArgumentStatus, BrainError, ResolutionStatus
 
 
 class TestArgumentExtraction:
@@ -120,6 +120,25 @@ class TestArgumentParsing:
         statuses = parse_comparison(text, prev_round=1)
         assert statuses["R1-ARG-1"] == (ArgumentStatus.ADDRESSED, "R2-ARG-3")
         assert statuses["R1-ARG-2"] == (ArgumentStatus.IGNORED, None)
+
+    @pytest.mark.asyncio
+    async def test_compare_sets_refines_on_successor(self, mock_llm):
+        mock_llm.add_response("sonnet", "R1-ARG-1: ADDRESSED [superseded_by R2-ARG-1]\n")
+        tracker = ArgumentTracker(mock_llm)
+        tracker.arguments_by_round[1] = [Argument("R1-ARG-1", 1, "r1", "Original claim")]
+        tracker.arguments_by_round[2] = [Argument("R2-ARG-1", 2, "r1", "Refined claim")]
+        await tracker.compare_with_round(prev_round=1, curr_outputs={"r1": "Refined claim"})
+        assert tracker.arguments_by_round[1][0].resolution_status == ResolutionStatus.SUPERSEDED
+        assert tracker.arguments_by_round[2][0].refines == "R1-ARG-1"
+
+    @pytest.mark.asyncio
+    async def test_compare_raises_on_broken_supersession_link(self, mock_llm):
+        mock_llm.add_response("sonnet", "R1-ARG-1: ADDRESSED [superseded_by R2-ARG-9]\n")
+        tracker = ArgumentTracker(mock_llm)
+        tracker.arguments_by_round[1] = [Argument("R1-ARG-1", 1, "r1", "Original claim")]
+        tracker.arguments_by_round[2] = [Argument("R2-ARG-1", 2, "r1", "Different claim")]
+        with pytest.raises(BrainError, match="Broken supersession link"):
+            await tracker.compare_with_round(prev_round=1, curr_outputs={"r1": "Different claim"})
 
 
 class TestRestatementResolution:

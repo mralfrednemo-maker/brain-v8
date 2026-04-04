@@ -315,6 +315,7 @@ class ProofBuilder:
                     "argument_id": a.argument_id, "round_origin": a.round_num,
                     "model_id": a.model, "text": a.text,
                     "status": a.status.value, "resolution_status": a.resolution_status.value,
+                    "refines": a.refines,
                     "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
                     "blocker_link_ids": links, "evidence_refs": a.evidence_refs, "open": a.open,
                 }

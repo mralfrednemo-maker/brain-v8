@@ -112,10 +112,14 @@ def build_synthesis_packet(
     return {
         "packet_complete": packet_complete,
         "brief_excerpt": brief[:500],
-        "final_positions": {
-            m: {"option": p.primary_option, "confidence": p.confidence.value}
+        "final_positions": [
+            {
+                "model_id": m,
+                "option": p.primary_option,
+                "confidence": p.confidence.value,
+            }
             for m, p in final_positions.items()
-        },
+        ],
         "argument_lifecycle": arg_entries,
         "argument_count_total": len(arguments),
         "argument_count_open": sum(1 for a in arguments if a.open),
@@ -140,8 +144,8 @@ def format_synthesis_packet_for_prompt(packet: dict) -> str:
 
     # Positions
     lines.append("### Final Positions")
-    for model, pos in packet.get("final_positions", {}).items():
-        lines.append(f"- **{model}**: {pos['option']} [{pos['confidence']}]")
+    for pos in packet.get("final_positions", []):
+        lines.append(f"- **{pos['model_id']}**: {pos['option']} [{pos['confidence']}]")
 
     # Arguments
     lines.append(f"\n### Argument Lifecycle ({packet.get('argument_count_open', 0)} open / {packet.get('argument_count_total', 0)} total)")

@@ -338,11 +338,17 @@ class TestDecideRules:
         assert fired[0]["outcome_if_fired"] == "ERROR"
 
     def test_d3_short_circuit_deferred(self):
-        """D3: SHORT_CIRCUIT guardrail -- always False (deferred)."""
-        result = run_gate2_deterministic(**_base_decide_kwargs())
+        """D3: short-circuit-eligible runs with zero evidence must ESCALATE."""
+        result = run_gate2_deterministic(
+            **_base_decide_kwargs(
+                evidence_count=0,
+                preflight=_preflight_decide(short_circuit_allowed=True),
+            ),
+        )
         d3 = next(r for r in result.rule_trace if r["rule_id"] == "D3")
         assert d3["evaluated"] is True
-        assert d3["fired"] is False
+        assert d3["fired"] is True
+        assert result.outcome == Outcome.ESCALATE
 
     def test_d4_low_agreement(self):
         """D4: agreement < 0.50 -> NO_CONSENSUS."""
