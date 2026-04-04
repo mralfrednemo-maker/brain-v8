@@ -19,11 +19,11 @@ _MODEL_OBLIGATIONS = {
 
 # Field patterns to extract from model output
 _FIELD_PATTERNS = {
-    "primary_frame": re.compile(r"PRIMARY_FRAME:\s*(.+)", re.IGNORECASE),
-    "hidden_assumption_attacked": re.compile(r"HIDDEN_ASSUMPTION_ATTACKED:\s*(.+)", re.IGNORECASE),
-    "stakeholder_lens": re.compile(r"STAKEHOLDER_LENS:\s*(.+)", re.IGNORECASE),
-    "time_horizon": re.compile(r"TIME_HORIZON:\s*(\w+)", re.IGNORECASE),
-    "failure_mode": re.compile(r"FAILURE_MODE:\s*(.+)", re.IGNORECASE),
+    "primary_frame": re.compile(r"PRIMARY_FRAME:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+    "hidden_assumption_attacked": re.compile(r"HIDDEN_ASSUMPTION_ATTACKED:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+    "stakeholder_lens": re.compile(r"STAKEHOLDER_LENS:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+    "time_horizon": re.compile(r"TIME_HORIZON:\s*\**(\w+)\**", re.IGNORECASE),
+    "failure_mode": re.compile(r"FAILURE_MODE:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
 }
 
 

@@ -5679,14 +5679,15 @@ def build_round_prompt(
 
     parts.append("You are participating in a multi-model deliberation. "
                  "Analyze the following brief independently and thoroughly.\n")
-    parts.append(f"## Brief\n\n{brief}\n")
 
-    # R1 injections: dimension text and perspective card instructions after brief
+    # R1: perspective card instructions BEFORE brief (so models see them even on huge briefs)
+    if round_num == 1 and perspective_card_instructions:
+        parts.append(f"## MANDATORY Structured Output (include at END of your response)\n\n{perspective_card_instructions}\n")
+
     if round_num == 1 and dimension_text:
         parts.append(f"## Dimension Focus\n\n{dimension_text}\n")
 
-    if round_num == 1 and perspective_card_instructions:
-        parts.append(f"## Perspective Card\n\n{perspective_card_instructions}\n")
+    parts.append(f"## Brief\n\n{brief}\n")
 
     if round_num >= 2 and prior_views:
         parts.append("## Prior Round Views\n")
