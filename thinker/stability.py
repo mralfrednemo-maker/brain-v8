@@ -33,9 +33,9 @@ def compute_reason_stability(
 ) -> bool:
     """Do models converge for the same reasons? (DOD §15.2)
 
-    Stable = decisive claims exist AND every material claim has valid
-    evidence bindings (SUPPORTED). If any material claim is UNSUPPORTED
-    or only PARTIAL, the reasoning basis diverges across models.
+    Stable = models share the same decisive claim set AND all material
+    claims are evidence-supported. If model attribution is available
+    (supporting_model_ids), checks that surviving models share claims.
     """
     if not decisive_claims:
         return False
@@ -44,11 +44,23 @@ def compute_reason_stability(
     if not material_claims:
         return False
 
-    # ALL material claims must be fully evidence-supported
-    return all(
-        c.evidence_support_status.value == "SUPPORTED"
-        for c in material_claims
-    )
+    # All material claims must be evidence-supported
+    if not all(c.evidence_support_status.value == "SUPPORTED" for c in material_claims):
+        return False
+
+    # If model attribution is available, check that surviving models share claims
+    # DOD §15.2: "Models converge for the same reasons (shared decisive claim set)"
+    surviving_models = set(positions.keys()) if positions else set()
+    if surviving_models and any(c.supporting_model_ids for c in material_claims):
+        # Each surviving model must support at least one material claim
+        for model in surviving_models:
+            model_supports = any(
+                model in c.supporting_model_ids for c in material_claims
+            )
+            if not model_supports:
+                return False  # This model doesn't share any decisive claim
+
+    return True
 
 
 def compute_assumption_stability(assumptions: list[CriticalAssumption]) -> bool:

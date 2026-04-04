@@ -132,6 +132,9 @@ def check_disposition_coverage(
         "omission_rate": round(omission_rate, 3),
         "omissions": omissions,
         "deep_scan_triggered": deep_scan,
+        "expected_disposition_count": len(required_targets),  # DOD §14.4
+        "emitted_disposition_count": len(required_targets) - len(omissions),  # DOD §14.4
+        # Keep old names for internal use
         "total_required": len(required_targets),
         "total_disposed": len(required_targets) - len(omissions),
     }

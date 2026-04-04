@@ -33,7 +33,8 @@ would change.
       "text": "the decisive claim in one sentence",
       "material_to_conclusion": true,
       "evidence_refs": ["E001", "E003"],
-      "evidence_support_status": "SUPPORTED | PARTIAL | UNSUPPORTED"
+      "evidence_support_status": "SUPPORTED | PARTIAL | UNSUPPORTED",
+      "supporting_model_ids": ["r1", "reasoner"]
     }}
   ]
 }}
@@ -44,7 +45,8 @@ would change.
 - PARTIAL: some evidence exists but doesn't fully prove the claim
 - UNSUPPORTED: claim is asserted by models but has no evidence backing
 - evidence_refs: list evidence IDs (E001-E999) that support this claim. Empty list = UNSUPPORTED.
-- material_to_conclusion: true if removing this claim would change the outcome"""
+- material_to_conclusion: true if removing this claim would change the outcome
+- supporting_model_ids: list which models made or endorsed this claim (e.g. ["r1", "reasoner"])"""
 
 
 @pipeline_stage(
@@ -103,6 +105,7 @@ async def extract_decisive_claims(
             material_to_conclusion=c.get("material_to_conclusion", True),
             evidence_refs=c.get("evidence_refs", []),
             evidence_support_status=support,
+            supporting_model_ids=c.get("supporting_model_ids", []),
         ))
 
     return claims

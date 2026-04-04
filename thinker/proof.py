@@ -265,11 +265,12 @@ class ProofBuilder:
         """Set both numeric and semantic contradictions."""
         self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
-            {"contradiction_id": c.contradiction_id, "evidence_ids": c.evidence_ids,
+            {"ctr_id": c.contradiction_id,  # DOD §12.1: "ctr_id" not "contradiction_id"
+             "detection_mode": c.detection_mode,
              "evidence_ref_a": c.evidence_ref_a, "evidence_ref_b": c.evidence_ref_b,
              "same_entity": c.same_entity, "same_timeframe": c.same_timeframe,
              "topic": c.topic, "severity": c.severity, "status": c.status,
-             "detection_mode": c.detection_mode, "linked_claim_ids": c.linked_claim_ids}
+             "justification": c.justification, "linked_claim_ids": c.linked_claim_ids}
             if hasattr(c, 'contradiction_id') else c
             for c in numeric
         ]
@@ -334,15 +335,16 @@ class ProofBuilder:
             for b in self._blocker_ledger.blockers:
                 blocker_list.append({
                     "blocker_id": b.blocker_id,
-                    "kind": b.kind.value,
+                    "type": b.kind.value,  # DOD §19: "type" not "kind"
+                    "severity": b.severity,
                     "source_dimension": b.source,
                     "detected_round": b.detected_round,
                     "status": b.status.value,
                     "status_history": b.status_history,
                     "models_involved": b.models_involved,
-                    "evidence_ids": b.evidence_ids,
+                    "linked_ids": b.evidence_ids,  # DOD §19: "linked_ids" not "evidence_ids"
                     "detail": b.detail,
-                    "resolution_note": b.resolution_note,
+                    "resolution_summary": b.resolution_note,  # DOD §19: "resolution_summary"
                 })
             blocker_summary = self._blocker_ledger.summary()
 
@@ -373,8 +375,8 @@ class ProofBuilder:
                 "archive_count": len(self._evidence_archive),
                 "high_authority_evidence_present": any(
                     e.get("authority_tier") in ("HIGH", "AUTHORITATIVE")
-                    for e in self._evidence_active
-                ) if self._evidence_active else False,
+                    for e in (self._evidence_active + self._evidence_archive)
+                ) if (self._evidence_active or self._evidence_archive) else False,
             },
             "arguments": self._arguments or {},
             "blockers": blocker_list,
@@ -386,8 +388,10 @@ class ProofBuilder:
                 "semantic_pass_executed": getattr(self, '_semantic_pass_executed', False),
             },
             "synthesis_packet": self._synthesis_packet,
-            "synthesis_output": self._synthesis_output,
-            "synthesis_dispositions": self._synthesis_dispositions or [],
+            "synthesis_output": {
+                **(self._synthesis_output or {}),
+                "dispositions": self._synthesis_dispositions or [],
+            },
             "residue_verification": self._residue_verification,
             "positions": self._positions,
             "stability": self._stability,

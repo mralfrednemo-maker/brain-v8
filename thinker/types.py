@@ -747,6 +747,7 @@ class DecisiveClaim:
     evidence_refs: list[str] = field(default_factory=list)
     evidence_support_status: EvidenceSupportStatus = EvidenceSupportStatus.UNSUPPORTED
     analogy_refs: list[str] = field(default_factory=list)
+    supporting_model_ids: list[str] = field(default_factory=list)  # DOD §15.2: which models share this claim
 
     def to_dict(self) -> dict:
         return {
@@ -756,6 +757,7 @@ class DecisiveClaim:
             "evidence_refs": self.evidence_refs,
             "evidence_support_status": self.evidence_support_status.value,
             "analogy_refs": self.analogy_refs,
+            "supporting_model_ids": self.supporting_model_ids,
         }
 
 
