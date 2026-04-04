@@ -54,9 +54,14 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             if match:
                 fields[field_name] = match.group(1).strip()
 
-        # Skip models that produced no output — they're already in round_result.failed
+        # DOD §7.3 + zero-tolerance: missing card → ERROR. No silent skips.
         if not text.strip():
-            continue
+            from thinker.types import BrainError
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} produced no R1 output — zero tolerance",
+                detail="DOD §7.3: Missing card or field → ERROR.",
+            )
 
         time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
