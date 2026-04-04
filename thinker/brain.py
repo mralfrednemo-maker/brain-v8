@@ -1101,7 +1101,9 @@ class Brain:
                         severity="CRITICAL",
                     )
             covered = sum(1 for d in dimension_result.items if d.argument_count >= 2)
-            dimension_result.dimension_coverage_score = covered / len(dimension_result.items) if dimension_result.items else 0.0
+            # DOD §6.2: denominator is mandatory dimensions only
+            mandatory_count = sum(1 for d in dimension_result.items if d.mandatory)
+            dimension_result.dimension_coverage_score = covered / mandatory_count if mandatory_count else 0.0
 
         # --- V9: Evidence refs validation (DOD §10.3) ---
         # "Cited evidence missing from both stores → ERROR"

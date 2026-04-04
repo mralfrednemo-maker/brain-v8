@@ -564,6 +564,7 @@ class DimensionItem:
             "coverage_status": self.coverage_status,
             "argument_count": self.argument_count,
             "justified_irrelevance": self.justified_irrelevance,
+            "irrelevance_explanation": self.irrelevance_explanation,  # DOD §6.1
         }
 
 
