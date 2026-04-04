@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +12,7 @@ import pytest
 from thinker.types import ModelResponse
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+TMP_ROOT = Path("C:/Users/chris/.codex/memories/thinker-v8-test-tmp")
 
 
 class MockLLMClient:
@@ -55,6 +58,18 @@ class MockLLMClient:
 @pytest.fixture
 def mock_llm():
     return MockLLMClient()
+
+
+@pytest.fixture
+def tmp_path():
+    """Workspace-local tmp_path override for sandboxed test runs."""
+    TMP_ROOT.mkdir(exist_ok=True)
+    path = TMP_ROOT / f"tmp-{uuid.uuid4().hex}"
+    path.mkdir()
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture

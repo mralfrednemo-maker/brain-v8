@@ -6,7 +6,8 @@ from thinker.types import (
     ResolutionStatus, PreflightResult, PremiseFlag, PremiseFlagType,
     PremiseFlagSeverity, PremiseFlagRouting, DimensionSeedResult, DimensionItem,
     StabilityResult, FrameInfo, FrameType, FrameSurvivalStatus,
-    AssumptionVerifiability, CriticalAssumption,
+    AssumptionVerifiability, CriticalAssumption, AnalysisDebug, AnalysisMap,
+    ResidueVerification, SynthesisPacket, UngroundedStatItem,
 )
 from thinker.config import ROUND_TOPOLOGY, MODEL_REGISTRY, BrainConfig
 
@@ -191,12 +192,14 @@ def test_blocker_new_kinds():
 
 def test_contradiction_new_fields():
     c = Contradiction(
-        contradiction_id="CTR-1", evidence_ids=["E1", "E2"],
+        ctr_id="CTR-1", evidence_ids=["E1", "E2"],
         topic="test", severity="HIGH", detection_mode="SEMANTIC",
         justification="Conflicting data", linked_claim_ids=["C-1"],
     )
     assert c.detection_mode == "SEMANTIC"
     assert len(c.linked_claim_ids) == 1
+    assert c.ctr_id == "CTR-1"
+    assert c.contradiction_id == "CTR-1"
 
 
 def test_gate2_assessment_rule_trace():
@@ -208,3 +211,11 @@ def test_gate2_assessment_rule_trace():
     )
     assert g.modality == "DECIDE"
     assert len(g.rule_trace) == 1
+
+
+def test_missing_schema_dataclasses_exist():
+    assert UngroundedStatItem(claim_id="UG-1", text="42%").to_dict()["claim_id"] == "UG-1"
+    assert SynthesisPacket(packet_complete=True).to_dict()["packet_complete"] is True
+    assert ResidueVerification().to_dict()["coverage_pass"] is True
+    assert AnalysisMap().to_dict()["header"] == "EXPLORATORY MAP - NOT A DECISION"
+    assert AnalysisDebug(debug_mode=True).to_dict()["debug_mode"] is True

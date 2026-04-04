@@ -52,3 +52,21 @@ class TestConvergenceCheck:
         assert len(changes) == 1
         assert changes[0]["from_position"] == "O3"
         assert changes[0]["to_position"] == "O4"
+
+    def test_dropped_votes_do_not_affect_single_position_agreement(self):
+        tracker = PositionTracker(None)
+        tracker.positions_by_round[2] = {
+            "r1": Position("r1", 2, "O3"),
+            "reasoner": Position("reasoner", 2, "O3"),
+            "glm5": Position("glm5", 2, "DROPPED"),
+        }
+        assert tracker.agreement_ratio(2) == 1.0
+
+    def test_dropped_votes_do_not_affect_framework_agreement(self):
+        tracker = PositionTracker(None)
+        tracker.positions_by_round[2] = {
+            "r1": Position("r1", 2, "mixed", kind="sequence", components=["GDPR:reportable", "SOC2:DROPPED"]),
+            "reasoner": Position("reasoner", 2, "mixed", kind="sequence", components=["GDPR:reportable", "SOC2:reportable"]),
+            "glm5": Position("glm5", 2, "mixed", kind="sequence", components=["GDPR:reportable", "SOC2:reportable"]),
+        }
+        assert tracker.agreement_ratio(2) == 1.0

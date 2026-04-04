@@ -1,9 +1,9 @@
-"""Perspective Cards — structured R1 output extraction (DoD v3.0 Section 7).
+"""Perspective Cards - structured R1 output extraction (DoD v3.0 Section 7).
 
 Parses R1 model outputs to extract 5 structured fields per model.
 Primary: regex extraction from R1 output (native).
-Fallback: post-hoc LLM extraction via Haiku → Sonnet (inferred).
-DOD §7.2: Exactly 4 cards required. DOD §7.3: Missing card → ERROR.
+Fallback: post-hoc LLM extraction via Haiku -> Sonnet (inferred).
+DOD Section 7.2: Exactly 4 cards required. DOD Section 7.3: Missing card -> ERROR.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ RULES:
 - PRIMARY_FRAME: The model's primary analytical lens or way of looking at the question
 - HIDDEN_ASSUMPTION_ATTACKED: Which assumption the model is challenging or questioning
 - STAKEHOLDER_LENS: Whose perspective the model is representing
-- TIME_HORIZON: SHORT, MEDIUM, or LONG — based on the timeframe of the analysis
+- TIME_HORIZON: SHORT, MEDIUM, or LONG - based on the timeframe of the analysis
 - FAILURE_MODE: What could go wrong with the model's recommended approach
 
 Output EXACTLY these 5 lines and nothing else:
@@ -109,9 +109,9 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
     """Extract perspective cards from R1 model outputs.
 
     Phase 1: regex extraction (native).
-    Phase 2: for models with missing fields, post-hoc LLM extraction via Haiku → Sonnet.
-    DOD §7.2: Exactly N cards required (one per R1 model).
-    DOD §7.3: Missing card → ERROR.
+    Phase 2: for models with missing fields, post-hoc LLM extraction via Haiku -> Sonnet.
+    DOD Section 7.2: Exactly N cards required (one per R1 model).
+    DOD Section 7.3: Missing card -> ERROR.
     """
     from thinker.types import BrainError
 
@@ -123,8 +123,8 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
         if not text.strip():
             raise BrainError(
                 "perspective_cards",
-                f"Model {model_id} produced no R1 output — zero tolerance",
-                detail="DOD §7.3: Missing card → ERROR.",
+                f"Model {model_id} produced no R1 output - zero tolerance",
+                detail="DOD Section 7.3: Missing card -> ERROR.",
             )
 
         fields = _extract_fields_regex(text)
@@ -141,34 +141,28 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
     # Phase 2: post-hoc LLM extraction for models with missing fields
     if needs_extraction and llm_client:
         async def _extract_one(model_id: str, text: str, native_fields: dict[str, str]) -> PerspectiveCard | None:
-            missing = [f for f in REQUIRED_FIELDS if not native_fields.get(f)]
+            merged = dict(native_fields)
+            provenance = {f: "native" for f in REQUIRED_FIELDS if native_fields.get(f)}
 
             # Try Haiku first, Sonnet as fallback
             for extractor in ("haiku", "sonnet"):
                 inferred = await _extract_fields_llm(llm_client, extractor, text)
                 if inferred:
-                    # Merge: native fields take priority, fill missing with inferred
-                    # EXCEPTION: hidden_assumption_attacked must NEVER be inferred
-                    # (Brain V9 round 20: systematic hallucination risk — set NOT_STATED)
-                    merged = dict(native_fields)
-                    provenance = {}
+                    # Merge: native fields take priority, fill other gaps with inferred values.
                     for f in REQUIRED_FIELDS:
-                        if native_fields.get(f):
-                            provenance[f] = "native"
-                        elif f == "hidden_assumption_attacked":
-                            merged[f] = "NOT_STATED"
-                            provenance[f] = "not_stated"
-                        elif inferred.get(f):
+                        if merged.get(f):
+                            continue
+                        if f != "hidden_assumption_attacked" and inferred.get(f):
                             merged[f] = inferred[f]
                             provenance[f] = f"inferred:{extractor}"
-                        else:
-                            provenance[f] = "missing"
 
-                    still_missing = [f for f in REQUIRED_FIELDS if not merged.get(f)]
-                    if not still_missing:
-                        return _build_card(model_id, merged, provenance)
-                    # If still missing fields, try next extractor
-                    native_fields = merged  # carry over any fields we did get
+            if not merged.get("hidden_assumption_attacked"):
+                merged["hidden_assumption_attacked"] = "NOT_STATED"
+                provenance["hidden_assumption_attacked"] = "not_stated"
+
+            still_missing = [f for f in REQUIRED_FIELDS if not merged.get(f)]
+            if not still_missing:
+                return _build_card(model_id, merged, provenance)
 
             return None
 
@@ -187,12 +181,12 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
                 "perspective_cards",
                 f"Failed to extract perspective cards for: {failed_models} "
                 f"(regex and LLM extraction both failed)",
-                detail=f"DOD §7.2-7.3: All {len(r1_texts)} cards required. "
+                detail=f"DOD Section 7.2-7.3: All {len(r1_texts)} cards required. "
                        f"Post-hoc extraction via Haiku+Sonnet could not produce valid fields.",
             )
 
     elif needs_extraction and not llm_client:
-        # No LLM client — fall back to majority threshold (legacy mode)
+        # No LLM client - fall back to majority threshold (legacy mode)
         min_required = max(2, len(r1_texts) // 2)
         if len(cards) < min_required:
             nc_models = [mid for mid, _, _ in needs_extraction]
@@ -200,15 +194,15 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
                 "perspective_cards",
                 f"Only {len(cards)}/{len(r1_texts)} models produced valid perspective cards "
                 f"(minimum {min_required} required, no LLM client for post-hoc extraction)",
-                detail=f"DOD §7.3: Missing card → ERROR. Non-compliant: {nc_models}",
+                detail=f"DOD Section 7.3: Missing card -> ERROR. Non-compliant: {nc_models}",
             )
 
-    # DOD §7.2: exactly N cards required
+    # DOD Section 7.2: exactly N cards required
     if len(cards) != len(r1_texts):
         raise BrainError(
             "perspective_cards",
             f"Only {len(cards)}/{len(r1_texts)} perspective cards produced",
-            detail="DOD §7.2: Exactly one card per R1 model required.",
+            detail="DOD Section 7.2: Exactly one card per R1 model required.",
         )
 
     return cards

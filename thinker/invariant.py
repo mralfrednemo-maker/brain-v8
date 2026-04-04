@@ -77,7 +77,7 @@ def validate_invariants(
                     "id": "INV-CTR-ORPHAN",
                     "severity": "WARN",
                     "detail": (
-                        f"Contradiction {ctr.contradiction_id} references "
+                        f"Contradiction {ctr.ctr_id} references "
                         f"{eid} which is not in the evidence ledger"
                     ),
                 })

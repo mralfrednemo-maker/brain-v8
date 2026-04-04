@@ -37,7 +37,7 @@ class TestBlockerLedger:
         ledger = BlockerLedger()
         b = ledger.add(BlockerKind.CONTESTED_POSITION, "test", 1)
         ledger.drop(b.blocker_id, 2, "false positive")
-        assert b.status == BlockerStatus.DROPPED
+        assert b.status == BlockerStatus.DEFERRED
 
     def test_open_blockers(self):
         ledger = BlockerLedger()

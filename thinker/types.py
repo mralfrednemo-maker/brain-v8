@@ -337,7 +337,7 @@ class Blocker:
 @dataclass
 class Contradiction:
     """A detected contradiction between evidence items."""
-    contradiction_id: str
+    ctr_id: str
     evidence_ids: list[str]
     topic: str
     severity: str  # LOW, MEDIUM, HIGH, CRITICAL
@@ -350,6 +350,30 @@ class Contradiction:
     evidence_ref_b: str = ""
     same_entity: bool = False
     same_timeframe: bool = False
+
+    @property
+    def contradiction_id(self) -> str:
+        """Backward-compatible alias for older callers."""
+        return self.ctr_id
+
+    @contradiction_id.setter
+    def contradiction_id(self, value: str) -> None:
+        self.ctr_id = value
+
+    def to_dict(self) -> dict:
+        return {
+            "ctr_id": self.ctr_id,
+            "detection_mode": self.detection_mode,
+            "evidence_ref_a": self.evidence_ref_a,
+            "evidence_ref_b": self.evidence_ref_b,
+            "same_entity": self.same_entity,
+            "same_timeframe": self.same_timeframe,
+            "topic": self.topic,
+            "severity": self.severity,
+            "status": self.status,
+            "justification": self.justification,
+            "linked_claim_ids": self.linked_claim_ids,
+        }
 
 
 @dataclass
@@ -810,6 +834,135 @@ class DispositionObject:
             "importance": self.importance,
             "narrative_explanation": self.narrative_explanation,
             "evidence_refs": self.evidence_refs,
+        }
+
+
+@dataclass
+class UngroundedStatItem:
+    """DOD §9.2 schema for a flagged ungrounded statistical claim."""
+    claim_id: str
+    text: str
+    numeric: bool = True
+    verified: bool = False
+    blocker_id: Optional[str] = None
+    severity: str = "MEDIUM"
+    status: str = "UNVERIFIED_CLAIM"
+
+    def to_dict(self) -> dict:
+        return {
+            "claim_id": self.claim_id,
+            "text": self.text,
+            "numeric": self.numeric,
+            "verified": self.verified,
+            "blocker_id": self.blocker_id,
+            "severity": self.severity,
+            "status": self.status,
+        }
+
+
+@dataclass
+class SynthesisPacket:
+    """DOD §14.1 controller-curated synthesis packet."""
+    packet_complete: bool = False
+    brief_excerpt: str = ""
+    final_positions: dict = field(default_factory=dict)
+    argument_lifecycle: list[dict] = field(default_factory=list)
+    argument_count_total: int = 0
+    argument_count_open: int = 0
+    frame_summary: list[dict] = field(default_factory=list)
+    material_unrebutted_frames: int = 0
+    blocker_summary: list[dict] = field(default_factory=list)
+    open_blocker_count: int = 0
+    decisive_claims: list[dict] = field(default_factory=list)
+    contradiction_summary: list[dict] = field(default_factory=list)
+    premise_flag_summary: list[dict] = field(default_factory=list)
+    evidence_count: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "packet_complete": self.packet_complete,
+            "brief_excerpt": self.brief_excerpt,
+            "final_positions": self.final_positions,
+            "argument_lifecycle": self.argument_lifecycle,
+            "argument_count_total": self.argument_count_total,
+            "argument_count_open": self.argument_count_open,
+            "frame_summary": self.frame_summary,
+            "material_unrebutted_frames": self.material_unrebutted_frames,
+            "blocker_summary": self.blocker_summary,
+            "open_blocker_count": self.open_blocker_count,
+            "decisive_claims": self.decisive_claims,
+            "contradiction_summary": self.contradiction_summary,
+            "premise_flag_summary": self.premise_flag_summary,
+            "evidence_count": self.evidence_count,
+        }
+
+
+@dataclass
+class ResidueVerification:
+    """DOD §14.4 residue verification / disposition coverage result."""
+    coverage_pass: bool = True
+    omission_rate: float = 0.0
+    omissions: list[dict] = field(default_factory=list)
+    deep_scan_triggered: bool = False
+    expected_disposition_count: int = 0
+    emitted_disposition_count: int = 0
+    total_required: int = 0
+    total_disposed: int = 0
+    deep_scan: Optional[dict] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "coverage_pass": self.coverage_pass,
+            "omission_rate": self.omission_rate,
+            "omissions": self.omissions,
+            "deep_scan_triggered": self.deep_scan_triggered,
+            "expected_disposition_count": self.expected_disposition_count,
+            "emitted_disposition_count": self.emitted_disposition_count,
+            "total_required": self.total_required,
+            "total_disposed": self.total_disposed,
+            "deep_scan": self.deep_scan,
+        }
+
+
+@dataclass
+class AnalysisMap:
+    """DOD §18.3 analysis-mode exploratory map."""
+    header: str = "EXPLORATORY MAP - NOT A DECISION"
+    dimensions: dict = field(default_factory=dict)
+    hypothesis_ledger: list[dict] = field(default_factory=list)
+    total_argument_count: int = 0
+    dimension_coverage_score: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "header": self.header,
+            "dimensions": self.dimensions,
+            "hypothesis_ledger": self.hypothesis_ledger,
+            "total_argument_count": self.total_argument_count,
+            "dimension_coverage_score": self.dimension_coverage_score,
+        }
+
+
+@dataclass
+class AnalysisDebug:
+    """DOD §18.4 analysis-mode debug audit record."""
+    debug_mode: bool = False
+    debug_gate2_result: Optional[str] = None
+    actual_output: Optional[str] = None
+    rules_enforced: bool = True
+    remaining_debug_runs: int = 0
+    analysis_mode_active: bool = True
+    dimension_coverage_score: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "debug_mode": self.debug_mode,
+            "debug_gate2_result": self.debug_gate2_result,
+            "actual_output": self.actual_output,
+            "rules_enforced": self.rules_enforced,
+            "remaining_debug_runs": self.remaining_debug_runs,
+            "analysis_mode_active": self.analysis_mode_active,
+            "dimension_coverage_score": self.dimension_coverage_score,
         }
 
 

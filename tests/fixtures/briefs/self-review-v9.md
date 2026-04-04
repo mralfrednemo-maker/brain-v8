@@ -1371,6 +1371,7 @@ class Argument:
     dimension_id: str = ""
     evidence_refs: list[str] = field(default_factory=list)
     open: bool = True
+    blocker_link_ids: list[str] = field(default_factory=list)  # DOD §11.1
 
 
 @dataclass
@@ -3220,6 +3221,8 @@ class Brain:
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
             stage_integrity_fatal=fatal_stages if fatal_stages else None,
+            synthesis_present=bool(report),
+            analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
             analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
         )
         log.gate2_result(
@@ -3807,6 +3810,8 @@ def _eval_analysis_rules(
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
     archive_evidence_count: int = 0,
+    synthesis_present: bool = True,
+    analysis_map_present: bool = True,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate A1-A7 per DOD-V3 Section 17. First match wins.
 
@@ -3835,13 +3840,19 @@ def _eval_analysis_rules(
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
-    # --- A3: Missing required shared pipeline artifacts ---
+    # --- A3: Missing required shared pipeline artifacts (DOD §17) ---
+    # Checks: dimension seeder, analysis_map, synthesis, arguments.
+    # Note: evidence_count==0 is handled by A4 (ESCALATE, not ERROR).
     missing_artifacts = (
         (dimensions is None or len(dimensions.items) == 0)
         or total_arguments == 0
+        or not synthesis_present
+        or not analysis_map_present
     )
     if _t("A3", missing_artifacts,
-          f"dimensions={'empty' if not dimensions or not dimensions.items else len(dimensions.items)}, args={total_arguments}"):
+          f"dimensions={'empty' if not dimensions or not dimensions.items else len(dimensions.items)}, "
+          f"args={total_arguments}, evidence={evidence_count}, "
+          f"synthesis_present={synthesis_present}, analysis_map_present={analysis_map_present}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
@@ -3897,6 +3908,8 @@ def run_gate2_deterministic(
     archive_evidence_count: int = 0,
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
+    synthesis_present: bool = True,
+    analysis_map_present: bool = True,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -3936,6 +3949,8 @@ def run_gate2_deterministic(
             dimensions=dimensions,
             total_arguments=total_arguments,
             archive_evidence_count=archive_evidence_count,
+            synthesis_present=synthesis_present,
+            analysis_map_present=analysis_map_present,
         )
     else:
         outcome, rule_trace = _eval_decide_rules(

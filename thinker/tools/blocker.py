@@ -33,7 +33,7 @@ class BlockerLedger:
         self._update_status(blocker_id, BlockerStatus.DEFERRED, round_num, trigger, note)
 
     def drop(self, blocker_id: str, round_num: int, trigger: str, note: str = ""):
-        self._update_status(blocker_id, BlockerStatus.DROPPED, round_num, trigger, note)
+        self._update_status(blocker_id, BlockerStatus.DEFERRED, round_num, trigger, note)
 
     def open_blockers(self) -> list[Blocker]:
         return [b for b in self.blockers if b.status == BlockerStatus.OPEN]

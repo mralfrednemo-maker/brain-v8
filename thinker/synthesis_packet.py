@@ -77,7 +77,7 @@ def build_synthesis_packet(
     for c in contradictions_numeric:
         if c.status != "RESOLVED":
             ctr_entries.append({
-                "id": c.contradiction_id,
+                "id": c.ctr_id,
                 "mode": "NUMERIC",
                 "topic": c.topic,
                 "severity": c.severity,

@@ -65,3 +65,24 @@ def test_cards_to_dict():
     assert all("model_id" in d for d in dicts)
     assert all("coverage_obligation" in d for d in dicts)
     assert all("field_provenance" in d for d in dicts)
+
+
+def test_hidden_assumption_defaults_to_not_stated_when_llm_fails():
+    from thinker.perspective_cards import extract_perspective_cards
+
+    class _Resp:
+        def __init__(self, ok, text=""):
+            self.ok = ok
+            self.text = text
+
+    class _FailingClient:
+        async def call(self, model_name, prompt):
+            return _Resp(False)
+
+    r1_texts = {
+        "kimi": "PRIMARY_FRAME: Devil's advocate\nSTAKEHOLDER_LENS: End users\nTIME_HORIZON: SHORT\nFAILURE_MODE: Adoption resistance",
+    }
+    cards = _run(extract_perspective_cards(r1_texts, llm_client=_FailingClient()))
+    assert len(cards) == 1
+    assert cards[0].hidden_assumption_attacked == "NOT_STATED"
+    assert cards[0].field_provenance["hidden_assumption_attacked"] == "not_stated"

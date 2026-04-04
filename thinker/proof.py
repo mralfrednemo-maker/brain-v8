@@ -16,6 +16,10 @@ from thinker.types import Outcome, Position
 from thinker.tools.blocker import BlockerLedger
 
 
+def _serialize_blocker_status(status: str) -> str:
+    return "DEFERRED" if status == "DROPPED" else status
+
+
 class ProofBuilder:
     """Incrementally builds proof.json throughout a Brain run."""
 
@@ -250,7 +254,11 @@ class ProofBuilder:
         self._arguments = {}
         for a in arguments:
             if hasattr(a, 'argument_id'):
-                links = dim_blockers.get(a.dimension_id, []) if a.dimension_id else []
+                links = list(getattr(a, "blocker_link_ids", []))
+                if a.dimension_id:
+                    for blocker_id in dim_blockers.get(a.dimension_id, []):
+                        if blocker_id not in links:
+                            links.append(blocker_id)
                 self._arguments[a.argument_id] = {
                     "argument_id": a.argument_id, "round_origin": a.round_num,
                     "model_id": a.model, "text": a.text,
@@ -274,13 +282,13 @@ class ProofBuilder:
         """Set both numeric and semantic contradictions."""
         self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
-            {"ctr_id": c.contradiction_id,  # DOD §12.1: "ctr_id" not "contradiction_id"
+            {"ctr_id": c.ctr_id,
              "detection_mode": c.detection_mode,
              "evidence_ref_a": c.evidence_ref_a, "evidence_ref_b": c.evidence_ref_b,
              "same_entity": c.same_entity, "same_timeframe": c.same_timeframe,
              "topic": c.topic, "severity": c.severity, "status": c.status,
              "justification": c.justification, "linked_claim_ids": c.linked_claim_ids}
-            if hasattr(c, 'contradiction_id') else c
+            if hasattr(c, 'ctr_id') else c
             for c in numeric
         ]
         self._contradictions_semantic = [
@@ -342,20 +350,33 @@ class ProofBuilder:
         blocker_summary = {"total_blockers": 0, "by_status": {}, "by_kind": {}, "open_at_end": 0}
         if self._blocker_ledger:
             for b in self._blocker_ledger.blockers:
+                serialized_history = []
+                for entry in b.status_history:
+                    status = entry.get("status")
+                    serialized_history.append({
+                        **entry,
+                        "status": _serialize_blocker_status(status) if status else status,
+                    })
                 blocker_list.append({
                     "blocker_id": b.blocker_id,
                     "type": b.kind.value,  # DOD §19: "type" not "kind"
                     "severity": b.severity,
                     "source_dimension": b.source,
                     "detected_round": b.detected_round,
-                    "status": b.status.value,
-                    "status_history": b.status_history,
+                    "status": _serialize_blocker_status(b.status.value),
+                    "status_history": serialized_history,
                     "models_involved": b.models_involved,
                     "linked_ids": b.evidence_ids,  # DOD §19: "linked_ids" not "evidence_ids"
                     "detail": b.detail,
                     "resolution_summary": b.resolution_note,  # DOD §19: "resolution_summary"
                 })
             blocker_summary = self._blocker_ledger.summary()
+            if blocker_summary.get("by_status"):
+                by_status = {}
+                for status, count in blocker_summary["by_status"].items():
+                    serialized = _serialize_blocker_status(status)
+                    by_status[serialized] = by_status.get(serialized, 0) + count
+                blocker_summary = {**blocker_summary, "by_status": by_status}
 
         proof = {
             # --- DOD §19 canonical keys ---

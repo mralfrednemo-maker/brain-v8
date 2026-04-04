@@ -889,12 +889,12 @@ class Brain:
 
                 # Wire evidence contradictions into blocker ledger
                 for ctr in evidence.contradictions:
-                    if not any(b.detail == ctr.contradiction_id for b in blocker_ledger.blockers):
+                    if not any(b.detail == ctr.ctr_id for b in blocker_ledger.blockers):
                         blocker_ledger.add(
                             kind=BlockerKind.CONTRADICTION,
                             source="evidence_ledger",
                             detected_round=round_num,
-                            detail=ctr.contradiction_id,
+                            detail=ctr.ctr_id,
                             models=[],
                         )
 
@@ -1225,6 +1225,15 @@ class Brain:
                     severity="CRITICAL",
                 )
 
+        if not self._stage_done("residue_verification"):
+            if self._checkpoint("residue_verification"):
+                return BrainResult(
+                    outcome=Outcome.ESCALATE,
+                    proof=proof.build(),
+                    report=report,
+                    preflight=preflight_result,
+                )
+
         # DOD §14.3: Orphaned high-authority archive evidence must be explained
         orphaned_high_auth = [
             e for e in evidence.archive_items
@@ -1255,6 +1264,7 @@ class Brain:
         # --- Gate 2 (deterministic) ---
         # Compute stage integrity for D1 (DOD §3.3)
         # Include conditional stages that should have executed
+        semantic_pass_required = len(evidence.active_items) >= 2
         required_stages = ["preflight", "dimensions"]
         for i in range(1, self._config.rounds + 1):
             required_stages.append(f"r{i}")
@@ -1269,7 +1279,9 @@ class Brain:
                     required_stages.append("ungrounded_r2")
             if i == 3:
                 required_stages.append("frame_survival_r3")
-        required_stages.extend(["semantic_contradiction", "decisive_claims", "synthesis_packet", "synthesis"])
+        if semantic_pass_required:
+            required_stages.append("semantic_contradiction")
+        required_stages.extend(["decisive_claims", "synthesis_packet", "synthesis", "residue_verification"])
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 
@@ -1302,6 +1314,7 @@ class Brain:
             dimensions=dimension_result,
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
+            evidence_present=True,
             stage_integrity_fatal=fatal_stages if fatal_stages else None,
             synthesis_present=bool(report),
             analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
@@ -1372,7 +1385,11 @@ class Brain:
         })
 
         # Contradictions (numeric + semantic)
-        proof.set_contradictions(evidence.contradictions, semantic_ctrs)
+        proof.set_contradictions(
+            evidence.contradictions,
+            semantic_ctrs,
+            semantic_pass_executed=semantic_pass_required,
+        )
 
         # Cross-domain analogies from divergence
         if divergence_result.cross_domain_analogies:

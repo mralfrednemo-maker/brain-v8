@@ -47,7 +47,7 @@ def detect_contradiction(
     exclusive_b = nums_b - nums_a
     severity = "HIGH" if exclusive_a and exclusive_b else "MEDIUM"
     return Contradiction(
-        contradiction_id=f"CTR{_CONTRADICTION_COUNTER:03d}",
+        ctr_id=f"CTR{_CONTRADICTION_COUNTER:03d}",
         evidence_ids=[item_a.evidence_id, item_b.evidence_id],
         topic=item_a.topic,
         severity=severity,

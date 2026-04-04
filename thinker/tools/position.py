@@ -62,6 +62,11 @@ def _normalize_position(option: str) -> str:
     return normalized
 
 
+def _is_frame_drop_position(option: str) -> bool:
+    normalized = _normalize_position(option)
+    return normalized in {"dropped", "drop", "frame_dropped", "frame-dropped"}
+
+
 class PositionTracker:
     def __init__(self, llm_client):
         self._llm = llm_client
@@ -108,7 +113,13 @@ class PositionTracker:
         if has_frameworks:
             return self._framework_agreement_ratio(positions)
 
-        options = [_normalize_position(p.primary_option) for p in positions.values()]
+        options = [
+            _normalize_position(p.primary_option)
+            for p in positions.values()
+            if not _is_frame_drop_position(p.primary_option)
+        ]
+        if not options:
+            return 0.0
         counts = Counter(options)
         majority_count = counts.most_common(1)[0][1]
         return majority_count / len(options)
@@ -126,26 +137,37 @@ class PositionTracker:
                 for comp in p.components:
                     if ":" in comp:
                         fw, label = comp.split(":", 1)
+                        normalized_label = _normalize_position(label.strip())
+                        if _is_frame_drop_position(normalized_label):
+                            continue
                         framework_positions.setdefault(fw.strip(), []).append(
-                            label.strip().lower()
+                            normalized_label
                         )
                     else:
+                        normalized_label = _normalize_position(comp.strip())
+                        if _is_frame_drop_position(normalized_label):
+                            continue
                         framework_positions.setdefault("default", []).append(
-                            comp.strip().lower()
+                            normalized_label
                         )
             else:
-                framework_positions.setdefault("default", []).append(
-                    _normalize_position(p.primary_option)
-                )
+                normalized = _normalize_position(p.primary_option)
+                if _is_frame_drop_position(normalized):
+                    continue
+                framework_positions.setdefault("default", []).append(normalized)
 
         if not framework_positions:
             return 0.0
 
         ratios = []
         for fw, labels in framework_positions.items():
+            if not labels:
+                continue
             counts = Counter(labels)
             majority = counts.most_common(1)[0][1]
             ratios.append(majority / len(labels))
+        if not ratios:
+            return 0.0
         return sum(ratios) / len(ratios)
 
     def get_position_changes(self, from_round: int, to_round: int) -> list[dict]:

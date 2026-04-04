@@ -44,8 +44,8 @@ def check_synthesis_residue(
 
     # Check contradiction IDs
     for c in contradictions:
-        if c.contradiction_id not in report:
-            omissions.append({"type": "contradiction", "id": c.contradiction_id})
+        if c.ctr_id not in report:
+            omissions.append({"type": "contradiction", "id": c.ctr_id})
 
     # Check unaddressed argument IDs
     for a in unaddressed_arguments:
@@ -92,7 +92,7 @@ def check_disposition_coverage(
 
     for c in contradictions_numeric:
         if c.status not in ("RESOLVED", "NON_MATERIAL"):
-            required_targets.append(("CONTRADICTION", c.contradiction_id))
+            required_targets.append(("CONTRADICTION", c.ctr_id))
 
     for c in contradictions_semantic:
         if c.status.value not in ("RESOLVED", "NON_MATERIAL"):

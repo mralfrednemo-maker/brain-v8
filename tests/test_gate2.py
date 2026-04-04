@@ -12,7 +12,7 @@ from thinker.gate2 import run_gate2_deterministic, classify_outcome
 from thinker.types import (
     Argument, ArgumentStatus, Blocker, BlockerKind, BlockerStatus,
     Confidence, Contradiction, DecisiveClaim, DimensionItem,
-    DimensionSeedResult, DivergenceResult, EvidenceSupportStatus,
+    ContradictionStatus, DimensionSeedResult, DivergenceResult, EvidenceSupportStatus,
     FrameInfo, FrameSurvivalStatus, FrameType, Modality, Outcome,
     Position, PremiseFlag, PremiseFlagSeverity, PremiseFlagType,
     PreflightResult, SearchScope, StabilityResult, StakesClass,
@@ -401,6 +401,16 @@ class TestDecideRules:
         assert fired[0]["rule_id"] == "D8"
         assert fired[0]["outcome_if_fired"] == "ESCALATE"
 
+    def test_d8_high_contradiction_with_enum_status(self):
+        """D8 normalizes enum status values before comparison."""
+        ctr = Contradiction("CTR-1", ["E-1", "E-2"], "topic", "HIGH", status=ContradictionStatus.OPEN)
+        result = run_gate2_deterministic(
+            **_base_decide_kwargs(contradictions=[ctr]),
+        )
+        assert result.outcome == Outcome.ESCALATE
+        fired = [r for r in result.rule_trace if r["fired"]]
+        assert fired[0]["rule_id"] == "D8"
+
     def test_d9_critical_premise_flags(self):
         """D9: CRITICAL premise flags unresolved -> ESCALATE."""
         pf = PremiseFlag(
@@ -595,17 +605,36 @@ class TestAnalysisRules:
         assert fired[0]["outcome_if_fired"] == "ERROR"
 
     def test_a3_missing_artifacts(self):
-        """A3: dimensions empty or total_arguments=0 -> ERROR."""
+        """A3: missing required artifacts -> ERROR."""
         result = run_gate2_deterministic(
             **_base_analysis_kwargs(
                 dimensions=_dimensions(items=[], coverage=0.0),
-                total_arguments=0,
             ),
         )
         assert result.outcome == Outcome.ERROR
         fired = [r for r in result.rule_trace if r["fired"]]
         assert fired[0]["rule_id"] == "A3"
         assert fired[0]["outcome_if_fired"] == "ERROR"
+
+    def test_a3_missing_evidence_artifact(self):
+        """A3: structurally missing evidence artifact -> ERROR."""
+        result = run_gate2_deterministic(
+            **_base_analysis_kwargs(
+                evidence_present=False,
+            ),
+        )
+        assert result.outcome == Outcome.ERROR
+        fired = [r for r in result.rule_trace if r["fired"]]
+        assert fired[0]["rule_id"] == "A3"
+
+    def test_a6_zero_arguments_escalates_not_error(self):
+        """A6 owns argument-count failures, including zero arguments."""
+        result = run_gate2_deterministic(
+            **_base_analysis_kwargs(total_arguments=0),
+        )
+        assert result.outcome == Outcome.ESCALATE
+        fired = [r for r in result.rule_trace if r["fired"]]
+        assert fired[0]["rule_id"] == "A6"
 
     def test_a4_evidence_empty_search_not_none(self):
         """A4: evidence empty AND search_scope != NONE -> ESCALATE."""

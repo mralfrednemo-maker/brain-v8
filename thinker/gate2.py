@@ -142,7 +142,7 @@ def _eval_decide_rules(
     # HIGH/CRITICAL unresolved contradictions (handle both enum and string severity)
     high_contradictions = [
         c for c in contradictions
-        if getattr(c, "status", "OPEN") in ("OPEN", "open")
+        if str(getattr(getattr(c, "status", "OPEN"), "value", getattr(c, "status", "OPEN"))) in ("OPEN", "open")
         and str(getattr(getattr(c, "severity", "LOW"), "value", getattr(c, "severity", "LOW"))) in ("HIGH", "CRITICAL")
     ]
 
@@ -281,6 +281,7 @@ def _eval_analysis_rules(
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
     archive_evidence_count: int = 0,
+    evidence_present: bool = True,
     synthesis_present: bool = True,
     analysis_map_present: bool = True,
 ) -> tuple[Outcome, list[dict]]:
@@ -312,17 +313,17 @@ def _eval_analysis_rules(
         return Outcome.ERROR, trace
 
     # --- A3: Missing required shared pipeline artifacts (DOD §17) ---
-    # Checks: dimension seeder, analysis_map, synthesis, arguments.
+    # Checks: dimension seeder, analysis_map, synthesis, evidence artifact presence.
     # Note: evidence_count==0 is handled by A4 (ESCALATE, not ERROR).
     missing_artifacts = (
         (dimensions is None or len(dimensions.items) == 0)
-        or total_arguments == 0
+        or not evidence_present
         or not synthesis_present
         or not analysis_map_present
     )
     if _t("A3", missing_artifacts,
           f"dimensions={'empty' if not dimensions or not dimensions.items else len(dimensions.items)}, "
-          f"args={total_arguments}, evidence={evidence_count}, "
+          f"args={total_arguments}, evidence={evidence_count}, evidence_present={evidence_present}, "
           f"synthesis_present={synthesis_present}, analysis_map_present={analysis_map_present}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
@@ -377,6 +378,7 @@ def run_gate2_deterministic(
     dimensions: Optional[DimensionSeedResult] = None,
     total_arguments: int = 0,
     archive_evidence_count: int = 0,
+    evidence_present: bool = True,
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
     synthesis_present: bool = True,
@@ -420,6 +422,7 @@ def run_gate2_deterministic(
             dimensions=dimensions,
             total_arguments=total_arguments,
             archive_evidence_count=archive_evidence_count,
+            evidence_present=evidence_present,
             synthesis_present=synthesis_present,
             analysis_map_present=analysis_map_present,
         )

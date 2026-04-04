@@ -1,6 +1,6 @@
 """Tests for proof.json builder."""
 from thinker.proof import ProofBuilder
-from thinker.types import AcceptanceStatus, Confidence, Outcome, Position
+from thinker.types import AcceptanceStatus, Argument, BlockerKind, Confidence, Outcome, Position
 from thinker.tools.blocker import BlockerLedger
 
 
@@ -206,3 +206,22 @@ class TestProofV9:
         proof = pb.build()
         assert len(proof["contradictions"]["numeric_records"]) == 1
         assert len(proof["contradictions"]["semantic_records"]) == 1
+
+    def test_set_arguments_preserves_argument_blocker_link_ids(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        arg = Argument("ARG-1", 1, "r1", "text", blocker_link_ids=["BLK-ARG"])
+        pb.set_arguments([arg])
+        proof = pb.build()
+        assert proof["arguments"]["ARG-1"]["blocker_link_ids"] == ["BLK-ARG"]
+
+    def test_blocker_wire_format_uses_dod_field_names(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        ledger = BlockerLedger()
+        blocker = ledger.add(kind=BlockerKind.EVIDENCE_GAP, source="dim", detected_round=1)
+        ledger.drop(blocker.blocker_id, 2, "obsolete")
+        pb.set_blocker_ledger(ledger)
+        proof = pb.build()
+        wire = proof["blockers"][0]
+        assert "type" in wire
+        assert "linked_ids" in wire
+        assert wire["status"] == "DEFERRED"
