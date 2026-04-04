@@ -2278,6 +2278,8 @@ class Brain:
             if preflight_result.answerability.value in ("NEED_MORE", "INVALID_FORM"):
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
+                proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                proof.set_timestamp_completed()
                 return BrainResult(
                     outcome=Outcome.NEED_MORE, proof=proof.build(),
                     report="", preflight=preflight_result,
@@ -2288,6 +2290,8 @@ class Brain:
                 log._print("  [PREFLIGHT] FATAL_PREMISE detected but answerability=ANSWERABLE — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
+                proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                proof.set_timestamp_completed()
                 return BrainResult(
                     outcome=Outcome.NEED_MORE, proof=proof.build(),
                     report="", preflight=preflight_result,
@@ -2298,6 +2302,8 @@ class Brain:
                 log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
+                proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                proof.set_timestamp_completed()
                 return BrainResult(
                     outcome=Outcome.NEED_MORE, proof=proof.build(),
                     report="", preflight=preflight_result,
@@ -2333,6 +2339,8 @@ class Brain:
                     log._print(f"  [DEFECT] {flag.flag_id}: REQUESTER_FIXABLE → rejecting brief")
                     proof.set_preflight(preflight_result)
                     proof.set_final_status("PREFLIGHT_REJECTED")
+                    proof.set_outcome(Outcome.NEED_MORE, 0.0, "NEED_MORE")
+                    proof.set_timestamp_completed()
                     return BrainResult(
                         outcome=Outcome.NEED_MORE, proof=proof.build(),
                         report="", preflight=preflight_result,
@@ -3825,25 +3833,31 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             if match:
                 fields[field_name] = match.group(1).strip()
 
-        # DOD §7.3 + zero-tolerance: missing card → ERROR. No silent skips.
+        # DOD §7.3 + zero-tolerance: missing card or field → ERROR
         if not text.strip():
-            from thinker.types import BrainError
             raise BrainError(
                 "perspective_cards",
                 f"Model {model_id} produced no R1 output — zero tolerance",
-                detail="DOD §7.3: Missing card or field → ERROR.",
+                detail="DOD §7.3: Missing card → ERROR.",
+            )
+        missing = [f for f in required_fields if not fields.get(f)]
+        if missing:
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} missing perspective card fields: {missing}",
+                detail=f"DOD §7.3: Missing field → ERROR. Extracted: {list(fields.keys())}",
             )
 
-        time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
+        time_horizon = _parse_time_horizon(fields["time_horizon"])
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
 
         card = PerspectiveCard(
             model_id=model_id,
-            primary_frame=fields.get("primary_frame", ""),
-            hidden_assumption_attacked=fields.get("hidden_assumption_attacked", ""),
-            stakeholder_lens=fields.get("stakeholder_lens", ""),
+            primary_frame=fields["primary_frame"],
+            hidden_assumption_attacked=fields["hidden_assumption_attacked"],
+            stakeholder_lens=fields["stakeholder_lens"],
             time_horizon=time_horizon,
-            failure_mode=fields.get("failure_mode", ""),
+            failure_mode=fields["failure_mode"],
             coverage_obligation=obligation,
         )
         cards.append(card)
@@ -5054,7 +5068,8 @@ def compute_groupthink_warning(
     if not fast_consensus:
         return False
 
-    non_trivial = question_class in (QuestionClass.OPEN, QuestionClass.AMBIGUOUS)
+    # DOD §15.2: question_class = OPEN OR stakes_class = HIGH (not AMBIGUOUS)
+    non_trivial = question_class == QuestionClass.OPEN
     high_stakes = stakes_class == StakesClass.HIGH
 
     if not (non_trivial or high_stakes):
@@ -5924,8 +5939,11 @@ class EvidenceLedger:
 
     @property
     def high_authority_evidence_present(self) -> bool:
-        """Whether any active evidence has HIGH or AUTHORITATIVE authority tier."""
-        return any(e.authority_tier in ("HIGH", "AUTHORITATIVE") for e in self.active_items)
+        """Whether any evidence (active or archive) has HIGH or AUTHORITATIVE authority tier."""
+        return any(
+            e.authority_tier in ("HIGH", "AUTHORITATIVE")
+            for e in self.active_items + self.archive_items
+        )
 
     def get_from_any(self, evidence_id: str) -> Optional[EvidenceItem]:
         """Search both active and archive for an evidence item by ID."""
