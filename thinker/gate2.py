@@ -109,6 +109,8 @@ def _eval_decide_rules(
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
     known_evidence_ids: Optional[set[str]] = None,
+    round_model_counts: Optional[list[int]] = None,
+    expected_round_model_counts: Optional[list[int]] = None,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
@@ -173,11 +175,17 @@ def _eval_decide_rules(
         dimensions is not None and len(dimensions.items) == 0
     )
     has_fatal_stages = bool(stage_integrity_fatal)
-    fatal_integrity = no_pipeline_output or empty_dimensions or has_fatal_stages
+    topology_mismatch = (
+        round_model_counts is not None
+        and expected_round_model_counts is not None
+        and round_model_counts != expected_round_model_counts
+    )
+    fatal_integrity = no_pipeline_output or empty_dimensions or has_fatal_stages or topology_mismatch
     if _t("D1", fatal_integrity,
           f"models={len(positions)}, args={total_arguments}, "
           f"dims={'none' if dimensions is None else len(dimensions.items)}, "
-          f"fatal_stages={stage_integrity_fatal or []}"):
+          f"fatal_stages={stage_integrity_fatal or []}, "
+          f"round_model_counts={round_model_counts}, expected_round_model_counts={expected_round_model_counts}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
@@ -398,6 +406,8 @@ def run_gate2_deterministic(
     synthesis_present: bool = True,
     analysis_map_present: bool = True,
     known_evidence_ids: Optional[set[str]] = None,
+    round_model_counts: Optional[list[int]] = None,
+    expected_round_model_counts: Optional[list[int]] = None,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -459,6 +469,8 @@ def run_gate2_deterministic(
             stage_integrity_fatal=stage_integrity_fatal,
             analogies=analogies,
             known_evidence_ids=known_evidence_ids,
+            round_model_counts=round_model_counts,
+            expected_round_model_counts=expected_round_model_counts,
         )
 
     # Identify which rule fired

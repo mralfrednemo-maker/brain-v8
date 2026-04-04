@@ -309,6 +309,18 @@ class TestDecideRules:
         assert fired[0]["rule_id"] == "D1"
         assert fired[0]["outcome_if_fired"] == "ERROR"
 
+    def test_d1_topology_mismatch(self):
+        """D1: round model counts must match the configured topology."""
+        result = run_gate2_deterministic(
+            **_base_decide_kwargs(
+                round_model_counts=[4, 3, 2],
+                expected_round_model_counts=[4, 3, 2, 2],
+            ),
+        )
+        assert result.outcome == Outcome.ERROR
+        fired = [r for r in result.rule_trace if r["fired"]]
+        assert fired[0]["rule_id"] == "D1"
+
     def test_d2_modality_mismatch(self):
         """D2: preflight.modality != DECIDE -> ERROR.
 

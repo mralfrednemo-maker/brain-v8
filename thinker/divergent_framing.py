@@ -301,6 +301,27 @@ def format_r2_frame_enforcement() -> str:
     )
 
 
+def validate_r2_frame_obligations(round_texts: dict[str, str]) -> dict[str, list[str]]:
+    """Return missing R2 frame obligations per model."""
+    missing_by_model: dict[str, list[str]] = {}
+    required_markers = {
+        "ADOPT": "ADOPT:",
+        "REBUT": "REBUT:",
+        "NEW_FRAME": "NEW_FRAME:",
+    }
+
+    for model_id, text in round_texts.items():
+        normalized = text.upper()
+        missing = [
+            label for label, marker in required_markers.items()
+            if marker not in normalized
+        ]
+        if missing:
+            missing_by_model[model_id] = missing
+
+    return missing_by_model
+
+
 def _valid_drop_vote_refs(refs: list[str]) -> list[str]:
     """Keep only traceable drop-vote refs tied to arguments or evidence."""
     valid = []

@@ -200,6 +200,29 @@ class TestBrainE2E:
         assert result.outcome == Outcome.NEED_MORE
         assert len(mock.calls_for("r1")) == 0
 
+    async def test_requester_fixable_flags_still_block_when_skip_gate_enabled(self):
+        mock = MockLLMClient()
+        mock.add_response("sonnet", (
+            '{"answerability": "ANSWERABLE", "question_class": "OPEN", '
+            '"stakes_class": "STANDARD", "effort_tier": "STANDARD", "modality": "DECIDE", '
+            '"search_scope": "TARGETED", "exploration_required": false, '
+            '"short_circuit_allowed": false, "fatal_premise": false, '
+            '"follow_up_questions": ["What ambiguity should be clarified?"], '
+            '"premise_flags": [{"flag_id": "PF-1", "flag_type": "AMBIGUITY", '
+            '"severity": "WARNING", "summary": "Need requester clarification", '
+            '"routing": "REQUESTER_FIXABLE", "blocking": false, "resolved": false}], '
+            '"hidden_context_gaps": [], "critical_assumptions": [], '
+            '"reasoning": "Question is answerable only if requester clarifies the brief."}'
+        ))
+        brain = Brain(
+            config=BrainConfig(rounds=3, skip_assumption_gate=True),
+            llm_client=mock,
+            search_fn=None,
+        )
+        result = await brain.run(brief="Proceed despite requester-fixable ambiguity.")
+        assert result.outcome == Outcome.NEED_MORE
+        assert len(mock.calls_for("r1")) == 0
+
     async def test_proof_has_round_data(self):
         mock = MockLLMClient()
         _setup_full_mock(mock, rounds=3)

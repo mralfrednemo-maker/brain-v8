@@ -150,3 +150,19 @@ def test_format_r2_enforcement():
     assert "ADOPT" in text
     assert "REBUT" in text
     assert "NEW_FRAME" in text
+
+
+def test_validate_r2_frame_obligations_complete():
+    from thinker.divergent_framing import validate_r2_frame_obligations
+    result = validate_r2_frame_obligations({
+        "r1": "ADOPT: FRAME-1\nREBUT: FRAME-2\nNEW_FRAME: Try a new lens",
+    })
+    assert result == {}
+
+
+def test_validate_r2_frame_obligations_missing_markers():
+    from thinker.divergent_framing import validate_r2_frame_obligations
+    result = validate_r2_frame_obligations({
+        "r1": "ADOPT: FRAME-1\nSome other text",
+    })
+    assert result == {"r1": ["REBUT", "NEW_FRAME"]}

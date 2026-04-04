@@ -57,4 +57,4 @@ class BrainConfig:
     brave_api_key: str = ""
     outdir: str = "./output"
     analysis_debug_runs_remaining: int = 10  # DOD §18.4: debug sunset counter
-    skip_assumption_gate: bool = False  # Override: skip fatal assumption check (for self-review briefs)
+    skip_assumption_gate: bool = False  # Deprecated no-op: requester-fixable defects always block admission

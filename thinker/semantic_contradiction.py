@@ -83,6 +83,8 @@ def shortlist_pairs(
         # DOD §12.2 criterion 3: at least one member linked to decisive claim, blocker, or open contradiction
         if (a.evidence_id in decisive_claim_evidence_ids or
                 b.evidence_id in decisive_claim_evidence_ids or
+                a.evidence_id in open_blocker_ids or
+                b.evidence_id in open_blocker_ids or
                 a.referenced_by and b.referenced_by):
             qualifies = True
 

@@ -1390,6 +1390,7 @@ class Argument:
     status: ArgumentStatus = ArgumentStatus.IGNORED
     addressed_in_round: Optional[int] = None
     resolution_status: ResolutionStatus = ResolutionStatus.ORIGINAL
+    refines: Optional[str] = None
     superseded_by: Optional[str] = None
     dimension_id: str = ""
     evidence_refs: list[str] = field(default_factory=list)
@@ -1405,6 +1406,7 @@ class Argument:
             "status": self.status.value,
             "addressed_in_round": self.addressed_in_round,
             "resolution_status": self.resolution_status.value,
+            "refines": self.refines,
             "superseded_by": self.superseded_by,
             "dimension_id": self.dimension_id,
             "blocker_link_ids": self.blocker_link_ids,
@@ -2009,7 +2011,7 @@ class SynthesisPacket:
     """DOD §14.1 controller-curated synthesis packet."""
     packet_complete: bool = False
     brief_excerpt: str = ""
-    final_positions: dict = field(default_factory=dict)
+    final_positions: list[dict] = field(default_factory=list)
     argument_lifecycle: list[dict] = field(default_factory=list)
     argument_count_total: int = 0
     argument_count_open: int = 0
@@ -2546,7 +2548,7 @@ class Brain:
                 )
 
             # DOD 4.4: Material false/unverifiable assumptions block admission
-            if preflight_result.has_fatal_assumptions and not self._config.skip_assumption_gate:
+            if preflight_result.has_fatal_assumptions:
                 log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
@@ -2828,8 +2830,10 @@ class Brain:
 
             # --- V9: Mark adversarial slot assigned (DOD §10) ---
             if round_num == 1:
-                divergence_result.adversarial_slot_assigned = True
-                divergence_result.adversarial_model_id = "kimi"
+                divergence_required = not is_analysis_mode and not preflight_result.short_circuit_allowed
+                divergence_result.required = divergence_required
+                divergence_result.adversarial_slot_assigned = divergence_required
+                divergence_result.adversarial_model_id = "kimi" if divergence_required else None
 
             # --- V9: Post-R1 perspective cards + framing pass ---
             if round_num == 1 and not self._stage_done("perspective_cards"):
@@ -2846,6 +2850,9 @@ class Brain:
                 log._print("  [FRAMING] Running framing extract...")
                 t0 = time.monotonic()
                 divergence_result = await run_framing_extract(self._llm, brief_for_sonnet, round_result.texts)
+                divergence_result.required = not is_analysis_mode and not preflight_result.short_circuit_allowed
+                divergence_result.adversarial_slot_assigned = divergence_result.required
+                divergence_result.adversarial_model_id = "kimi" if divergence_result.required else None
                 # Check exploration stress (use R1 agreement)
                 r1_agreement = position_tracker.agreement_ratio(1)
                 if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):
@@ -3986,9 +3993,16 @@ def _eval_decide_rules(
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
-    # --- D3: Illegal SHORT_CIRCUIT state (guardrails violated) ---
-    # Deferred per user directive — no budget enforcement
-    _t("D3", False, "SHORT_CIRCUIT guardrail check deferred")
+    # --- D3: SHORT_CIRCUIT without evidence ---
+    short_circuit_without_evidence = (
+        preflight is not None
+        and preflight.short_circuit_allowed
+        and evidence_count == 0
+    )
+    if _t("D3", short_circuit_without_evidence,
+          f"short_circuit_allowed={preflight.short_circuit_allowed if preflight else False}, evidence={evidence_count}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
 
     # --- D4: agreement < 0.50 ---
     if _t("D4", agreement_ratio < 0.50,
@@ -4608,6 +4622,7 @@ class ProofBuilder:
                     "argument_id": a.argument_id, "round_origin": a.round_num,
                     "model_id": a.model, "text": a.text,
                     "status": a.status.value, "resolution_status": a.resolution_status.value,
+                    "refines": a.refines,
                     "superseded_by": a.superseded_by, "dimension_id": a.dimension_id,
                     "blocker_link_ids": links, "evidence_refs": a.evidence_refs, "open": a.open,
                 }
@@ -5453,7 +5468,7 @@ from __future__ import annotations
 import re
 
 from thinker.pipeline import pipeline_stage
-from thinker.types import Argument, ArgumentStatus
+from thinker.types import Argument, ArgumentStatus, BrainError
 
 
 EXTRACT_PROMPT = """Read the following model outputs from round {round_num} of a multi-model deliberation.
@@ -5650,7 +5665,8 @@ class ArgumentTracker:
         from thinker.types import ResolutionStatus
         statuses = parse_comparison(resp.text, prev_round=prev_round)
         # Build set of valid curr_round arg IDs for supersession validation
-        valid_curr_ids = {a.argument_id for a in curr_args}
+        curr_args_by_id = {a.argument_id: a for a in curr_args}
+        valid_curr_ids = set(curr_args_by_id)
         unaddressed = []
         for arg in prev_args:
             result = statuses.get(arg.argument_id, (ArgumentStatus.IGNORED, None))
@@ -5669,15 +5685,26 @@ class ArgumentTracker:
                         arg.resolution_status = ResolutionStatus.SUPERSEDED
                         arg.superseded_by = superseded_by_id
                         arg.open = False
+                        curr_args_by_id[superseded_by_id].refines = arg.argument_id
                     else:
-                        # DOD §11.3: broken link — log and keep open
+                        # DOD §11.3: broken lineage is a fatal integrity failure.
                         arg.resolution_status = ResolutionStatus.REFINED
-                        arg.open = True  # DOD §11.2: no lineage = not resolved
-                        self._broken_supersession_links.append({
+                        arg.open = True
+                        violation = {
                             "argument_id": arg.argument_id,
                             "claimed_superseded_by": superseded_by_id,
                             "reason": "target ID not found in current round arguments",
-                        })
+                        }
+                        self._broken_supersession_links.append(violation)
+                        raise BrainError(
+                            f"track{curr_round}",
+                            f"Broken supersession link for {arg.argument_id}",
+                            error_class="FATAL_INTEGRITY",
+                            detail=(
+                                f"DOD §11.3 requires ERROR when superseded_by target is missing. "
+                                f"Claimed target: {superseded_by_id}"
+                            ),
+                        )
                 else:
                     # DOD §11.2: "Restatement without explicit linkage is NOT resolution"
                     # ADDRESSED without supersession tag = engaged but not formally resolved
