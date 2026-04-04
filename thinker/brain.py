@@ -170,6 +170,24 @@ class Brain:
         """Check if a stage was already completed (for resume)."""
         return stage_id in self.state.completed_stages
 
+    def _enforce_post_admission_outcome_contract(self, outcome, stage: str) -> None:
+        """Reject top-level outcomes that are illegal once R1 has begun."""
+        value = outcome.value if hasattr(outcome, "value") else str(outcome)
+        if value == Outcome.NEED_MORE.value:
+            raise BrainError(
+                stage,
+                "NEED_MORE emitted after R1 began",
+                error_class="FATAL_INTEGRITY",
+                detail="DOD §1.6/§5.3: NEED_MORE is pre-admission only and cannot be a post-admission outcome.",
+            )
+        if value == "SHORT_CIRCUIT":
+            raise BrainError(
+                stage,
+                "SHORT_CIRCUIT treated as a top-level outcome",
+                error_class="FATAL_INTEGRITY",
+                detail="DOD §1.6/§5.3: SHORT_CIRCUIT is an effort tier within DECIDE, not a top-level outcome.",
+            )
+
     def _restore_trackers(self, argument_tracker: ArgumentTracker,
                           position_tracker: PositionTracker,
                           evidence: EvidenceLedger) -> tuple[dict[str, str], str]:
@@ -1389,6 +1407,8 @@ class Brain:
         if is_analysis_mode and proof._analysis_debug:
             proof._analysis_debug["debug_gate2_result"] = gate2.outcome.value
             proof._analysis_debug["actual_output"] = gate2.outcome.value
+
+        self._enforce_post_admission_outcome_contract(gate2.outcome, "gate2")
 
         self._checkpoint("gate2")
 

@@ -216,7 +216,7 @@ def test_gate2_assessment_rule_trace():
 
 def test_missing_schema_dataclasses_exist():
     assert UngroundedStatItem(claim_id="UG-1", text="42%").to_dict()["claim_id"] == "UG-1"
-    assert UngroundedStatResult(items=[UngroundedStatItem(claim_id="UG-1", text="42%")]).to_dict()["items"][0]["claim_id"] == "UG-1"
+    assert UngroundedStatResult(items=[UngroundedStatItem(claim_id="UG-1", text="42%")]).to_dict()["flagged_claims"][0]["claim_id"] == "UG-1"
     assert SynthesisPacket(packet_complete=True).to_dict()["packet_complete"] is True
     assert ResidueVerification().to_dict()["coverage_pass"] is True
     assert AnalysisMap().to_dict()["header"] == "EXPLORATORY MAP — NOT A DECISION"
@@ -228,6 +228,12 @@ def test_brain_error_defaults_to_fatal_integrity_error_class():
 
     err = BrainError("stage", "boom")
     assert err.error_class == "FATAL_INTEGRITY"
+
+
+def test_ungrounded_stats_items_alias_maps_to_flagged_claims():
+    result = UngroundedStatResult(items=[UngroundedStatItem(claim_id="UG-1", text="42%")])
+    assert result.flagged_claims[0].claim_id == "UG-1"
+    assert result.items[0].claim_id == "UG-1"
 
 
 def test_argument_to_dict_uses_dod_field_names():

@@ -251,3 +251,13 @@ class TestBrainE2E:
             await brain.run("brief")
 
         assert exc.value.partial_proof["error_class"] == "FATAL_INTEGRITY"
+
+    def test_post_admission_need_more_is_rejected(self):
+        brain = Brain(config=BrainConfig(rounds=3), llm_client=MockLLMClient(), search_fn=None)
+        with pytest.raises(BrainError, match="NEED_MORE emitted after R1 began"):
+            brain._enforce_post_admission_outcome_contract("NEED_MORE", "gate2")
+
+    def test_short_circuit_top_level_outcome_is_rejected(self):
+        brain = Brain(config=BrainConfig(rounds=3), llm_client=MockLLMClient(), search_fn=None)
+        with pytest.raises(BrainError, match="SHORT_CIRCUIT treated as a top-level outcome"):
+            brain._enforce_post_admission_outcome_contract("SHORT_CIRCUIT", "gate2")

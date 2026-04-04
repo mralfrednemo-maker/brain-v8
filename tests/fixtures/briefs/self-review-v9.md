@@ -2889,6 +2889,7 @@ class Brain:
                     # when instructed; frame survival check below still runs.
                     proof.add_violation(
                         "R2-FRAME-OBLIGATIONS-MISSING",
+                        "LOW",
                         f"R2 models missing explicit adopt/rebut/new_frame markers: "
                         f"{list(missing_frame_obligations.keys())}",
                     )

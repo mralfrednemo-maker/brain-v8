@@ -923,16 +923,37 @@ class UngroundedStatItem:
         }
 
 
-@dataclass
+@dataclass(init=False)
 class UngroundedStatResult:
     """DOD Â§9.2 container for detector findings and execution state."""
-    items: list[UngroundedStatItem] = field(default_factory=list)
-    post_r1_executed: bool = False
-    post_r2_executed: bool = False
+    flagged_claims: list[UngroundedStatItem]
+    post_r1_executed: bool
+    post_r2_executed: bool
+
+    def __init__(
+        self,
+        flagged_claims: Optional[list[UngroundedStatItem]] = None,
+        *,
+        items: Optional[list[UngroundedStatItem]] = None,
+        post_r1_executed: bool = False,
+        post_r2_executed: bool = False,
+    ):
+        claims = flagged_claims if flagged_claims is not None else items
+        self.flagged_claims = list(claims or [])
+        self.post_r1_executed = post_r1_executed
+        self.post_r2_executed = post_r2_executed
+
+    @property
+    def items(self) -> list[UngroundedStatItem]:
+        return self.flagged_claims
+
+    @items.setter
+    def items(self, value: list[UngroundedStatItem]) -> None:
+        self.flagged_claims = list(value)
 
     def to_dict(self) -> dict:
         return {
-            "items": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
+            "flagged_claims": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.flagged_claims],
             "post_r1_executed": self.post_r1_executed,
             "post_r2_executed": self.post_r2_executed,
         }

@@ -264,8 +264,9 @@ class ProofBuilder:
     def set_ungrounded_stats(self, data) -> None:
         """Set ungrounded statistic detection results (DOD §9.2 schema)."""
         payload = data.to_dict() if hasattr(data, "to_dict") else data
-        if isinstance(payload, dict) and "items" in payload and "flagged_claims" not in payload:
-            payload = {**payload, "flagged_claims": payload.get("items", [])}
+        if isinstance(payload, dict):
+            if "items" in payload and "flagged_claims" not in payload:
+                payload = {**payload, "flagged_claims": payload.get("items", [])}
             payload.pop("items", None)
         self._ungrounded_stats = payload
 
