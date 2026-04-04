@@ -1118,10 +1118,17 @@ class BrainError(Exception):
     Raised when a critical component fails: LLM call, position extraction,
     argument tracking, synthesis. The pipeline must stop immediately.
     """
-    def __init__(self, stage: str, message: str, detail: str = ""):
+    def __init__(
+        self,
+        stage: str,
+        message: str,
+        detail: str = "",
+        error_class: str = "PIPELINE",
+    ):
         self.stage = stage
         self.message = message
         self.detail = detail
+        self.error_class = error_class
         super().__init__(f"[{stage}] {message}")
 
 
@@ -1320,6 +1327,7 @@ class DispositionTargetType(Enum):
 class ErrorClass(Enum):
     INFRASTRUCTURE = "INFRASTRUCTURE"
     FATAL_INTEGRITY = "FATAL_INTEGRITY"
+    PIPELINE = "PIPELINE"
 
 
 class AssumptionVerifiability(Enum):
@@ -1929,6 +1937,21 @@ class UngroundedStatItem:
 
 
 @dataclass
+class UngroundedStatResult:
+    """DOD Â§9.2 container for detector findings and execution state."""
+    items: list[UngroundedStatItem] = field(default_factory=list)
+    post_r1_executed: bool = False
+    post_r2_executed: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "items": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
+            "post_r1_executed": self.post_r1_executed,
+            "post_r2_executed": self.post_r2_executed,
+        }
+
+
+@dataclass
 class SynthesisPacket:
     """DOD §14.1 controller-curated synthesis packet."""
     packet_complete: bool = False
@@ -1995,7 +2018,7 @@ class ResidueVerification:
 @dataclass
 class AnalysisMap:
     """DOD §18.3 analysis-mode exploratory map."""
-    header: str = "EXPLORATORY MAP - NOT A DECISION"
+    header: str = "EXPLORATORY MAP — NOT A DECISION"
     dimensions: dict = field(default_factory=dict)
     hypothesis_ledger: list[dict] = field(default_factory=list)
     total_argument_count: int = 0
@@ -2109,7 +2132,11 @@ from thinker.synthesis import run_synthesis
 from thinker.tools.blocker import BlockerLedger
 from thinker.tools.position import PositionTracker
 from thinker.checkpoint import PipelineState, should_stop
-from thinker.types import ArgumentStatus, BlockerKind, BrainError, BrainResult, Confidence, EvidenceItem, Outcome, Position, SearchResult
+from thinker.types import (
+    ArgumentStatus, BlockerKind, BrainError, BrainResult, Confidence,
+    EvidenceItem, Outcome, Position, SearchResult, UngroundedStatItem,
+    UngroundedStatResult,
+)
 from thinker.preflight import run_preflight
 from thinker.dimension_seeder import run_dimension_seeder, format_dimensions_for_prompt
 from thinker.perspective_cards import extract_perspective_cards, format_perspective_card_instructions
@@ -2316,10 +2343,7 @@ class Brain:
         except BrainError as e:
             # DOD §19: proof.json required "always", including on ERROR.
             # Write partial proof with error_class before re-raising.
-            proof.set_error_class(
-                "INFRASTRUCTURE" if "LLM" in e.message or "call failed" in e.message
-                else "FATAL_INTEGRITY"
-            )
+            proof.set_error_class(e.error_class or "PIPELINE")
             proof.set_final_status(f"ERROR:{e.stage}")
             proof.set_timestamp_completed()
             e.partial_proof = proof.build()
@@ -2552,6 +2576,7 @@ class Brain:
                 raise BrainError(
                     "dimensions",
                     f"Only {dimension_result.dimension_count} dimensions seeded (minimum 3 required)",
+                    error_class="FATAL_INTEGRITY",
                     detail="DOD §6.2: dimension_count < 3 → ERROR.",
                 )
             st.dimensions = dimension_result.to_dict()
@@ -2698,6 +2723,7 @@ class Brain:
                     raise BrainError(
                         f"round{round_num}",
                         f"Model(s) failed in round {round_num}: {', '.join(round_result.failed)}",
+                        error_class="INFRASTRUCTURE",
                         detail=failed_details,
                     )
 
@@ -2905,6 +2931,7 @@ class Brain:
                         raise BrainError(
                             f"search_round{round_num}",
                             f"Search query failed: {query[:80]}",
+                            error_class="INFRASTRUCTURE",
                             detail=str(e),
                         )
                     search_log_entries.append(SearchLogEntry(
@@ -2924,6 +2951,7 @@ class Brain:
                     raise BrainError(
                         f"page_fetch_round{round_num}",
                         f"Page fetch failed",
+                        error_class="INFRASTRUCTURE",
                         detail=str(e),
                     )
 
@@ -3119,6 +3147,7 @@ class Brain:
                     raise BrainError(
                         "analysis_verdict_check",
                         f"ANALYSIS output contains verdict language in header: {verdict_found[:3]}",
+                        error_class="FATAL_INTEGRITY",
                         detail="DOD §18.5: ANALYSIS mode must produce exploratory map, not verdict.",
                     )
 
@@ -3136,6 +3165,7 @@ class Brain:
                         analysis_map["dimensions"][key] = report_json[key]
                     elif key == "hypothesis_ledger":
                         analysis_map["hypothesis_ledger"] = report_json[key]
+            analysis_map["header"] = "EXPLORATORY MAP — NOT A DECISION"
             proof.set_analysis_map(analysis_map)
 
             # DOD §18.4: debug sunset enforcement
@@ -3225,6 +3255,7 @@ class Brain:
                 raise BrainError(
                     "evidence_validation",
                     f"Cited evidence missing from both stores: {phantom_refs[:5]}",
+                    error_class="FATAL_INTEGRITY",
                     detail=f"DOD §10.3: {len(phantom_refs)} phantom evidence refs. FATAL_INTEGRITY.",
                 )
 
@@ -3266,6 +3297,7 @@ class Brain:
                 raise BrainError(
                     "disposition_coverage",
                     f"Zero dispositions for {coverage['total_required']} required findings",
+                    error_class="FATAL_INTEGRITY",
                     detail="DOD §14.6: Disposition missing for tracked open finding → ERROR.",
                 )
             # DOD §14.6: any missing disposition → ERROR (before deep scan opportunity)
@@ -3275,6 +3307,7 @@ class Brain:
                 raise BrainError(
                     "disposition_coverage",
                     f"{len(omissions)} dispositions missing for tracked open findings",
+                    error_class="FATAL_INTEGRITY",
                     detail=f"DOD §14.6: Disposition missing → ERROR. Missing: {[o['target_id'] for o in omissions][:5]}",
                 )
 
@@ -3449,11 +3482,22 @@ class Brain:
                 if any(stat_text in ev.fact for ev in evidence.active_items):
                     fc["verified"] = True
                     fc["status"] = "CLEAR"
-        proof.set_ungrounded_stats({
-            "post_r1_executed": st.ungrounded_r1_executed,
-            "post_r2_executed": st.ungrounded_r2_executed,
-            "flagged_claims": st.ungrounded_flagged_claims,
-        })
+        proof.set_ungrounded_stats(UngroundedStatResult(
+            items=[
+                UngroundedStatItem(
+                    claim_id=fc["claim_id"],
+                    text=fc["text"],
+                    numeric=fc.get("numeric", True),
+                    verified=fc.get("verified", False),
+                    blocker_id=fc.get("blocker_id"),
+                    severity=fc.get("severity", "MEDIUM"),
+                    status=fc.get("status", "UNVERIFIED_CLAIM"),
+                )
+                for fc in st.ungrounded_flagged_claims
+            ],
+            post_r1_executed=st.ungrounded_r1_executed,
+            post_r2_executed=st.ungrounded_r2_executed,
+        ))
 
         # Contradictions (numeric + semantic)
         proof.set_contradictions(
@@ -4400,7 +4444,7 @@ class ProofBuilder:
 
     def set_ungrounded_stats(self, data) -> None:
         """Set ungrounded statistic detection results (DOD §9.2 schema)."""
-        self._ungrounded_stats = data
+        self._ungrounded_stats = data.to_dict() if hasattr(data, "to_dict") else data
 
     def set_evidence_two_tier(self, active: list, archive: list, eviction_log: list) -> None:
         """Set two-tier evidence data."""
@@ -4964,7 +5008,12 @@ async def run_preflight(client, brief: str) -> PreflightResult:
             assumptions.append(CriticalAssumption(
                 assumption_id=a.get("assumption_id", "CA-?"),
                 text=a.get("text", ""),
-                verifiability=AssumptionVerifiability(a.get("verifiability", "UNKNOWN")),
+                verifiability=AssumptionVerifiability(
+                    {"VERIFIED": "VERIFIABLE"}.get(
+                        a.get("verifiability", "UNKNOWN"),
+                        a.get("verifiability", "UNKNOWN")
+                    )
+                ),
                 material=a.get("material", True),
             ))
 

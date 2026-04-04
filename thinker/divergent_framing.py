@@ -245,7 +245,7 @@ async def run_frame_survival_check(
                 new_status = FrameSurvivalStatus.CONTESTED
             else:
                 frame.r2_drop_vote_count = len(drop_models)
-                frame.r2_drop_vote_refs = drop_models
+                frame.r2_drop_vote_refs = []
 
         frame.survival_status = new_status
 

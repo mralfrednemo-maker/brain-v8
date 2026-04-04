@@ -76,6 +76,7 @@ async def test_frame_survival_r2_drops_with_3_votes():
     result = await run_frame_survival_check(mock, frames, {"r1": "t", "kimi": "t", "reasoner": "t"}, round_num=2)
     assert result[0].survival_status == FrameSurvivalStatus.DROPPED
     assert result[0].r2_drop_vote_count == 3
+    assert result[0].r2_drop_vote_refs == []
 
 
 @pytest.mark.asyncio

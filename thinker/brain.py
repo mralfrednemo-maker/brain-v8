@@ -48,7 +48,7 @@ from thinker.dimension_seeder import run_dimension_seeder, format_dimensions_for
 from thinker.perspective_cards import extract_perspective_cards, format_perspective_card_instructions
 from thinker.divergent_framing import (
     run_framing_extract, run_frame_survival_check,
-    check_exploration_stress, format_frames_for_prompt,
+    check_exploration_stress, format_frames_for_prompt, format_r2_frame_enforcement,
 )
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
 from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
@@ -249,7 +249,7 @@ class Brain:
         except BrainError as e:
             # DOD §19: proof.json required "always", including on ERROR.
             # Write partial proof with error_class before re-raising.
-            proof.set_error_class(e.error_class or "PIPELINE")
+            proof.set_error_class(e.error_class)
             proof.set_final_status(f"ERROR:{e.stage}")
             proof.set_timestamp_completed()
             e.partial_proof = proof.build()
@@ -611,6 +611,7 @@ class Brain:
                     dimension_text=dimension_text if round_num == 1 else "",
                     perspective_card_instructions=format_perspective_card_instructions() if round_num == 1 else "",
                     alt_frames_text=alt_frames_text if round_num >= 2 else "",
+                    frame_enforcement_text=format_r2_frame_enforcement() if round_num == 2 else "",
                 )
                 log.round_result(round_num, round_result.responded, round_result.failed,
                                  round_result.texts, time.monotonic() - t0)

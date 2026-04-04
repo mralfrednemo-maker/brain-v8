@@ -55,7 +55,7 @@ class BrainError(Exception):
         stage: str,
         message: str,
         detail: str = "",
-        error_class: str = "PIPELINE",
+        error_class: str = "FATAL_INTEGRITY",
     ):
         self.stage = stage
         self.message = message
@@ -259,7 +259,6 @@ class DispositionTargetType(Enum):
 class ErrorClass(Enum):
     INFRASTRUCTURE = "INFRASTRUCTURE"
     FATAL_INTEGRITY = "FATAL_INTEGRITY"
-    PIPELINE = "PIPELINE"
 
 
 class AssumptionVerifiability(Enum):

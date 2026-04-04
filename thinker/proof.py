@@ -20,6 +20,54 @@ def _serialize_blocker_status(status: str) -> str:
     return "DEFERRED" if status == "DROPPED" else status
 
 
+_EXPECTED_STAGE_ORDER = [
+    "preflight",
+    "dimensions",
+    "r1",
+    "track1",
+    "perspective_cards",
+    "framing_pass",
+    "ungrounded_r1",
+    "search1",
+    "r2",
+    "track2",
+    "frame_survival_r2",
+    "ungrounded_r2",
+    "search2",
+    "r3",
+    "track3",
+    "frame_survival_r3",
+    "r4",
+    "track4",
+    "semantic_contradiction",
+    "decisive_claims",
+    "synthesis_packet",
+    "synthesis",
+    "residue_verification",
+    "gate2",
+]
+
+
+def _validate_stage_order(order: list[str]) -> tuple[bool, list[str]]:
+    expected_positions = {stage: idx for idx, stage in enumerate(_EXPECTED_STAGE_ORDER)}
+    violations: list[str] = []
+    last_expected_index = -1
+
+    for idx, stage in enumerate(order):
+        expected_index = expected_positions.get(stage)
+        if expected_index is None:
+            violations.append(f"Unknown stage '{stage}' at position {idx + 1}")
+            continue
+        if expected_index < last_expected_index:
+            violations.append(
+                f"Stage '{stage}' executed at position {idx + 1} after a later stage"
+            )
+        else:
+            last_expected_index = expected_index
+
+    return len(violations) == 0, violations
+
+
 class ProofBuilder:
     """Incrementally builds proof.json throughout a Brain run."""
 
@@ -215,7 +263,11 @@ class ProofBuilder:
 
     def set_ungrounded_stats(self, data) -> None:
         """Set ungrounded statistic detection results (DOD §9.2 schema)."""
-        self._ungrounded_stats = data.to_dict() if hasattr(data, "to_dict") else data
+        payload = data.to_dict() if hasattr(data, "to_dict") else data
+        if isinstance(payload, dict) and "items" in payload and "flagged_claims" not in payload:
+            payload = {**payload, "flagged_claims": payload.get("items", [])}
+            payload.pop("items", None)
+        self._ungrounded_stats = payload
 
     def set_evidence_two_tier(self, active: list, archive: list, eviction_log: list) -> None:
         """Set two-tier evidence data."""
@@ -297,6 +349,11 @@ class ProofBuilder:
 
     def set_synthesis_packet(self, packet: dict) -> None:
         """Set synthesis packet data."""
+        if isinstance(packet, dict) and "decisive_claims" in packet and "decisive_claim_bindings" not in packet:
+            payload = {**packet, "decisive_claim_bindings": packet.get("decisive_claims", [])}
+            payload.pop("decisive_claims", None)
+            self._synthesis_packet = payload
+            return
         self._synthesis_packet = packet
 
     def set_synthesis_dispositions(self, dispositions: list) -> None:
@@ -319,13 +376,17 @@ class ProofBuilder:
 
     def set_stage_integrity(self, required: list[str], order: list[str], fatal: list[str]) -> None:
         """Set stage integrity tracking (DOD §3.4)."""
+        order_valid, order_violations = _validate_stage_order(order)
+        if not order_valid:
+            self.add_violation("STAGE-ORDER", "ERROR", "; ".join(order_violations))
         self._stage_integrity = {
             "required_stages": required,
             "execution_order": order,
             "fatal_failures": fatal,
             "all_required_present": all(s in order for s in required),
-            "order_valid": True,  # Pipeline enforces order by construction
-            "fatal": len(fatal) > 0,
+            "order_valid": order_valid,
+            "order_violations": order_violations,
+            "fatal": len(fatal) > 0 or not order_valid,
         }
 
     def set_residue_verification(self, data: dict) -> None:

@@ -113,6 +113,18 @@ class TestRound2Prompt:
         assert "ARG-1" in prompt
         assert "MUST engage" in prompt
 
+    def test_r2_prompt_includes_frame_enforcement_text(self):
+        prompt = build_round_prompt(
+            round_num=2, brief="Brief",
+            prior_views={"r1": "view"},
+            evidence_text="",
+            unaddressed_arguments="",
+            alt_frames_text="FRAME-1",
+            frame_enforcement_text="MANDATORY-R2-FRAMES",
+            is_last_round=False,
+        )
+        assert "MANDATORY-R2-FRAMES" in prompt
+
 
 class TestRound34:
     """Rounds 3-4: narrower topology, still include evidence + arguments."""

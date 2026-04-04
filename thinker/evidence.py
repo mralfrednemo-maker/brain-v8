@@ -27,6 +27,23 @@ _AUTHORITY_DOMAINS = {
 }
 
 
+def derive_topic_cluster(item: EvidenceItem) -> str:
+    """Derive a deterministic topic cluster from source metadata."""
+    try:
+        domain = urlparse(item.url).netloc.lower().strip()
+    except Exception:
+        domain = ""
+    if domain:
+        return domain.removeprefix("www.")
+
+    topic_words = [word for word in item.topic.split() if word][:3]
+    if topic_words:
+        return " ".join(topic_words).lower()
+
+    fact_words = [word for word in item.fact.split() if word][:3]
+    return " ".join(fact_words).lower()
+
+
 def score_evidence(item: EvidenceItem, brief_keywords: set[str]) -> float:
     """Score evidence item for relevance.
 
@@ -159,6 +176,8 @@ class EvidenceLedger:
             return False
 
         # Score the new item
+        if not item.topic_cluster:
+            item.topic_cluster = derive_topic_cluster(item)
         item.score = score_evidence(item, self.brief_keywords)
         item.is_active = True
         item.is_archived = False

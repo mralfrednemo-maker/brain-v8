@@ -247,4 +247,27 @@ class TestProofV9:
         wire = pb.build()["ungrounded_stats"]
         assert wire["post_r1_executed"] is True
         assert wire["post_r2_executed"] is False
-        assert wire["items"][0]["claim_id"] == "UG-1"
+        assert wire["flagged_claims"][0]["claim_id"] == "UG-1"
+
+    def test_synthesis_packet_uses_decisive_claim_bindings_in_proof(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_synthesis_packet({
+            "packet_complete": True,
+            "decisive_claims": [{"claim_id": "C-1"}],
+        })
+        wire = pb.build()["synthesis_packet"]
+        assert "decisive_claim_bindings" in wire
+        assert "decisive_claims" not in wire
+        assert wire["decisive_claim_bindings"][0]["claim_id"] == "C-1"
+
+    def test_stage_integrity_detects_out_of_order_execution(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_stage_integrity(
+            required=["preflight", "dimensions", "r1"],
+            order=["preflight", "r1", "dimensions"],
+            fatal=[],
+        )
+        wire = pb.build()["stage_integrity"]
+        assert wire["order_valid"] is False
+        assert wire["fatal"] is True
+        assert wire["order_violations"]

@@ -222,8 +222,8 @@ def test_missing_schema_dataclasses_exist():
     assert AnalysisDebug(debug_mode=True).to_dict()["debug_mode"] is True
 
 
-def test_brain_error_defaults_to_pipeline_error_class():
+def test_brain_error_defaults_to_fatal_integrity_error_class():
     from thinker.types import BrainError
 
     err = BrainError("stage", "boom")
-    assert err.error_class == "PIPELINE"
+    assert err.error_class == "FATAL_INTEGRITY"

@@ -46,16 +46,6 @@ _ADVERSARIAL_PREAMBLE = (
     "Do NOT simply agree with the obvious position.\n\n"
 )
 
-_FRAME_ENGAGEMENT_SECTION = (
-    "\n## Frame Engagement Requirements (MANDATORY for R2)\n"
-    "You MUST:\n"
-    "1. ADOPT at least one alternative frame and argue from its perspective\n"
-    "2. REBUT at least one alternative frame with substantive counter-arguments\n"
-    "3. GENERATE at least one NEW alternative frame not yet proposed\n\n"
-    "For each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
-)
-
-
 def build_round_prompt(
     round_num: int,
     brief: str,
@@ -66,6 +56,7 @@ def build_round_prompt(
     adversarial_model: str = "",
     model_id: str = "",
     alt_frames_text: str = "",
+    frame_enforcement_text: str = "",
     dimension_text: str = "",
     perspective_card_instructions: str = "",
 ) -> str:
@@ -120,8 +111,8 @@ def build_round_prompt(
         parts.append(f"{unaddressed_arguments}\n")
 
     # R2: frame engagement requirements
-    if round_num == 2 and alt_frames_text:
-        parts.append(_FRAME_ENGAGEMENT_SECTION)
+    if round_num == 2 and frame_enforcement_text:
+        parts.append(frame_enforcement_text)
 
     parts.append("\n## Your Analysis\n")
     parts.append("Provide your independent assessment. Structure your response as:\n"
@@ -185,6 +176,7 @@ async def execute_round(
     is_last_round: bool = False,
     adversarial_model: str = "",
     alt_frames_text: str = "",
+    frame_enforcement_text: str = "",
     dimension_text: str = "",
     perspective_card_instructions: str = "",
 ) -> RoundResult:
@@ -223,6 +215,7 @@ async def execute_round(
             unaddressed_arguments=unaddressed_arguments,
             is_last_round=is_last_round,
             alt_frames_text=alt_frames_text,
+            frame_enforcement_text=frame_enforcement_text,
             dimension_text=dimension_text,
             perspective_card_instructions=perspective_card_instructions,
         )

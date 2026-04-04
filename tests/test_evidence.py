@@ -2,7 +2,7 @@
 import pytest
 
 from thinker.types import Confidence, EvidenceItem
-from thinker.evidence import EvidenceLedger, score_evidence
+from thinker.evidence import EvidenceLedger, derive_topic_cluster, score_evidence
 
 
 class TestEvidenceAdd:
@@ -13,6 +13,7 @@ class TestEvidenceAdd:
         item = EvidenceItem("E001", "JWT bypass", "CVE found", "https://nvd.nist.gov", Confidence.HIGH)
         assert ledger.add(item) is True
         assert len(ledger.items) == 1
+        assert ledger.items[0].topic_cluster == "nvd.nist.gov"
 
     def test_duplicate_content_rejected(self):
         ledger = EvidenceLedger(max_items=10)
@@ -133,6 +134,10 @@ class TestEvidenceScoring:
         item = EvidenceItem("E001", "t", "fact", "https://a.com", Confidence.MEDIUM)
         score = score_evidence(item, brief_keywords=set())
         assert score == 1.0
+
+    def test_topic_cluster_falls_back_to_topic_words(self):
+        item = EvidenceItem("E001", "JWT bypass vulnerability", "fact", "", Confidence.MEDIUM)
+        assert derive_topic_cluster(item) == "jwt bypass vulnerability"
 
 
 class TestEvidenceEviction:
