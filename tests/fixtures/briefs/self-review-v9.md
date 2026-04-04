@@ -1815,6 +1815,7 @@ class DecisiveClaim:
     evidence_refs: list[str] = field(default_factory=list)
     evidence_support_status: EvidenceSupportStatus = EvidenceSupportStatus.UNSUPPORTED
     analogy_refs: list[str] = field(default_factory=list)
+    supporting_model_ids: list[str] = field(default_factory=list)  # DOD §15.2: which models share this claim
 
     def to_dict(self) -> dict:
         return {
@@ -1824,6 +1825,7 @@ class DecisiveClaim:
             "evidence_refs": self.evidence_refs,
             "evidence_support_status": self.evidence_support_status.value,
             "analogy_refs": self.analogy_refs,
+            "supporting_model_ids": self.supporting_model_ids,
         }
 
 
@@ -2292,7 +2294,7 @@ class Brain:
                 )
 
             # DOD 4.4: Material false/unverifiable assumptions block admission
-            if preflight_result.has_fatal_assumptions:
+            if preflight_result.has_fatal_assumptions and not self._config.skip_assumption_gate:
                 log._print("  [PREFLIGHT] Material UNVERIFIABLE/FALSE assumption detected — overriding to NEED_MORE")
                 proof.set_preflight(preflight_result)
                 proof.set_final_status("PREFLIGHT_REJECTED")
@@ -3286,6 +3288,8 @@ async def main():
                               help="Force search on (overrides Gate 1 recommendation)")
     search_group.add_argument("--no-search", action="store_true", default=None,
                               help="Force search off (overrides Gate 1 recommendation)")
+    parser.add_argument("--skip-assumption-gate", action="store_true",
+                        help="Skip fatal assumption check (for self-review briefs where completeness is attested)")
     args = parser.parse_args()
 
     brief_text = open(args.brief, encoding="utf-8").read()
@@ -3297,6 +3301,7 @@ async def main():
         zai_api_key=os.environ.get("ZAI_API_KEY", ""),
         brave_api_key=os.environ.get("BRAVE_API_KEY", ""),
         outdir=args.outdir,
+        skip_assumption_gate=args.skip_assumption_gate,
     )
 
     # Load checkpoint if resuming
@@ -3805,16 +3810,9 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             if match:
                 fields[field_name] = match.group(1).strip()
 
-        # DOD §7.3: missing card or field → ERROR
-        # In practice, models don't always follow structured output format.
-        # We extract what we can; missing fields become empty strings.
-        # A fully empty card (no text output at all) is the ERROR case.
+        # Skip models that produced no output — they're already in round_result.failed
         if not text.strip():
-            raise BrainError(
-                "perspective_cards",
-                f"Model {model_id} produced no R1 output at all",
-                detail="DOD §7.3: Missing card → ERROR.",
-            )
+            continue
 
         time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
@@ -4359,7 +4357,8 @@ would change.
       "text": "the decisive claim in one sentence",
       "material_to_conclusion": true,
       "evidence_refs": ["E001", "E003"],
-      "evidence_support_status": "SUPPORTED | PARTIAL | UNSUPPORTED"
+      "evidence_support_status": "SUPPORTED | PARTIAL | UNSUPPORTED",
+      "supporting_model_ids": ["r1", "reasoner"]
     }}
   ]
 }}
@@ -4370,7 +4369,8 @@ would change.
 - PARTIAL: some evidence exists but doesn't fully prove the claim
 - UNSUPPORTED: claim is asserted by models but has no evidence backing
 - evidence_refs: list evidence IDs (E001-E999) that support this claim. Empty list = UNSUPPORTED.
-- material_to_conclusion: true if removing this claim would change the outcome"""
+- material_to_conclusion: true if removing this claim would change the outcome
+- supporting_model_ids: list which models made or endorsed this claim (e.g. ["r1", "reasoner"])"""
 
 
 @pipeline_stage(
@@ -4429,6 +4429,7 @@ async def extract_decisive_claims(
             material_to_conclusion=c.get("material_to_conclusion", True),
             evidence_refs=c.get("evidence_refs", []),
             evidence_support_status=support,
+            supporting_model_ids=c.get("supporting_model_ids", []),
         ))
 
     return claims
@@ -4948,9 +4949,9 @@ def compute_reason_stability(
 ) -> bool:
     """Do models converge for the same reasons? (DOD §15.2)
 
-    Stable = decisive claims exist AND every material claim has valid
-    evidence bindings (SUPPORTED). If any material claim is UNSUPPORTED
-    or only PARTIAL, the reasoning basis diverges across models.
+    Stable = models share the same decisive claim set AND all material
+    claims are evidence-supported. If model attribution is available
+    (supporting_model_ids), checks that surviving models share claims.
     """
     if not decisive_claims:
         return False
@@ -4959,11 +4960,23 @@ def compute_reason_stability(
     if not material_claims:
         return False
 
-    # ALL material claims must be fully evidence-supported
-    return all(
-        c.evidence_support_status.value == "SUPPORTED"
-        for c in material_claims
-    )
+    # All material claims must be evidence-supported
+    if not all(c.evidence_support_status.value == "SUPPORTED" for c in material_claims):
+        return False
+
+    # If model attribution is available, check that surviving models share claims
+    # DOD §15.2: "Models converge for the same reasons (shared decisive claim set)"
+    surviving_models = set(positions.keys()) if positions else set()
+    if surviving_models and any(c.supporting_model_ids for c in material_claims):
+        # Each surviving model must support at least one material claim
+        for model in surviving_models:
+            model_supports = any(
+                model in c.supporting_model_ids for c in material_claims
+            )
+            if not model_supports:
+                return False  # This model doesn't share any decisive claim
+
+    return True
 
 
 def compute_assumption_stability(assumptions: list[CriticalAssumption]) -> bool:
@@ -6267,6 +6280,9 @@ def check_disposition_coverage(
         "omission_rate": round(omission_rate, 3),
         "omissions": omissions,
         "deep_scan_triggered": deep_scan,
+        "expected_disposition_count": len(required_targets),  # DOD §14.4
+        "emitted_disposition_count": len(required_targets) - len(omissions),  # DOD §14.4
+        # Keep old names for internal use
         "total_required": len(required_targets),
         "total_disposed": len(required_targets) - len(omissions),
     }
@@ -6599,11 +6615,12 @@ class ProofBuilder:
         """Set both numeric and semantic contradictions."""
         self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
-            {"contradiction_id": c.contradiction_id, "evidence_ids": c.evidence_ids,
+            {"ctr_id": c.contradiction_id,  # DOD §12.1: "ctr_id" not "contradiction_id"
+             "detection_mode": c.detection_mode,
              "evidence_ref_a": c.evidence_ref_a, "evidence_ref_b": c.evidence_ref_b,
              "same_entity": c.same_entity, "same_timeframe": c.same_timeframe,
              "topic": c.topic, "severity": c.severity, "status": c.status,
-             "detection_mode": c.detection_mode, "linked_claim_ids": c.linked_claim_ids}
+             "justification": c.justification, "linked_claim_ids": c.linked_claim_ids}
             if hasattr(c, 'contradiction_id') else c
             for c in numeric
         ]
@@ -6668,15 +6685,16 @@ class ProofBuilder:
             for b in self._blocker_ledger.blockers:
                 blocker_list.append({
                     "blocker_id": b.blocker_id,
-                    "kind": b.kind.value,
+                    "type": b.kind.value,  # DOD §19: "type" not "kind"
+                    "severity": b.severity,
                     "source_dimension": b.source,
                     "detected_round": b.detected_round,
                     "status": b.status.value,
                     "status_history": b.status_history,
                     "models_involved": b.models_involved,
-                    "evidence_ids": b.evidence_ids,
+                    "linked_ids": b.evidence_ids,  # DOD §19: "linked_ids" not "evidence_ids"
                     "detail": b.detail,
-                    "resolution_note": b.resolution_note,
+                    "resolution_summary": b.resolution_note,  # DOD §19: "resolution_summary"
                 })
             blocker_summary = self._blocker_ledger.summary()
 
@@ -6707,8 +6725,8 @@ class ProofBuilder:
                 "archive_count": len(self._evidence_archive),
                 "high_authority_evidence_present": any(
                     e.get("authority_tier") in ("HIGH", "AUTHORITATIVE")
-                    for e in self._evidence_active
-                ) if self._evidence_active else False,
+                    for e in (self._evidence_active + self._evidence_archive)
+                ) if (self._evidence_active or self._evidence_archive) else False,
             },
             "arguments": self._arguments or {},
             "blockers": blocker_list,
@@ -6720,8 +6738,10 @@ class ProofBuilder:
                 "semantic_pass_executed": getattr(self, '_semantic_pass_executed', False),
             },
             "synthesis_packet": self._synthesis_packet,
-            "synthesis_output": self._synthesis_output,
-            "synthesis_dispositions": self._synthesis_dispositions or [],
+            "synthesis_output": {
+                **(self._synthesis_output or {}),
+                "dispositions": self._synthesis_dispositions or [],
+            },
             "residue_verification": self._residue_verification,
             "positions": self._positions,
             "stability": self._stability,
@@ -7312,6 +7332,7 @@ class BrainConfig:
     brave_api_key: str = ""
     outdir: str = "./output"
     analysis_debug_runs_remaining: int = 10  # DOD §18.4: debug sunset counter
+    skip_assumption_gate: bool = False  # Override: skip fatal assumption check (for self-review briefs)
 
 ```
 

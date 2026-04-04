@@ -213,14 +213,18 @@ class ProofBuilder:
         self._evidence_active = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
              "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
-             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
+             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier,
+             "is_active": e.is_active, "is_archived": e.is_archived,
+             "referenced_by": e.referenced_by}
             if hasattr(e, 'evidence_id') else e
             for e in active
         ]
         self._evidence_archive = [
             {"evidence_id": e.evidence_id, "topic": e.topic, "fact": e.fact,
              "source_url": e.url, "confidence": e.confidence.value, "score": e.score,
-             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier}
+             "topic_cluster": e.topic_cluster, "authority_tier": e.authority_tier,
+             "is_active": e.is_active, "is_archived": e.is_archived,
+             "referenced_by": e.referenced_by}
             if hasattr(e, 'evidence_id') else e
             for e in archive
         ]
