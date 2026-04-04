@@ -274,6 +274,17 @@ class TestProofV9:
         assert wire["fatal"] is True
         assert wire["order_violations"]
 
+    def test_stage_integrity_accepts_stability_before_residue_verification(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_stage_integrity(
+            required=["synthesis", "stability", "residue_verification", "gate2"],
+            order=["synthesis", "stability", "residue_verification", "gate2"],
+            fatal=[],
+        )
+        wire = pb.build()["stage_integrity"]
+        assert wire["order_valid"] is True
+        assert wire["all_required_present"] is True
+
     def test_analysis_map_schema_validation(self):
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
         pb.set_analysis_map({

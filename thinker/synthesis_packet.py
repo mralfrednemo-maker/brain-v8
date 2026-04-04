@@ -131,7 +131,7 @@ def build_synthesis_packet(
         ),
         "blocker_summary": blocker_entries,
         "open_blocker_count": len(open_blockers),
-        "decisive_claims": claim_entries,
+        "decisive_claim_bindings": claim_entries,
         "contradiction_summary": ctr_entries,
         "premise_flag_summary": flag_entries,
         "evidence_count": len(evidence_items),
@@ -168,7 +168,7 @@ def format_synthesis_packet_for_prompt(packet: dict) -> str:
             lines.append(f"- [{b['blocker_id']}] {b['kind']}: {b['detail'][:80]}...")
 
     # Claims
-    claims = packet.get("decisive_claims", [])
+    claims = packet.get("decisive_claim_bindings", packet.get("decisive_claims", []))
     if claims:
         lines.append(f"\n### Decisive Claims ({len(claims)})")
         for c in claims:

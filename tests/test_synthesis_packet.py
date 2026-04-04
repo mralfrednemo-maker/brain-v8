@@ -123,3 +123,28 @@ def test_format_packet_for_prompt():
     assert "Option A" in text
     assert "r1" in text
     assert "Disposition Requirements" in text
+
+
+def test_packet_uses_decisive_claim_bindings_field():
+    from thinker.synthesis_packet import build_synthesis_packet
+    packet = build_synthesis_packet(
+        brief="Test",
+        final_positions={},
+        arguments=[],
+        frames=[],
+        blockers=[],
+        decisive_claims=[
+            DecisiveClaim(
+                claim_id="DC-1",
+                text="Material claim",
+                evidence_support_status=EvidenceSupportStatus.SUPPORTED,
+            ),
+        ],
+        contradictions_numeric=[],
+        contradictions_semantic=[],
+        premise_flags=[],
+        evidence_items=[],
+    )
+    assert "decisive_claim_bindings" in packet
+    assert "decisive_claims" not in packet
+    assert packet["decisive_claim_bindings"][0]["claim_id"] == "DC-1"

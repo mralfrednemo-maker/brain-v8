@@ -1991,16 +1991,37 @@ class UngroundedStatItem:
         }
 
 
-@dataclass
+@dataclass(init=False)
 class UngroundedStatResult:
     """DOD Â§9.2 container for detector findings and execution state."""
-    items: list[UngroundedStatItem] = field(default_factory=list)
-    post_r1_executed: bool = False
-    post_r2_executed: bool = False
+    flagged_claims: list[UngroundedStatItem]
+    post_r1_executed: bool
+    post_r2_executed: bool
+
+    def __init__(
+        self,
+        flagged_claims: Optional[list[UngroundedStatItem]] = None,
+        *,
+        items: Optional[list[UngroundedStatItem]] = None,
+        post_r1_executed: bool = False,
+        post_r2_executed: bool = False,
+    ):
+        claims = flagged_claims if flagged_claims is not None else items
+        self.flagged_claims = list(claims or [])
+        self.post_r1_executed = post_r1_executed
+        self.post_r2_executed = post_r2_executed
+
+    @property
+    def items(self) -> list[UngroundedStatItem]:
+        return self.flagged_claims
+
+    @items.setter
+    def items(self, value: list[UngroundedStatItem]) -> None:
+        self.flagged_claims = list(value)
 
     def to_dict(self) -> dict:
         return {
-            "items": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
+            "flagged_claims": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.flagged_claims],
             "post_r1_executed": self.post_r1_executed,
             "post_r2_executed": self.post_r2_executed,
         }
@@ -2318,6 +2339,24 @@ class Brain:
     def _stage_done(self, stage_id: str) -> bool:
         """Check if a stage was already completed (for resume)."""
         return stage_id in self.state.completed_stages
+
+    def _enforce_post_admission_outcome_contract(self, outcome, stage: str) -> None:
+        """Reject top-level outcomes that are illegal once R1 has begun."""
+        value = outcome.value if hasattr(outcome, "value") else str(outcome)
+        if value == Outcome.NEED_MORE.value:
+            raise BrainError(
+                stage,
+                "NEED_MORE emitted after R1 began",
+                error_class="FATAL_INTEGRITY",
+                detail="DOD §1.6/§5.3: NEED_MORE is pre-admission only and cannot be a post-admission outcome.",
+            )
+        if value == "SHORT_CIRCUIT":
+            raise BrainError(
+                stage,
+                "SHORT_CIRCUIT treated as a top-level outcome",
+                error_class="FATAL_INTEGRITY",
+                detail="DOD §1.6/§5.3: SHORT_CIRCUIT is an effort tier within DECIDE, not a top-level outcome.",
+            )
 
     def _restore_trackers(self, argument_tracker: ArgumentTracker,
                           position_tracker: PositionTracker,
@@ -3539,6 +3578,8 @@ class Brain:
             proof._analysis_debug["debug_gate2_result"] = gate2.outcome.value
             proof._analysis_debug["actual_output"] = gate2.outcome.value
 
+        self._enforce_post_admission_outcome_contract(gate2.outcome, "gate2")
+
         self._checkpoint("gate2")
 
         # --- Invariant validation (F6) ---
@@ -4616,8 +4657,9 @@ class ProofBuilder:
     def set_ungrounded_stats(self, data) -> None:
         """Set ungrounded statistic detection results (DOD §9.2 schema)."""
         payload = data.to_dict() if hasattr(data, "to_dict") else data
-        if isinstance(payload, dict) and "items" in payload and "flagged_claims" not in payload:
-            payload = {**payload, "flagged_claims": payload.get("items", [])}
+        if isinstance(payload, dict):
+            if "items" in payload and "flagged_claims" not in payload:
+                payload = {**payload, "flagged_claims": payload.get("items", [])}
             payload.pop("items", None)
         self._ungrounded_stats = payload
 

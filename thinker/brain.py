@@ -1346,7 +1346,7 @@ class Brain:
                 required_stages.append("frame_survival_r3")
         if semantic_pass_required:
             required_stages.append("semantic_contradiction")
-        required_stages.extend(["decisive_claims", "synthesis_packet", "synthesis", "residue_verification"])
+        required_stages.extend(["decisive_claims", "synthesis_packet", "synthesis", "stability", "residue_verification"])
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 

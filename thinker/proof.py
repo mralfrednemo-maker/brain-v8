@@ -43,6 +43,7 @@ _EXPECTED_STAGE_ORDER = [
     "decisive_claims",
     "synthesis_packet",
     "synthesis",
+    "stability",
     "residue_verification",
     "gate2",
 ]
