@@ -198,17 +198,35 @@ class EvidenceLedger:
         return True
 
     def format_for_prompt(self) -> str:
-        """Format active evidence for injection into a model prompt."""
-        if not self.active_items:
+        """Format evidence for injection into a model prompt.
+
+        DOD §10.2: active evidence first, then high-authority archive items.
+        Archive items are marked [ARCHIVED] so models know they are evicted
+        but still authoritative.
+        """
+        if not self.active_items and not self.archive_items:
             return ""
         lines = []
-        for i, item in enumerate(self.active_items, 1):
+        for item in self.active_items:
             lines.append(
                 f"{{{item.evidence_id}}} {item.fact}\n"
                 f"Source: {item.url}\n"
             )
-        lines.append(
-            "Any specific number, percentage, or dollar figure in your analysis "
-            "MUST cite an evidence ID (E001-E999) from above."
-        )
+        # DOD §10.2: archived high-authority evidence must be visible to Gate 2 reasoning
+        high_auth_archive = [
+            e for e in self.archive_items
+            if e.authority_tier in ("HIGH", "AUTHORITATIVE")
+        ]
+        if high_auth_archive:
+            lines.append("## Archived High-Authority Evidence (evicted from active set but authoritative)\n")
+            for item in high_auth_archive:
+                lines.append(
+                    f"[ARCHIVED] {{{item.evidence_id}}} {item.fact}\n"
+                    f"Source: {item.url}\n"
+                )
+        if lines:
+            lines.append(
+                "Any specific number, percentage, or dollar figure in your analysis "
+                "MUST cite an evidence ID (E001-E999) from above."
+            )
         return "\n".join(lines)

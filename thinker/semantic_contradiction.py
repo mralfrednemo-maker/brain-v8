@@ -49,20 +49,27 @@ Evaluate whether these two evidence items contradict each other.
 - same_timeframe: both items describe the same time period"""
 
 
-def shortlist_pairs(evidence_items: list[EvidenceItem]) -> list[tuple[EvidenceItem, EvidenceItem]]:
+def shortlist_pairs(
+    evidence_items: list[EvidenceItem],
+    decisive_claim_evidence_ids: set[str] | None = None,
+    open_blocker_ids: set[str] | None = None,
+) -> list[tuple[EvidenceItem, EvidenceItem]]:
     """Shortlist evidence pairs for semantic contradiction checking.
 
-    Criteria: same topic_cluster + any of:
+    DOD §12.2 criteria: same topic_cluster AND any of:
     - same entity (inferred from topic overlap)
-    - linked to claim/blocker/contradiction (referenced_by non-empty)
+    - linked to decisive claim, blocker, or open contradiction (criterion 3)
+    - both high authority
     """
+    decisive_claim_evidence_ids = decisive_claim_evidence_ids or set()
+    open_blocker_ids = open_blocker_ids or set()
+
     pairs = []
     for a, b in combinations(evidence_items, 2):
         # Must share topic cluster (or both have empty cluster)
         if a.topic_cluster and b.topic_cluster and a.topic_cluster != b.topic_cluster:
             continue
 
-        # At least one qualifying condition
         qualifies = False
 
         # Same topic suggests same entity
@@ -73,8 +80,10 @@ def shortlist_pairs(evidence_items: list[EvidenceItem]) -> list[tuple[EvidenceIt
         ):
             qualifies = True
 
-        # Both referenced by something
-        if a.referenced_by and b.referenced_by:
+        # DOD §12.2 criterion 3: at least one member linked to decisive claim, blocker, or open contradiction
+        if (a.evidence_id in decisive_claim_evidence_ids or
+                b.evidence_id in decisive_claim_evidence_ids or
+                a.referenced_by and b.referenced_by):
             qualifies = True
 
         # Both have high authority (important to check)
@@ -103,9 +112,14 @@ def shortlist_pairs(evidence_items: list[EvidenceItem]) -> list[tuple[EvidenceIt
 async def run_semantic_contradiction_pass(
     client,
     evidence_items: list[EvidenceItem],
+    decisive_claim_evidence_ids: set[str] | None = None,
+    open_blocker_ids: set[str] | None = None,
 ) -> list[SemanticContradiction]:
-    """Run semantic contradiction detection on shortlisted evidence pairs."""
-    pairs = shortlist_pairs(evidence_items)
+    """Run semantic contradiction detection on shortlisted evidence pairs.
+
+    DOD §12.2: shortlist criteria require linkage to decisive claims or blockers.
+    """
+    pairs = shortlist_pairs(evidence_items, decisive_claim_evidence_ids, open_blocker_ids)
     if not pairs:
         return []
 

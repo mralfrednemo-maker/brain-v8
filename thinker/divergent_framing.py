@@ -225,9 +225,14 @@ async def run_frame_survival_check(
         except ValueError:
             new_status = FrameSurvivalStatus.ACTIVE
 
-        # ANALYSIS mode: frames are NEVER dropped (DOD 18.2)
+        # DOD §18.5: "Frame dropping occurs in ANALYSIS mode → ERROR"
         if is_analysis_mode and new_status == FrameSurvivalStatus.DROPPED:
-            new_status = FrameSurvivalStatus.CONTESTED
+            from thinker.types import BrainError
+            raise BrainError(
+                "frame_survival",
+                f"Frame {frame.frame_id} dropped in ANALYSIS mode",
+                detail="DOD §18.5: Frame dropping in ANALYSIS mode → ERROR.",
+            )
 
         # R3/R4: never allow DROPPED
         if round_num >= 3 and new_status == FrameSurvivalStatus.DROPPED:

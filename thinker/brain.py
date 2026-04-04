@@ -434,8 +434,9 @@ class Brain:
             for flag in preflight_result.premise_flags:
                 if flag.resolved:
                     continue
-                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE:
+                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE and not self._config.skip_assumption_gate:
                     # DOD 4.3: REQUESTER_FIXABLE → NEED_MORE (must not be admitted)
+                    # Bypassed when --skip-assumption-gate is set (design briefs)
                     log._print(f"  [DEFECT] {flag.flag_id}: REQUESTER_FIXABLE → rejecting brief")
                     proof.set_preflight(preflight_result)
                     proof.set_final_status("PREFLIGHT_REJECTED")
@@ -445,7 +446,7 @@ class Brain:
                         outcome=Outcome.NEED_MORE, proof=proof.build(),
                         report="", preflight=preflight_result,
                     )
-                elif flag.routing == PremiseFlagRouting.MANAGEABLE_UNKNOWN:
+                elif flag.routing in (PremiseFlagRouting.MANAGEABLE_UNKNOWN, PremiseFlagRouting.REQUESTER_FIXABLE):
                     blocker_ledger.add(
                         kind=BlockerKind.COVERAGE_GAP,
                         source=f"preflight:{flag.flag_id}",
@@ -475,6 +476,13 @@ class Brain:
             dimension_result = await run_dimension_seeder(self._llm, brief)
             dimension_text = format_dimensions_for_prompt(dimension_result.items)
             log._print(f"  [DIMENSIONS] {dimension_result.dimension_count} dimensions ({time.monotonic() - t0:.1f}s)")
+            # DOD §6.2: fewer than 3 dimensions → ERROR
+            if dimension_result.dimension_count < 3:
+                raise BrainError(
+                    "dimensions",
+                    f"Only {dimension_result.dimension_count} dimensions seeded (minimum 3 required)",
+                    detail="DOD §6.2: dimension_count < 3 → ERROR.",
+                )
             st.dimensions = dimension_result.to_dict()
             proof.set_dimensions(dimension_result)
             if self._checkpoint("dimensions"):
@@ -674,7 +682,11 @@ class Brain:
 
             # --- V9: Post-R1 perspective cards + framing pass ---
             if round_num == 1 and not self._stage_done("perspective_cards"):
-                perspective_cards = extract_perspective_cards(round_result.texts)
+                log._print("  [CARDS] Extracting perspective cards...")
+                t0 = time.monotonic()
+                perspective_cards = await extract_perspective_cards(round_result.texts, llm_client=self._llm)
+                inferred_count = sum(1 for c in perspective_cards if any(v.startswith("inferred:") for v in c.field_provenance.values()))
+                log._print(f"  [CARDS] {len(perspective_cards)} cards ({inferred_count} with inferred fields) ({time.monotonic() - t0:.1f}s)")
                 st.perspective_cards = [c.to_dict() for c in perspective_cards]
                 proof.set_perspective_cards(perspective_cards)
                 self._checkpoint("perspective_cards")
@@ -938,12 +950,24 @@ class Brain:
         st.agreement_ratio = agreement
         st.outcome_class = outcome_class
 
-        # --- Semantic Contradiction (V9) ---
+        # --- Semantic Contradiction (V9, DOD §12.2: only when shortlist criteria are met) ---
         if not self._stage_done("semantic_contradiction"):
-            log._print("  [SEMANTIC] Running semantic contradiction pass...")
-            t0 = time.monotonic()
-            semantic_ctrs = await run_semantic_contradiction_pass(self._llm, evidence.active_items)
-            log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
+            if len(evidence.active_items) >= 2:
+                log._print("  [SEMANTIC] Running semantic contradiction pass...")
+                t0 = time.monotonic()
+                # DOD §12.2 criterion 3: pass open blocker IDs for shortlist evaluation
+                # Decisive claims not yet extracted at this stage — pass empty set
+                open_blocker_ev_ids = {
+                    b.source for b in blocker_ledger.open_blockers()
+                    if b.source.startswith("E")
+                }
+                semantic_ctrs = await run_semantic_contradiction_pass(
+                    self._llm, evidence.active_items,
+                    open_blocker_ids=open_blocker_ev_ids,
+                )
+                log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
+            else:
+                log._print("  [SEMANTIC] Skipped — fewer than 2 evidence items (no pairs possible)")
             self._checkpoint("semantic_contradiction")
 
         # --- Decisive Claim Extraction (V9) ---
@@ -1005,12 +1029,21 @@ class Brain:
         if is_analysis_mode:
             # DOD §18.5: "ANALYSIS output contains verdict language → ERROR"
             # Check the header — ANALYSIS must have "EXPLORATORY MAP" header, not verdict/recommendation
-            report_header = (report[:500] if report else "").lower()
+            report_text = (report[:2000] if report else "").lower()
+            report_header = report_text[:500]
             if report and "exploratory map" not in report_header:
                 # Missing required header — check for explicit decision language
-                decision_phrases = ["we recommend", "our recommendation is", "the answer is",
-                                    "therefore we decide", "we conclude that you should"]
-                verdict_found = [p for p in decision_phrases if p in report_header]
+                # DOD §18.5: broad detection — check header and opening section
+                decision_phrases = [
+                    "we recommend", "our recommendation is", "the answer is",
+                    "therefore we decide", "we conclude that you should",
+                    "the verdict is", "our verdict", "in conclusion",
+                    "the best option is", "the best approach is", "you should",
+                    "the right choice is", "the correct answer",
+                    "we advise", "our advice is", "the decision is",
+                    "based on our analysis, the", "the optimal solution",
+                ]
+                verdict_found = [p for p in decision_phrases if p in report_text]
                 if verdict_found:
                     raise BrainError(
                         "analysis_verdict_check",
@@ -1164,6 +1197,15 @@ class Brain:
                     f"Zero dispositions for {coverage['total_required']} required findings",
                     detail="DOD §14.6: Disposition missing for tracked open finding → ERROR.",
                 )
+            # DOD §14.6: any missing disposition → ERROR (before deep scan opportunity)
+            # Deep scan is the recovery path; if omission rate > 20%, run deep scan first
+            if not coverage.get("deep_scan_triggered"):
+                omissions = coverage.get("omissions", [])
+                raise BrainError(
+                    "disposition_coverage",
+                    f"{len(omissions)} dispositions missing for tracked open findings",
+                    detail=f"DOD §14.6: Disposition missing → ERROR. Missing: {[o['target_id'] for o in omissions][:5]}",
+                )
 
         if coverage.get("deep_scan_triggered"):
             # DOD §14.6: deep scan MUST run when triggered
@@ -1182,6 +1224,19 @@ class Brain:
                     models=[],
                     severity="CRITICAL",
                 )
+
+        # DOD §14.3: Orphaned high-authority archive evidence must be explained
+        orphaned_high_auth = [
+            e for e in evidence.archive_items
+            if e.authority_tier in ("HIGH", "AUTHORITATIVE")
+            and e.evidence_id not in (report or "")
+        ]
+        if orphaned_high_auth:
+            proof.add_violation(
+                "ORPHANED-HIGH-AUTH-EVIDENCE", "WARN",
+                f"{len(orphaned_high_auth)} archived HIGH/AUTHORITATIVE evidence items not cited in synthesis: "
+                f"{[e.evidence_id for e in orphaned_high_auth[:5]]}",
+            )
 
         # Legacy string-match residue check (supplementary)
         residue_omissions = check_synthesis_residue(
@@ -1248,6 +1303,8 @@ class Brain:
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
             stage_integrity_fatal=fatal_stages if fatal_stages else None,
+            synthesis_present=bool(report),
+            analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
             analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
         )
         log.gate2_result(

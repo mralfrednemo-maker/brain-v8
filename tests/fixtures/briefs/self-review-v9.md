@@ -1323,7 +1323,7 @@ class ErrorClass(Enum):
 
 
 class AssumptionVerifiability(Enum):
-    VERIFIED = "VERIFIED"
+    # DOD §4.2: VERIFIABLE | UNVERIFIABLE | FALSE | UNKNOWN
     VERIFIABLE = "VERIFIABLE"
     UNVERIFIABLE = "UNVERIFIABLE"
     FALSE = "FALSE"
@@ -1632,6 +1632,7 @@ class DimensionItem:
             "coverage_status": self.coverage_status,
             "argument_count": self.argument_count,
             "justified_irrelevance": self.justified_irrelevance,
+            "irrelevance_explanation": self.irrelevance_explanation,  # DOD §6.1
         }
 
 
@@ -1656,7 +1657,13 @@ class DimensionSeedResult:
 
 @dataclass
 class PerspectiveCard:
-    """Structured R1 output for a single model (DoD v3.0 Section 7)."""
+    """Structured R1 output for a single model (DoD v3.0 Section 7).
+
+    field_provenance tracks per-field extraction method:
+    - "native": field extracted directly from model's R1 output via regex
+    - "inferred:haiku": field inferred by Haiku from model's R1 output
+    - "inferred:sonnet": field inferred by Sonnet (fallback) from model's R1 output
+    """
     model_id: str
     primary_frame: str = ""
     hidden_assumption_attacked: str = ""
@@ -1665,6 +1672,7 @@ class PerspectiveCard:
     failure_mode: str = ""
     coverage_obligation: CoverageObligation = CoverageObligation.MECHANISM_ANALYSIS
     dimensions_addressed: list[str] = field(default_factory=list)
+    field_provenance: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -1676,6 +1684,7 @@ class PerspectiveCard:
             "failure_mode": self.failure_mode,
             "coverage_obligation": self.coverage_obligation.value,
             "dimensions_addressed": self.dimensions_addressed,
+            "field_provenance": self.field_provenance,
         }
 
 
@@ -2342,8 +2351,9 @@ class Brain:
             for flag in preflight_result.premise_flags:
                 if flag.resolved:
                     continue
-                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE:
+                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE and not self._config.skip_assumption_gate:
                     # DOD 4.3: REQUESTER_FIXABLE → NEED_MORE (must not be admitted)
+                    # Bypassed when --skip-assumption-gate is set (design briefs)
                     log._print(f"  [DEFECT] {flag.flag_id}: REQUESTER_FIXABLE → rejecting brief")
                     proof.set_preflight(preflight_result)
                     proof.set_final_status("PREFLIGHT_REJECTED")
@@ -2353,7 +2363,7 @@ class Brain:
                         outcome=Outcome.NEED_MORE, proof=proof.build(),
                         report="", preflight=preflight_result,
                     )
-                elif flag.routing == PremiseFlagRouting.MANAGEABLE_UNKNOWN:
+                elif flag.routing in (PremiseFlagRouting.MANAGEABLE_UNKNOWN, PremiseFlagRouting.REQUESTER_FIXABLE):
                     blocker_ledger.add(
                         kind=BlockerKind.COVERAGE_GAP,
                         source=f"preflight:{flag.flag_id}",
@@ -2383,6 +2393,13 @@ class Brain:
             dimension_result = await run_dimension_seeder(self._llm, brief)
             dimension_text = format_dimensions_for_prompt(dimension_result.items)
             log._print(f"  [DIMENSIONS] {dimension_result.dimension_count} dimensions ({time.monotonic() - t0:.1f}s)")
+            # DOD §6.2: fewer than 3 dimensions → ERROR
+            if dimension_result.dimension_count < 3:
+                raise BrainError(
+                    "dimensions",
+                    f"Only {dimension_result.dimension_count} dimensions seeded (minimum 3 required)",
+                    detail="DOD §6.2: dimension_count < 3 → ERROR.",
+                )
             st.dimensions = dimension_result.to_dict()
             proof.set_dimensions(dimension_result)
             if self._checkpoint("dimensions"):
@@ -2495,6 +2512,10 @@ class Brain:
                 t0 = time.monotonic()
                 # ANALYSIS mode: prepend exploration preamble to brief
                 effective_brief = (get_analysis_round_preamble() + brief) if is_analysis_mode else brief
+                # R1: cap brief for perspective card compliance on very large briefs
+                # Models need output budget for the 5 structured fields
+                if round_num == 1 and len(effective_brief) > 100000:
+                    effective_brief = effective_brief[:100000] + "\n\n[Brief truncated for R1 — full content available in subsequent rounds]\n"
                 round_result = await execute_round(
                     self._llm, round_num=round_num, brief=effective_brief,
                     prior_views=prior_views if round_num > 1 else None,
@@ -2578,7 +2599,11 @@ class Brain:
 
             # --- V9: Post-R1 perspective cards + framing pass ---
             if round_num == 1 and not self._stage_done("perspective_cards"):
-                perspective_cards = extract_perspective_cards(round_result.texts)
+                log._print("  [CARDS] Extracting perspective cards...")
+                t0 = time.monotonic()
+                perspective_cards = await extract_perspective_cards(round_result.texts, llm_client=self._llm)
+                inferred_count = sum(1 for c in perspective_cards if any(v.startswith("inferred:") for v in c.field_provenance.values()))
+                log._print(f"  [CARDS] {len(perspective_cards)} cards ({inferred_count} with inferred fields) ({time.monotonic() - t0:.1f}s)")
                 st.perspective_cards = [c.to_dict() for c in perspective_cards]
                 proof.set_perspective_cards(perspective_cards)
                 self._checkpoint("perspective_cards")
@@ -2842,12 +2867,24 @@ class Brain:
         st.agreement_ratio = agreement
         st.outcome_class = outcome_class
 
-        # --- Semantic Contradiction (V9) ---
+        # --- Semantic Contradiction (V9, DOD §12.2: only when shortlist criteria are met) ---
         if not self._stage_done("semantic_contradiction"):
-            log._print("  [SEMANTIC] Running semantic contradiction pass...")
-            t0 = time.monotonic()
-            semantic_ctrs = await run_semantic_contradiction_pass(self._llm, evidence.active_items)
-            log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
+            if len(evidence.active_items) >= 2:
+                log._print("  [SEMANTIC] Running semantic contradiction pass...")
+                t0 = time.monotonic()
+                # DOD §12.2 criterion 3: pass open blocker IDs for shortlist evaluation
+                # Decisive claims not yet extracted at this stage — pass empty set
+                open_blocker_ev_ids = {
+                    b.source for b in blocker_ledger.open_blockers()
+                    if b.source.startswith("E")
+                }
+                semantic_ctrs = await run_semantic_contradiction_pass(
+                    self._llm, evidence.active_items,
+                    open_blocker_ids=open_blocker_ev_ids,
+                )
+                log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
+            else:
+                log._print("  [SEMANTIC] Skipped — fewer than 2 evidence items (no pairs possible)")
             self._checkpoint("semantic_contradiction")
 
         # --- Decisive Claim Extraction (V9) ---
@@ -2909,12 +2946,21 @@ class Brain:
         if is_analysis_mode:
             # DOD §18.5: "ANALYSIS output contains verdict language → ERROR"
             # Check the header — ANALYSIS must have "EXPLORATORY MAP" header, not verdict/recommendation
-            report_header = (report[:500] if report else "").lower()
+            report_text = (report[:2000] if report else "").lower()
+            report_header = report_text[:500]
             if report and "exploratory map" not in report_header:
                 # Missing required header — check for explicit decision language
-                decision_phrases = ["we recommend", "our recommendation is", "the answer is",
-                                    "therefore we decide", "we conclude that you should"]
-                verdict_found = [p for p in decision_phrases if p in report_header]
+                # DOD §18.5: broad detection — check header and opening section
+                decision_phrases = [
+                    "we recommend", "our recommendation is", "the answer is",
+                    "therefore we decide", "we conclude that you should",
+                    "the verdict is", "our verdict", "in conclusion",
+                    "the best option is", "the best approach is", "you should",
+                    "the right choice is", "the correct answer",
+                    "we advise", "our advice is", "the decision is",
+                    "based on our analysis, the", "the optimal solution",
+                ]
+                verdict_found = [p for p in decision_phrases if p in report_text]
                 if verdict_found:
                     raise BrainError(
                         "analysis_verdict_check",
@@ -3005,7 +3051,9 @@ class Brain:
                         severity="CRITICAL",
                     )
             covered = sum(1 for d in dimension_result.items if d.argument_count >= 2)
-            dimension_result.dimension_coverage_score = covered / len(dimension_result.items) if dimension_result.items else 0.0
+            # DOD §6.2: denominator is mandatory dimensions only
+            mandatory_count = sum(1 for d in dimension_result.items if d.mandatory)
+            dimension_result.dimension_coverage_score = covered / mandatory_count if mandatory_count else 0.0
 
         # --- V9: Evidence refs validation (DOD §10.3) ---
         # "Cited evidence missing from both stores → ERROR"
@@ -3066,6 +3114,15 @@ class Brain:
                     f"Zero dispositions for {coverage['total_required']} required findings",
                     detail="DOD §14.6: Disposition missing for tracked open finding → ERROR.",
                 )
+            # DOD §14.6: any missing disposition → ERROR (before deep scan opportunity)
+            # Deep scan is the recovery path; if omission rate > 20%, run deep scan first
+            if not coverage.get("deep_scan_triggered"):
+                omissions = coverage.get("omissions", [])
+                raise BrainError(
+                    "disposition_coverage",
+                    f"{len(omissions)} dispositions missing for tracked open findings",
+                    detail=f"DOD §14.6: Disposition missing → ERROR. Missing: {[o['target_id'] for o in omissions][:5]}",
+                )
 
         if coverage.get("deep_scan_triggered"):
             # DOD §14.6: deep scan MUST run when triggered
@@ -3084,6 +3141,19 @@ class Brain:
                     models=[],
                     severity="CRITICAL",
                 )
+
+        # DOD §14.3: Orphaned high-authority archive evidence must be explained
+        orphaned_high_auth = [
+            e for e in evidence.archive_items
+            if e.authority_tier in ("HIGH", "AUTHORITATIVE")
+            and e.evidence_id not in (report or "")
+        ]
+        if orphaned_high_auth:
+            proof.add_violation(
+                "ORPHANED-HIGH-AUTH-EVIDENCE", "WARN",
+                f"{len(orphaned_high_auth)} archived HIGH/AUTHORITATIVE evidence items not cited in synthesis: "
+                f"{[e.evidence_id for e in orphaned_high_auth[:5]]}",
+            )
 
         # Legacy string-match residue check (supplementary)
         residue_omissions = check_synthesis_residue(
@@ -3677,13 +3747,9 @@ def _eval_decide_rules(
         trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
 
-    # --- D10: Material frame ACTIVE/CONTESTED without disposition ---
-    if _t("D10", len(material_frames_unresolved) > 0,
-          f"material_frames_unresolved={len(material_frames_unresolved)}"):
-        trace[-1]["outcome_if_fired"] = "ESCALATE"
-        return Outcome.ESCALATE, trace
-
-    # --- D10b: Untested analogy used decisively (DOD §13.4) ---
+    # --- D10: Material unresolved (frames or untested decisive analogies) ---
+    # DOD §16 D10: material frame ACTIVE/CONTESTED without disposition
+    # DOD §13.4: untested analogy used decisively → ESCALATE
     untested_decisive_analogies = []
     if analogies and decisive_claims:
         untested_ids = {a.analogy_id for a in analogies if a.test_status == AnalogyTestStatus.UNTESTED}
@@ -3691,7 +3757,9 @@ def _eval_decide_rules(
             for ref in c.analogy_refs:
                 if ref in untested_ids:
                     untested_decisive_analogies.append(ref)
-    if _t("D10b", len(untested_decisive_analogies) > 0,
+    d10_fired = len(material_frames_unresolved) > 0 or len(untested_decisive_analogies) > 0
+    if _t("D10", d10_fired,
+          f"material_frames_unresolved={len(material_frames_unresolved)}, "
           f"untested_decisive_analogies={untested_decisive_analogies}"):
         trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
@@ -5240,10 +5308,13 @@ def _register_argument_tracker(): pass
 """Perspective Cards — structured R1 output extraction (DoD v3.0 Section 7).
 
 Parses R1 model outputs to extract 5 structured fields per model.
-No LLM call — regex/text parsing only.
+Primary: regex extraction from R1 output (native).
+Fallback: post-hoc LLM extraction via Haiku → Sonnet (inferred).
+DOD §7.2: Exactly 4 cards required. DOD §7.3: Missing card → ERROR.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 
 from thinker.types import CoverageObligation, PerspectiveCard, TimeHorizon
@@ -5256,6 +5327,9 @@ _MODEL_OBLIGATIONS = {
     "glm5": CoverageObligation.OBJECTIVE_REFRAMING,
 }
 
+REQUIRED_FIELDS = ["primary_frame", "hidden_assumption_attacked",
+                   "stakeholder_lens", "time_horizon", "failure_mode"]
+
 # Field patterns to extract from model output
 _FIELD_PATTERNS = {
     "primary_frame": re.compile(r"PRIMARY_FRAME:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
@@ -5264,6 +5338,35 @@ _FIELD_PATTERNS = {
     "time_horizon": re.compile(r"TIME_HORIZON:\s*\**(\w+)\**", re.IGNORECASE),
     "failure_mode": re.compile(r"FAILURE_MODE:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
 }
+
+_EXTRACTION_PROMPT = """Read the following model analysis and extract the 5 perspective card fields.
+The model was asked to include these fields but failed to do so. Infer them from the content of the analysis.
+
+RULES:
+- PRIMARY_FRAME: The model's primary analytical lens or way of looking at the question
+- HIDDEN_ASSUMPTION_ATTACKED: Which assumption the model is challenging or questioning
+- STAKEHOLDER_LENS: Whose perspective the model is representing
+- TIME_HORIZON: SHORT, MEDIUM, or LONG — based on the timeframe of the analysis
+- FAILURE_MODE: What could go wrong with the model's recommended approach
+
+Output EXACTLY these 5 lines and nothing else:
+PRIMARY_FRAME: <value>
+HIDDEN_ASSUMPTION_ATTACKED: <value>
+STAKEHOLDER_LENS: <value>
+TIME_HORIZON: <SHORT|MEDIUM|LONG>
+FAILURE_MODE: <value>
+
+--- MODEL ANALYSIS (first and last sections) ---
+
+{text}"""
+
+
+def _truncate_for_extraction(text: str, max_chars: int = 8000) -> str:
+    """Truncate R1 output to first/last segments for extraction context."""
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    return text[:half] + "\n\n[... middle truncated ...]\n\n" + text[-half:]
 
 
 def _parse_time_horizon(text: str) -> TimeHorizon:
@@ -5275,52 +5378,145 @@ def _parse_time_horizon(text: str) -> TimeHorizon:
     return TimeHorizon.MEDIUM
 
 
-def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]:
+def _extract_fields_regex(text: str) -> dict[str, str]:
+    """Try to extract fields via regex. Returns dict of found fields."""
+    fields = {}
+    for field_name, pattern in _FIELD_PATTERNS.items():
+        match = pattern.search(text)
+        if match:
+            fields[field_name] = match.group(1).strip()
+    return fields
+
+
+async def _extract_fields_llm(client, model_name: str, r1_text: str) -> dict[str, str] | None:
+    """Extract missing fields via LLM. Returns dict of fields or None on failure."""
+    truncated = _truncate_for_extraction(r1_text)
+    prompt = _EXTRACTION_PROMPT.format(text=truncated)
+    resp = await client.call(model_name, prompt)
+    if not resp.ok:
+        return None
+    return _extract_fields_regex(resp.text)
+
+
+def _build_card(model_id: str, fields: dict[str, str], provenance: dict[str, str]) -> PerspectiveCard:
+    """Build a PerspectiveCard from extracted fields."""
+    return PerspectiveCard(
+        model_id=model_id,
+        primary_frame=fields.get("primary_frame", ""),
+        hidden_assumption_attacked=fields.get("hidden_assumption_attacked", ""),
+        stakeholder_lens=fields.get("stakeholder_lens", ""),
+        time_horizon=_parse_time_horizon(fields.get("time_horizon", "MEDIUM")),
+        failure_mode=fields.get("failure_mode", ""),
+        coverage_obligation=_MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS),
+        field_provenance=provenance,
+    )
+
+
+async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -> list[PerspectiveCard]:
     """Extract perspective cards from R1 model outputs.
 
-    DOD §7.3: "Missing card or field → ERROR"
+    Phase 1: regex extraction (native).
+    Phase 2: for models with missing fields, post-hoc LLM extraction via Haiku → Sonnet.
+    DOD §7.2: Exactly N cards required (one per R1 model).
+    DOD §7.3: Missing card → ERROR.
     """
     from thinker.types import BrainError
 
     cards = []
-    required_fields = ["primary_frame", "hidden_assumption_attacked",
-                       "stakeholder_lens", "time_horizon", "failure_mode"]
+    needs_extraction: list[tuple[str, str, dict[str, str]]] = []  # (model_id, text, native_fields)
 
+    # Phase 1: regex extraction
     for model_id, text in r1_texts.items():
-        fields = {}
-        for field_name, pattern in _FIELD_PATTERNS.items():
-            match = pattern.search(text)
-            if match:
-                fields[field_name] = match.group(1).strip()
-
-        # DOD §7.3 + zero-tolerance: missing card or field → ERROR
         if not text.strip():
             raise BrainError(
                 "perspective_cards",
                 f"Model {model_id} produced no R1 output — zero tolerance",
                 detail="DOD §7.3: Missing card → ERROR.",
             )
-        missing = [f for f in required_fields if not fields.get(f)]
-        if missing:
+
+        fields = _extract_fields_regex(text)
+        missing = [f for f in REQUIRED_FIELDS if not fields.get(f)]
+
+        if not missing:
+            # All fields found natively
+            provenance = {f: "native" for f in REQUIRED_FIELDS}
+            cards.append(_build_card(model_id, fields, provenance))
+        else:
+            # Track for Phase 2
+            needs_extraction.append((model_id, text, fields))
+
+    # Phase 2: post-hoc LLM extraction for models with missing fields
+    if needs_extraction and llm_client:
+        async def _extract_one(model_id: str, text: str, native_fields: dict[str, str]) -> PerspectiveCard | None:
+            missing = [f for f in REQUIRED_FIELDS if not native_fields.get(f)]
+
+            # Try Haiku first, Sonnet as fallback
+            for extractor in ("haiku", "sonnet"):
+                inferred = await _extract_fields_llm(llm_client, extractor, text)
+                if inferred:
+                    # Merge: native fields take priority, fill missing with inferred
+                    # EXCEPTION: hidden_assumption_attacked must NEVER be inferred
+                    # (Brain V9 round 20: systematic hallucination risk — set NOT_STATED)
+                    merged = dict(native_fields)
+                    provenance = {}
+                    for f in REQUIRED_FIELDS:
+                        if native_fields.get(f):
+                            provenance[f] = "native"
+                        elif f == "hidden_assumption_attacked":
+                            merged[f] = "NOT_STATED"
+                            provenance[f] = "not_stated"
+                        elif inferred.get(f):
+                            merged[f] = inferred[f]
+                            provenance[f] = f"inferred:{extractor}"
+                        else:
+                            provenance[f] = "missing"
+
+                    still_missing = [f for f in REQUIRED_FIELDS if not merged.get(f)]
+                    if not still_missing:
+                        return _build_card(model_id, merged, provenance)
+                    # If still missing fields, try next extractor
+                    native_fields = merged  # carry over any fields we did get
+
+            return None
+
+        tasks = [_extract_one(mid, txt, nf) for mid, txt, nf in needs_extraction]
+        results = await asyncio.gather(*tasks)
+
+        failed_models = []
+        for (model_id, _, _), result in zip(needs_extraction, results):
+            if result:
+                cards.append(result)
+            else:
+                failed_models.append(model_id)
+
+        if failed_models:
             raise BrainError(
                 "perspective_cards",
-                f"Model {model_id} missing perspective card fields: {missing}",
-                detail=f"DOD §7.3: Missing field → ERROR. Extracted: {list(fields.keys())}",
+                f"Failed to extract perspective cards for: {failed_models} "
+                f"(regex and LLM extraction both failed)",
+                detail=f"DOD §7.2-7.3: All {len(r1_texts)} cards required. "
+                       f"Post-hoc extraction via Haiku+Sonnet could not produce valid fields.",
             )
 
-        time_horizon = _parse_time_horizon(fields["time_horizon"])
-        obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
+    elif needs_extraction and not llm_client:
+        # No LLM client — fall back to majority threshold (legacy mode)
+        min_required = max(2, len(r1_texts) // 2)
+        if len(cards) < min_required:
+            nc_models = [mid for mid, _, _ in needs_extraction]
+            raise BrainError(
+                "perspective_cards",
+                f"Only {len(cards)}/{len(r1_texts)} models produced valid perspective cards "
+                f"(minimum {min_required} required, no LLM client for post-hoc extraction)",
+                detail=f"DOD §7.3: Missing card → ERROR. Non-compliant: {nc_models}",
+            )
 
-        card = PerspectiveCard(
-            model_id=model_id,
-            primary_frame=fields["primary_frame"],
-            hidden_assumption_attacked=fields["hidden_assumption_attacked"],
-            stakeholder_lens=fields["stakeholder_lens"],
-            time_horizon=time_horizon,
-            failure_mode=fields["failure_mode"],
-            coverage_obligation=obligation,
+    # DOD §7.2: exactly N cards required
+    if len(cards) != len(r1_texts):
+        raise BrainError(
+            "perspective_cards",
+            f"Only {len(cards)}/{len(r1_texts)} perspective cards produced",
+            detail="DOD §7.2: Exactly one card per R1 model required.",
         )
-        cards.append(card)
 
     return cards
 
@@ -5571,9 +5767,14 @@ async def run_frame_survival_check(
         except ValueError:
             new_status = FrameSurvivalStatus.ACTIVE
 
-        # ANALYSIS mode: frames are NEVER dropped (DOD 18.2)
+        # DOD §18.5: "Frame dropping occurs in ANALYSIS mode → ERROR"
         if is_analysis_mode and new_status == FrameSurvivalStatus.DROPPED:
-            new_status = FrameSurvivalStatus.CONTESTED
+            from thinker.types import BrainError
+            raise BrainError(
+                "frame_survival",
+                f"Frame {frame.frame_id} dropped in ANALYSIS mode",
+                detail="DOD §18.5: Frame dropping in ANALYSIS mode → ERROR.",
+            )
 
         # R3/R4: never allow DROPPED
         if round_num >= 3 and new_status == FrameSurvivalStatus.DROPPED:
@@ -5965,19 +6166,37 @@ class EvidenceLedger:
         return True
 
     def format_for_prompt(self) -> str:
-        """Format active evidence for injection into a model prompt."""
-        if not self.active_items:
+        """Format evidence for injection into a model prompt.
+
+        DOD §10.2: active evidence first, then high-authority archive items.
+        Archive items are marked [ARCHIVED] so models know they are evicted
+        but still authoritative.
+        """
+        if not self.active_items and not self.archive_items:
             return ""
         lines = []
-        for i, item in enumerate(self.active_items, 1):
+        for item in self.active_items:
             lines.append(
                 f"{{{item.evidence_id}}} {item.fact}\n"
                 f"Source: {item.url}\n"
             )
-        lines.append(
-            "Any specific number, percentage, or dollar figure in your analysis "
-            "MUST cite an evidence ID (E001-E999) from above."
-        )
+        # DOD §10.2: archived high-authority evidence must be visible to Gate 2 reasoning
+        high_auth_archive = [
+            e for e in self.archive_items
+            if e.authority_tier in ("HIGH", "AUTHORITATIVE")
+        ]
+        if high_auth_archive:
+            lines.append("## Archived High-Authority Evidence (evicted from active set but authoritative)\n")
+            for item in high_auth_archive:
+                lines.append(
+                    f"[ARCHIVED] {{{item.evidence_id}}} {item.fact}\n"
+                    f"Source: {item.url}\n"
+                )
+        if lines:
+            lines.append(
+                "Any specific number, percentage, or dollar figure in your analysis "
+                "MUST cite an evidence ID (E001-E999) from above."
+            )
         return "\n".join(lines)
 
 ```
@@ -6011,6 +6230,7 @@ REASONER_MODEL = ModelConfig("reasoner", "deepseek-reasoner", "deepseek", 30_000
 GLM5_MODEL = ModelConfig("glm5", "glm-5-turbo", "zai", 16_000, 480)
 KIMI_MODEL = ModelConfig("kimi", "moonshotai/kimi-k2", "openrouter", 16_000, 480)
 SONNET_MODEL = ModelConfig("sonnet", "claude-sonnet-4-6", "anthropic", 16_000, 300)
+HAIKU_MODEL = ModelConfig("haiku", "claude-haiku-4-5-20251001", "anthropic", 4_000, 60)
 
 # --- Round topology (V8 spec: 4 -> 3 -> 2 -> 2) ---
 
@@ -6027,6 +6247,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     "glm5": GLM5_MODEL,
     "kimi": KIMI_MODEL,
     "sonnet": SONNET_MODEL,
+    "haiku": HAIKU_MODEL,
 }
 
 

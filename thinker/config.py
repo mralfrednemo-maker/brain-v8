@@ -22,6 +22,7 @@ REASONER_MODEL = ModelConfig("reasoner", "deepseek-reasoner", "deepseek", 30_000
 GLM5_MODEL = ModelConfig("glm5", "glm-5-turbo", "zai", 16_000, 480)
 KIMI_MODEL = ModelConfig("kimi", "moonshotai/kimi-k2", "openrouter", 16_000, 480)
 SONNET_MODEL = ModelConfig("sonnet", "claude-sonnet-4-6", "anthropic", 16_000, 300)
+HAIKU_MODEL = ModelConfig("haiku", "claude-haiku-4-5-20251001", "anthropic", 4_000, 60)
 
 # --- Round topology (V8 spec: 4 -> 3 -> 2 -> 2) ---
 
@@ -38,6 +39,7 @@ MODEL_REGISTRY: dict[str, ModelConfig] = {
     "glm5": GLM5_MODEL,
     "kimi": KIMI_MODEL,
     "sonnet": SONNET_MODEL,
+    "haiku": HAIKU_MODEL,
 }
 
 

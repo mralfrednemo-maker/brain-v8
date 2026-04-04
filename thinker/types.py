@@ -255,7 +255,7 @@ class ErrorClass(Enum):
 
 
 class AssumptionVerifiability(Enum):
-    VERIFIED = "VERIFIED"
+    # DOD §4.2: VERIFIABLE | UNVERIFIABLE | FALSE | UNKNOWN
     VERIFIABLE = "VERIFIABLE"
     UNVERIFIABLE = "UNVERIFIABLE"
     FALSE = "FALSE"
@@ -303,6 +303,7 @@ class Argument:
     dimension_id: str = ""
     evidence_refs: list[str] = field(default_factory=list)
     open: bool = True
+    blocker_link_ids: list[str] = field(default_factory=list)  # DOD §11.1
 
 
 @dataclass
@@ -589,7 +590,13 @@ class DimensionSeedResult:
 
 @dataclass
 class PerspectiveCard:
-    """Structured R1 output for a single model (DoD v3.0 Section 7)."""
+    """Structured R1 output for a single model (DoD v3.0 Section 7).
+
+    field_provenance tracks per-field extraction method:
+    - "native": field extracted directly from model's R1 output via regex
+    - "inferred:haiku": field inferred by Haiku from model's R1 output
+    - "inferred:sonnet": field inferred by Sonnet (fallback) from model's R1 output
+    """
     model_id: str
     primary_frame: str = ""
     hidden_assumption_attacked: str = ""
@@ -598,6 +605,7 @@ class PerspectiveCard:
     failure_mode: str = ""
     coverage_obligation: CoverageObligation = CoverageObligation.MECHANISM_ANALYSIS
     dimensions_addressed: list[str] = field(default_factory=list)
+    field_provenance: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -609,6 +617,7 @@ class PerspectiveCard:
             "failure_mode": self.failure_mode,
             "coverage_obligation": self.coverage_obligation.value,
             "dimensions_addressed": self.dimensions_addressed,
+            "field_provenance": self.field_provenance,
         }
 
 
