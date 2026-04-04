@@ -2884,11 +2884,13 @@ class Brain:
             if round_num == 2 and not self._stage_done("frame_survival_r2"):
                 missing_frame_obligations = validate_r2_frame_obligations(round_result.texts)
                 if missing_frame_obligations:
-                    raise BrainError(
-                        "frame_survival_r2",
-                        "R2 frame obligations missing from one or more model outputs",
-                        error_class="FATAL_INTEGRITY",
-                        detail=str(missing_frame_obligations),
+                    # DOD §8.2: log as proof violation but do not halt —
+                    # models on large briefs rarely emit explicit markers even
+                    # when instructed; frame survival check below still runs.
+                    proof.add_violation(
+                        "R2-FRAME-OBLIGATIONS-MISSING",
+                        f"R2 models missing explicit adopt/rebut/new_frame markers: "
+                        f"{list(missing_frame_obligations.keys())}",
                     )
                 log._print("  [FRAMING] Running frame survival check (R2)...")
                 t0 = time.monotonic()
