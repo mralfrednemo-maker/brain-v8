@@ -1123,7 +1123,7 @@ class BrainError(Exception):
         stage: str,
         message: str,
         detail: str = "",
-        error_class: str = "PIPELINE",
+        error_class: str = "FATAL_INTEGRITY",
     ):
         self.stage = stage
         self.message = message
@@ -1327,7 +1327,6 @@ class DispositionTargetType(Enum):
 class ErrorClass(Enum):
     INFRASTRUCTURE = "INFRASTRUCTURE"
     FATAL_INTEGRITY = "FATAL_INTEGRITY"
-    PIPELINE = "PIPELINE"
 
 
 class AssumptionVerifiability(Enum):
@@ -2142,7 +2141,7 @@ from thinker.dimension_seeder import run_dimension_seeder, format_dimensions_for
 from thinker.perspective_cards import extract_perspective_cards, format_perspective_card_instructions
 from thinker.divergent_framing import (
     run_framing_extract, run_frame_survival_check,
-    check_exploration_stress, format_frames_for_prompt,
+    check_exploration_stress, format_frames_for_prompt, format_r2_frame_enforcement,
 )
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
 from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
@@ -2343,7 +2342,7 @@ class Brain:
         except BrainError as e:
             # DOD §19: proof.json required "always", including on ERROR.
             # Write partial proof with error_class before re-raising.
-            proof.set_error_class(e.error_class or "PIPELINE")
+            proof.set_error_class(e.error_class)
             proof.set_final_status(f"ERROR:{e.stage}")
             proof.set_timestamp_completed()
             e.partial_proof = proof.build()
@@ -2705,6 +2704,7 @@ class Brain:
                     dimension_text=dimension_text if round_num == 1 else "",
                     perspective_card_instructions=format_perspective_card_instructions() if round_num == 1 else "",
                     alt_frames_text=alt_frames_text if round_num >= 2 else "",
+                    frame_enforcement_text=format_r2_frame_enforcement() if round_num == 2 else "",
                 )
                 log.round_result(round_num, round_result.responded, round_result.failed,
                                  round_result.texts, time.monotonic() - t0)
@@ -4249,6 +4249,54 @@ def _serialize_blocker_status(status: str) -> str:
     return "DEFERRED" if status == "DROPPED" else status
 
 
+_EXPECTED_STAGE_ORDER = [
+    "preflight",
+    "dimensions",
+    "r1",
+    "track1",
+    "perspective_cards",
+    "framing_pass",
+    "ungrounded_r1",
+    "search1",
+    "r2",
+    "track2",
+    "frame_survival_r2",
+    "ungrounded_r2",
+    "search2",
+    "r3",
+    "track3",
+    "frame_survival_r3",
+    "r4",
+    "track4",
+    "semantic_contradiction",
+    "decisive_claims",
+    "synthesis_packet",
+    "synthesis",
+    "residue_verification",
+    "gate2",
+]
+
+
+def _validate_stage_order(order: list[str]) -> tuple[bool, list[str]]:
+    expected_positions = {stage: idx for idx, stage in enumerate(_EXPECTED_STAGE_ORDER)}
+    violations: list[str] = []
+    last_expected_index = -1
+
+    for idx, stage in enumerate(order):
+        expected_index = expected_positions.get(stage)
+        if expected_index is None:
+            violations.append(f"Unknown stage '{stage}' at position {idx + 1}")
+            continue
+        if expected_index < last_expected_index:
+            violations.append(
+                f"Stage '{stage}' executed at position {idx + 1} after a later stage"
+            )
+        else:
+            last_expected_index = expected_index
+
+    return len(violations) == 0, violations
+
+
 class ProofBuilder:
     """Incrementally builds proof.json throughout a Brain run."""
 
@@ -4444,7 +4492,11 @@ class ProofBuilder:
 
     def set_ungrounded_stats(self, data) -> None:
         """Set ungrounded statistic detection results (DOD §9.2 schema)."""
-        self._ungrounded_stats = data.to_dict() if hasattr(data, "to_dict") else data
+        payload = data.to_dict() if hasattr(data, "to_dict") else data
+        if isinstance(payload, dict) and "items" in payload and "flagged_claims" not in payload:
+            payload = {**payload, "flagged_claims": payload.get("items", [])}
+            payload.pop("items", None)
+        self._ungrounded_stats = payload
 
     def set_evidence_two_tier(self, active: list, archive: list, eviction_log: list) -> None:
         """Set two-tier evidence data."""
@@ -4526,6 +4578,11 @@ class ProofBuilder:
 
     def set_synthesis_packet(self, packet: dict) -> None:
         """Set synthesis packet data."""
+        if isinstance(packet, dict) and "decisive_claims" in packet and "decisive_claim_bindings" not in packet:
+            payload = {**packet, "decisive_claim_bindings": packet.get("decisive_claims", [])}
+            payload.pop("decisive_claims", None)
+            self._synthesis_packet = payload
+            return
         self._synthesis_packet = packet
 
     def set_synthesis_dispositions(self, dispositions: list) -> None:
@@ -4548,13 +4605,17 @@ class ProofBuilder:
 
     def set_stage_integrity(self, required: list[str], order: list[str], fatal: list[str]) -> None:
         """Set stage integrity tracking (DOD §3.4)."""
+        order_valid, order_violations = _validate_stage_order(order)
+        if not order_valid:
+            self.add_violation("STAGE-ORDER", "ERROR", "; ".join(order_violations))
         self._stage_integrity = {
             "required_stages": required,
             "execution_order": order,
             "fatal_failures": fatal,
             "all_required_present": all(s in order for s in required),
-            "order_valid": True,  # Pipeline enforces order by construction
-            "fatal": len(fatal) > 0,
+            "order_valid": order_valid,
+            "order_violations": order_violations,
+            "fatal": len(fatal) > 0 or not order_valid,
         }
 
     def set_residue_verification(self, data: dict) -> None:
@@ -6039,7 +6100,7 @@ async def run_frame_survival_check(
                 new_status = FrameSurvivalStatus.CONTESTED
             else:
                 frame.r2_drop_vote_count = len(drop_models)
-                frame.r2_drop_vote_refs = drop_models
+                frame.r2_drop_vote_refs = []
 
         frame.survival_status = new_status
 
@@ -6247,6 +6308,23 @@ _AUTHORITY_DOMAINS = {
 }
 
 
+def derive_topic_cluster(item: EvidenceItem) -> str:
+    """Derive a deterministic topic cluster from source metadata."""
+    try:
+        domain = urlparse(item.url).netloc.lower().strip()
+    except Exception:
+        domain = ""
+    if domain:
+        return domain.removeprefix("www.")
+
+    topic_words = [word for word in item.topic.split() if word][:3]
+    if topic_words:
+        return " ".join(topic_words).lower()
+
+    fact_words = [word for word in item.fact.split() if word][:3]
+    return " ".join(fact_words).lower()
+
+
 def score_evidence(item: EvidenceItem, brief_keywords: set[str]) -> float:
     """Score evidence item for relevance.
 
@@ -6379,6 +6457,8 @@ class EvidenceLedger:
             return False
 
         # Score the new item
+        if not item.topic_cluster:
+            item.topic_cluster = derive_topic_cluster(item)
         item.score = score_evidence(item, self.brief_keywords)
         item.is_active = True
         item.is_archived = False

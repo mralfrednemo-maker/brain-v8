@@ -69,14 +69,40 @@ async def test_frame_survival_r2_drops_with_3_votes():
     frames = [FrameInfo(frame_id="FRAME-1", text="test frame")]
     survival_resp = json.dumps({
         "evaluations": [
-            {"frame_id": "FRAME-1", "status": "DROPPED", "drop_vote_models": ["r1", "kimi", "reasoner"], "reasoning": "test"}
+            {
+                "frame_id": "FRAME-1",
+                "status": "DROPPED",
+                "drop_vote_models": ["r1", "kimi", "reasoner"],
+                "drop_vote_refs": ["argument_id:R2-ARG-1", "evidence_id:E001", "argument_id:R2-ARG-2"],
+                "reasoning": "test",
+            }
         ]
     })
     mock = _make_mock_llm(survival_resp)
     result = await run_frame_survival_check(mock, frames, {"r1": "t", "kimi": "t", "reasoner": "t"}, round_num=2)
     assert result[0].survival_status == FrameSurvivalStatus.DROPPED
     assert result[0].r2_drop_vote_count == 3
-    assert result[0].r2_drop_vote_refs == []
+    assert result[0].r2_drop_vote_refs == ["argument_id:R2-ARG-1", "evidence_id:E001", "argument_id:R2-ARG-2"]
+
+
+@pytest.mark.asyncio
+async def test_frame_survival_r2_requires_traceable_refs():
+    from thinker.divergent_framing import run_frame_survival_check
+    frames = [FrameInfo(frame_id="FRAME-1", text="test frame")]
+    survival_resp = json.dumps({
+        "evaluations": [
+            {
+                "frame_id": "FRAME-1",
+                "status": "DROPPED",
+                "drop_vote_models": ["r1", "kimi", "reasoner"],
+                "drop_vote_refs": ["FRAME-1", "justification", "note"],
+                "reasoning": "test",
+            }
+        ]
+    })
+    mock = _make_mock_llm(survival_resp)
+    result = await run_frame_survival_check(mock, frames, {"r1": "t", "kimi": "t", "reasoner": "t"}, round_num=2)
+    assert result[0].survival_status == FrameSurvivalStatus.CONTESTED
 
 
 @pytest.mark.asyncio

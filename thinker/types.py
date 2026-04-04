@@ -295,6 +295,22 @@ class EvidenceItem:
     is_archived: bool = False
     referenced_by: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict:
+        return {
+            "evidence_id": self.evidence_id,
+            "topic": self.topic,
+            "fact": self.fact,
+            "source_url": self.url,
+            "confidence": self.confidence.value,
+            "content_hash": self.content_hash,
+            "score": self.score,
+            "topic_cluster": self.topic_cluster,
+            "authority_tier": self.authority_tier,
+            "is_active": self.is_active,
+            "is_archived": self.is_archived,
+            "referenced_by": self.referenced_by,
+        }
+
 
 @dataclass
 class Argument:
@@ -311,6 +327,22 @@ class Argument:
     evidence_refs: list[str] = field(default_factory=list)
     open: bool = True
     blocker_link_ids: list[str] = field(default_factory=list)  # DOD §11.1
+
+    def to_dict(self) -> dict:
+        return {
+            "argument_id": self.argument_id,
+            "round_origin": self.round_num,
+            "model_id": self.model,
+            "text": self.text,
+            "status": self.status.value,
+            "addressed_in_round": self.addressed_in_round,
+            "resolution_status": self.resolution_status.value,
+            "superseded_by": self.superseded_by,
+            "dimension_id": self.dimension_id,
+            "blocker_link_ids": self.blocker_link_ids,
+            "evidence_refs": self.evidence_refs,
+            "open": self.open,
+        }
 
 
 @dataclass
@@ -339,6 +371,28 @@ class Blocker:
     evidence_ids: list[str] = field(default_factory=list)
     detail: str = ""
     resolution_note: str = ""
+
+    def to_dict(self) -> dict:
+        serialized_history = []
+        for entry in self.status_history:
+            status = entry.get("status")
+            serialized_history.append({
+                **entry,
+                "status": "DEFERRED" if status == "DROPPED" else status,
+            })
+        return {
+            "blocker_id": self.blocker_id,
+            "type": self.kind.value,
+            "source_dimension": self.source,
+            "detected_round": self.detected_round,
+            "status": "DEFERRED" if self.status.value == "DROPPED" else self.status.value,
+            "severity": self.severity,
+            "status_history": serialized_history,
+            "models_involved": self.models_involved,
+            "linked_ids": self.evidence_ids,
+            "detail": self.detail,
+            "resolution_summary": self.resolution_note,
+        }
 
 
 @dataclass

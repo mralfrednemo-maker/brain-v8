@@ -206,4 +206,15 @@ async def run_preflight(client, brief: str) -> PreflightResult:
         if result.effort_tier != EffortTier.ELEVATED:
             result.effort_tier = EffortTier.ELEVATED
 
+    requester_fixable = [
+        flag for flag in result.premise_flags
+        if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE
+    ]
+    if requester_fixable and not result.follow_up_questions:
+        raise BrainError(
+            "preflight",
+            "REQUESTER_FIXABLE defects require follow_up_questions",
+            detail=f"Flags: {[flag.flag_id for flag in requester_fixable]}",
+        )
+
     return result

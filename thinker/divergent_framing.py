@@ -70,6 +70,7 @@ FRAME_SURVIVAL_PROMPT = """Evaluate whether each alternative frame survives this
       "frame_id": "FRAME-1",
       "status": "ACTIVE | CONTESTED | DROPPED | ADOPTED | REBUTTED",
       "drop_vote_models": ["model_id"],
+      "drop_vote_refs": ["argument_id:R2-ARG-1", "evidence_id:E001"],
       "reasoning": "why this status"
     }}
   ]
@@ -241,11 +242,12 @@ async def run_frame_survival_check(
         # R2: require 3 drop votes for DROPPED
         if round_num == 2 and new_status == FrameSurvivalStatus.DROPPED:
             drop_models = ev.get("drop_vote_models", [])
-            if len(drop_models) < 3:
+            drop_refs = _valid_drop_vote_refs(ev.get("drop_vote_refs", []))
+            if len(drop_models) < 3 or len(drop_refs) < 3:
                 new_status = FrameSurvivalStatus.CONTESTED
             else:
                 frame.r2_drop_vote_count = len(drop_models)
-                frame.r2_drop_vote_refs = []
+                frame.r2_drop_vote_refs = drop_refs
 
         frame.survival_status = new_status
 
@@ -297,3 +299,15 @@ def format_r2_frame_enforcement() -> str:
         "3. GENERATE at least one NEW alternative frame not yet proposed\n"
         "\nFor each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
     )
+
+
+def _valid_drop_vote_refs(refs: list[str]) -> list[str]:
+    """Keep only traceable drop-vote refs tied to arguments or evidence."""
+    valid = []
+    for ref in refs:
+        if not isinstance(ref, str):
+            continue
+        normalized = ref.strip()
+        if normalized.startswith("argument_id:") or normalized.startswith("evidence_id:"):
+            valid.append(normalized)
+    return valid

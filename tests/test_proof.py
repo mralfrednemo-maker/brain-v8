@@ -1,4 +1,5 @@
 """Tests for proof.json builder."""
+import pytest
 from thinker.proof import ProofBuilder
 from thinker.types import (
     AcceptanceStatus, Argument, BlockerKind, Confidence, Outcome, Position,
@@ -271,3 +272,52 @@ class TestProofV9:
         assert wire["order_valid"] is False
         assert wire["fatal"] is True
         assert wire["order_violations"]
+
+    def test_analysis_map_schema_validation(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_analysis_map({
+            "header": "EXPLORATORY MAP — NOT A DECISION",
+            "dimensions": {
+                "DIM-1": {
+                    "knowns": ["k1"],
+                    "inferred": ["i1"],
+                    "unknowns": ["u1"],
+                    "evidence_for": ["E001"],
+                    "evidence_against": ["E002"],
+                    "competing_lenses": ["lens"],
+                    "argument_count": 2,
+                },
+            },
+            "hypothesis_ledger": [
+                {
+                    "hypothesis_id": "H-1",
+                    "dimension_id": "DIM-1",
+                    "text": "Hypothesis",
+                    "evidence_refs": ["E001"],
+                    "status": "SUPPORTED",
+                },
+            ],
+            "total_argument_count": 2,
+            "dimension_coverage_score": 1.0,
+        })
+        assert pb.build()["analysis_map"]["dimensions"]["DIM-1"]["knowns"] == ["k1"]
+
+    def test_analysis_map_rejects_missing_dimension_fields(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        with pytest.raises(ValueError, match="knowns"):
+            pb.set_analysis_map({
+                "header": "EXPLORATORY MAP — NOT A DECISION",
+                "dimensions": {
+                    "DIM-1": {
+                        "inferred": [],
+                        "unknowns": [],
+                        "evidence_for": [],
+                        "evidence_against": [],
+                        "competing_lenses": [],
+                        "argument_count": 0,
+                    },
+                },
+                "hypothesis_ledger": [],
+                "total_argument_count": 0,
+                "dimension_coverage_score": 0.0,
+            })

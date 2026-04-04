@@ -1330,6 +1330,7 @@ class Brain:
             synthesis_present=bool(report),
             analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
             analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
+            known_evidence_ids=evidence.all_evidence_ids(),
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from thinker.types import (
     Answerability, BrainError, EffortTier, Modality, PreflightResult,
-    QuestionClass, SearchScope, StakesClass,
+    PremiseFlagRouting, QuestionClass, SearchScope, StakesClass,
 )
 
 
@@ -191,3 +191,23 @@ async def test_preflight_to_dict_roundtrip():
     assert d["executed"] is True
     assert isinstance(d["premise_flags"], list)
     assert isinstance(d["critical_assumptions"], list)
+
+
+@pytest.mark.asyncio
+async def test_requester_fixable_requires_follow_up_questions():
+    from thinker.preflight import run_preflight
+    resp = _make_valid_response(
+        premise_flags=[
+            {
+                "flag_id": "PFLAG-1",
+                "flag_type": "AMBIGUITY",
+                "severity": "WARNING",
+                "summary": "Scope is unclear",
+                "routing": PremiseFlagRouting.REQUESTER_FIXABLE.value,
+            },
+        ],
+        follow_up_questions=[],
+    )
+    mock = _make_mock_llm(resp)
+    with pytest.raises(BrainError, match="follow_up_questions"):
+        await run_preflight(mock, "Brief missing scope.")

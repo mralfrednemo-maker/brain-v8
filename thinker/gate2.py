@@ -108,6 +108,7 @@ def _eval_decide_rules(
     total_arguments: int,
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
+    known_evidence_ids: Optional[set[str]] = None,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
@@ -135,7 +136,13 @@ def _eval_decide_rules(
         c for c in (decisive_claims or [])
         if c.material_to_conclusion and (
             c.evidence_support_status != EvidenceSupportStatus.SUPPORTED
-            or (c.evidence_support_status == EvidenceSupportStatus.SUPPORTED and not c.evidence_refs)
+            or (c.evidence_support_status == EvidenceSupportStatus.SUPPORTED and (
+                not c.evidence_refs
+                or (
+                    known_evidence_ids is not None
+                    and any(ref not in known_evidence_ids for ref in c.evidence_refs)
+                )
+            ))
         )
     ]
 
@@ -383,6 +390,7 @@ def run_gate2_deterministic(
     analogies: Optional[list[CrossDomainAnalogy]] = None,
     synthesis_present: bool = True,
     analysis_map_present: bool = True,
+    known_evidence_ids: Optional[set[str]] = None,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -443,6 +451,7 @@ def run_gate2_deterministic(
             total_arguments=total_arguments,
             stage_integrity_fatal=stage_integrity_fatal,
             analogies=analogies,
+            known_evidence_ids=known_evidence_ids,
         )
 
     # Identify which rule fired

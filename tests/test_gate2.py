@@ -390,6 +390,26 @@ class TestDecideRules:
         assert fired[0]["rule_id"] == "D7"
         assert fired[0]["outcome_if_fired"] == "ESCALATE"
 
+    def test_d7_decisive_claim_evidence_ref_must_exist(self):
+        """D7: SUPPORTED claim with phantom evidence ref -> ESCALATE."""
+        result = run_gate2_deterministic(
+            **_base_decide_kwargs(
+                decisive_claims=[
+                    DecisiveClaim(
+                        claim_id="DC-1",
+                        text="Claim 1",
+                        material_to_conclusion=True,
+                        evidence_refs=["E404"],
+                        evidence_support_status=EvidenceSupportStatus.SUPPORTED,
+                    ),
+                ],
+                known_evidence_ids={"E001", "E002"},
+            ),
+        )
+        assert result.outcome == Outcome.ESCALATE
+        fired = [r for r in result.rule_trace if r["fired"]]
+        assert fired[0]["rule_id"] == "D7"
+
     def test_d8_high_contradiction(self):
         """D8: HIGH/CRITICAL unresolved contradiction -> ESCALATE."""
         ctr = Contradiction("CTR-1", ["E-1", "E-2"], "topic", "HIGH", status="OPEN")

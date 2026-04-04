@@ -227,3 +227,24 @@ def test_brain_error_defaults_to_fatal_integrity_error_class():
 
     err = BrainError("stage", "boom")
     assert err.error_class == "FATAL_INTEGRITY"
+
+
+def test_argument_to_dict_uses_dod_field_names():
+    payload = Argument(argument_id="ARG-1", round_num=1, model="r1", text="claim").to_dict()
+    assert payload["round_origin"] == 1
+    assert payload["model_id"] == "r1"
+    assert "round_num" not in payload
+    assert "model" not in payload
+
+
+def test_evidence_to_dict_uses_source_url():
+    payload = EvidenceItem("E001", "topic", "fact", "https://example.com", Confidence.HIGH).to_dict()
+    assert payload["source_url"] == "https://example.com"
+    assert "url" not in payload
+
+
+def test_blocker_to_dict_uses_dod_field_names():
+    payload = Blocker("BLK-1", BlockerKind.EVIDENCE_GAP, "dimension:DIM-1", 1).to_dict()
+    assert payload["type"] == "EVIDENCE_GAP"
+    assert payload["linked_ids"] == []
+    assert "kind" not in payload

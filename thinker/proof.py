@@ -395,6 +395,38 @@ class ProofBuilder:
 
     def set_analysis_map(self, entries: list) -> None:
         """Set analysis map entries (ANALYSIS mode)."""
+        if not isinstance(entries, dict):
+            raise ValueError("analysis_map must be an object")
+        if entries.get("header") != "EXPLORATORY MAP — NOT A DECISION":
+            raise ValueError("analysis_map.header must match DOD header")
+        if not isinstance(entries.get("dimensions"), dict):
+            raise ValueError("analysis_map.dimensions must be an object")
+        if not isinstance(entries.get("hypothesis_ledger"), list):
+            raise ValueError("analysis_map.hypothesis_ledger must be a list")
+        if not isinstance(entries.get("total_argument_count"), int):
+            raise ValueError("analysis_map.total_argument_count must be an int")
+        if not isinstance(entries.get("dimension_coverage_score"), (int, float)):
+            raise ValueError("analysis_map.dimension_coverage_score must be numeric")
+
+        for dim_id, dim_data in entries["dimensions"].items():
+            if not isinstance(dim_data, dict):
+                raise ValueError(f"analysis_map dimension {dim_id} must be an object")
+            for field in ("knowns", "inferred", "unknowns", "evidence_for", "evidence_against", "competing_lenses"):
+                if not isinstance(dim_data.get(field), list):
+                    raise ValueError(f"analysis_map dimension {dim_id}.{field} must be a list")
+            if not isinstance(dim_data.get("argument_count"), int):
+                raise ValueError(f"analysis_map dimension {dim_id}.argument_count must be an int")
+
+        for idx, hypothesis in enumerate(entries["hypothesis_ledger"]):
+            if not isinstance(hypothesis, dict):
+                raise ValueError(f"analysis_map hypothesis {idx} must be an object")
+            for field in ("hypothesis_id", "dimension_id", "text", "status"):
+                value = hypothesis.get(field)
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"analysis_map hypothesis {idx}.{field} must be a non-empty string")
+            if not isinstance(hypothesis.get("evidence_refs", []), list):
+                raise ValueError(f"analysis_map hypothesis {idx}.evidence_refs must be a list")
+
         self._analysis_map = entries
 
     def set_analysis_debug(self, data: dict) -> None:
