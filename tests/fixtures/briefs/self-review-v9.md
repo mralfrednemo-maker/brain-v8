@@ -2198,6 +2198,7 @@ from thinker.perspective_cards import extract_perspective_cards, format_perspect
 from thinker.divergent_framing import (
     run_framing_extract, run_frame_survival_check,
     check_exploration_stress, format_frames_for_prompt, format_r2_frame_enforcement,
+    validate_r2_frame_obligations,
 )
 from thinker.semantic_contradiction import run_semantic_contradiction_pass
 from thinker.tools.ungrounded import find_ungrounded_stats, generate_verification_queries
@@ -2584,9 +2585,8 @@ class Brain:
             for flag in preflight_result.premise_flags:
                 if flag.resolved:
                     continue
-                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE and not self._config.skip_assumption_gate:
+                if flag.routing == PremiseFlagRouting.REQUESTER_FIXABLE:
                     # DOD 4.3: REQUESTER_FIXABLE → NEED_MORE (must not be admitted)
-                    # Bypassed when --skip-assumption-gate is set (design briefs)
                     log._print(f"  [DEFECT] {flag.flag_id}: REQUESTER_FIXABLE → rejecting brief")
                     proof.set_preflight(preflight_result)
                     proof.set_final_status("PREFLIGHT_REJECTED")
@@ -2847,38 +2847,49 @@ class Brain:
                 self._checkpoint("perspective_cards")
 
             if round_num == 1 and not self._stage_done("framing_pass"):
-                log._print("  [FRAMING] Running framing extract...")
-                t0 = time.monotonic()
-                divergence_result = await run_framing_extract(self._llm, brief_for_sonnet, round_result.texts)
-                divergence_result.required = not is_analysis_mode and not preflight_result.short_circuit_allowed
-                divergence_result.adversarial_slot_assigned = divergence_result.required
-                divergence_result.adversarial_model_id = "kimi" if divergence_result.required else None
-                # Check exploration stress (use R1 agreement)
-                r1_agreement = position_tracker.agreement_ratio(1)
-                if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):
-                    divergence_result.exploration_stress_triggered = True
-                    from thinker.types import FrameInfo, FrameType
-                    seed_frames = [
-                        FrameInfo(
-                            frame_id="SEED-INV", text="What if the opposite of the emerging consensus is true? Argue against the majority position.",
-                            origin_round=1, origin_model="controller", frame_type=FrameType.INVERSION,
-                        ),
-                        FrameInfo(
-                            frame_id="SEED-STAKE", text="Consider the perspective of the stakeholder most harmed by the emerging consensus.",
-                            origin_round=1, origin_model="controller", frame_type=FrameType.OPPOSITE_STANCE,
-                        ),
-                    ]
-                    divergence_result.alt_frames.extend(seed_frames)
-                    divergence_result.stress_seed_frames = [f.to_dict() for f in seed_frames]
-                    log._print(f"  [STRESS] Exploration stress triggered — {len(seed_frames)} seed frames injected")
+                if divergence_result.required:
+                    log._print("  [FRAMING] Running framing extract...")
+                    t0 = time.monotonic()
+                    divergence_result = await run_framing_extract(self._llm, brief_for_sonnet, round_result.texts)
+                    divergence_result.required = True
+                    divergence_result.adversarial_slot_assigned = True
+                    divergence_result.adversarial_model_id = "kimi"
+                    r1_agreement = position_tracker.agreement_ratio(1)
+                    if check_exploration_stress(r1_agreement, preflight_result.question_class, preflight_result.stakes_class):
+                        divergence_result.exploration_stress_triggered = True
+                        from thinker.types import FrameInfo, FrameType
+                        seed_frames = [
+                            FrameInfo(
+                                frame_id="SEED-INV", text="What if the opposite of the emerging consensus is true? Argue against the majority position.",
+                                origin_round=1, origin_model="controller", frame_type=FrameType.INVERSION,
+                            ),
+                            FrameInfo(
+                                frame_id="SEED-STAKE", text="Consider the perspective of the stakeholder most harmed by the emerging consensus.",
+                                origin_round=1, origin_model="controller", frame_type=FrameType.OPPOSITE_STANCE,
+                            ),
+                        ]
+                        divergence_result.alt_frames.extend(seed_frames)
+                        divergence_result.stress_seed_frames = [f.to_dict() for f in seed_frames]
+                        log._print(f"  [STRESS] Exploration stress triggered - {len(seed_frames)} seed frames injected")
+                    log._print(f"  [FRAMING] {len(divergence_result.alt_frames)} frames extracted ({time.monotonic() - t0:.1f}s)")
+                else:
+                    divergence_result.framing_pass_executed = False
+                    log._print("  [FRAMING] Skipped - divergence not required for this run")
                 st.divergence = divergence_result.to_dict()
                 proof.set_divergence(divergence_result)
                 alt_frames_text = format_frames_for_prompt(divergence_result.alt_frames)
-                log._print(f"  [FRAMING] {len(divergence_result.alt_frames)} frames extracted ({time.monotonic() - t0:.1f}s)")
                 self._checkpoint("framing_pass")
 
             # --- V9: Post-R2 frame survival ---
             if round_num == 2 and not self._stage_done("frame_survival_r2"):
+                missing_frame_obligations = validate_r2_frame_obligations(round_result.texts)
+                if missing_frame_obligations:
+                    raise BrainError(
+                        "frame_survival_r2",
+                        "R2 frame obligations missing from one or more model outputs",
+                        error_class="FATAL_INTEGRITY",
+                        detail=str(missing_frame_obligations),
+                    )
                 log._print("  [FRAMING] Running frame survival check (R2)...")
                 t0 = time.monotonic()
                 divergence_result.alt_frames = await run_frame_survival_check(
@@ -3112,17 +3123,33 @@ class Brain:
 
         # --- Semantic Contradiction (V9, DOD §12.2: only when shortlist criteria are met) ---
         if not self._stage_done("semantic_contradiction"):
+            if not self._stage_done("decisive_claims"):
+                log._print("  [CLAIMS] Extracting decisive claims...")
+                t0 = time.monotonic()
+                decisive_claims = await extract_decisive_claims(
+                    self._llm, final_views=prior_views, evidence_text=evidence.format_for_prompt(),
+                )
+                log._print(f"  [CLAIMS] {len(decisive_claims)} decisive claims ({time.monotonic() - t0:.1f}s)")
+                proof.set_decisive_claims(decisive_claims)
+                self._checkpoint("decisive_claims")
             if len(evidence.active_items) >= 2:
                 log._print("  [SEMANTIC] Running semantic contradiction pass...")
                 t0 = time.monotonic()
-                # DOD §12.2 criterion 3: pass open blocker IDs for shortlist evaluation
-                # Decisive claims not yet extracted at this stage — pass empty set
+                # DOD §12.2 criterion 3: include decisive-claim-linked and blocker-linked evidence
                 open_blocker_ev_ids = {
+                    evidence_id
+                    for b in blocker_ledger.open_blockers()
+                    for evidence_id in b.evidence_ids
+                } | {
                     b.source for b in blocker_ledger.open_blockers()
-                    if b.source.startswith("E")
+                    if isinstance(b.source, str) and b.source.startswith("E")
+                }
+                decisive_claim_evidence_ids = {
+                    ref for claim in decisive_claims for ref in claim.evidence_refs
                 }
                 semantic_ctrs = await run_semantic_contradiction_pass(
                     self._llm, evidence.active_items,
+                    decisive_claim_evidence_ids=decisive_claim_evidence_ids,
                     open_blocker_ids=open_blocker_ev_ids,
                 )
                 log._print(f"  [SEMANTIC] {len(semantic_ctrs)} semantic contradictions ({time.monotonic() - t0:.1f}s)")
@@ -3189,7 +3216,7 @@ class Brain:
         if is_analysis_mode:
             # DOD §18.5: "ANALYSIS output contains verdict language → ERROR"
             # Check the header — ANALYSIS must have "EXPLORATORY MAP" header, not verdict/recommendation
-            report_text = (report[:2000] if report else "").lower()
+            report_text = (report if report else "").lower()
             report_header = report_text[:500]
             if report and "exploratory map" not in report_header:
                 # Missing required header — check for explicit decision language
@@ -3207,7 +3234,7 @@ class Brain:
                 if verdict_found:
                     raise BrainError(
                         "analysis_verdict_check",
-                        f"ANALYSIS output contains verdict language in header: {verdict_found[:3]}",
+                        f"ANALYSIS output contains verdict language: {verdict_found[:3]}",
                         error_class="FATAL_INTEGRITY",
                         detail="DOD §18.5: ANALYSIS mode must produce exploratory map, not verdict.",
                     )
@@ -3352,7 +3379,7 @@ class Brain:
         # DOD §14.5-14.6: coverage_pass=false triggers deep scan path
         # Only enforce when synthesis actually produced disposition data this session.
         # On resume past synthesis, dispositions are not available from checkpoint.
-        if disposition_objects and not coverage.get("coverage_pass") and coverage.get("total_required", 0) > 0:
+        if not coverage.get("coverage_pass") and coverage.get("total_required", 0) > 0:
             if coverage.get("total_disposed", 0) == 0:
                 # Zero dispositions emitted at all → ERROR (DOD §14.6)
                 raise BrainError(
@@ -3406,10 +3433,11 @@ class Brain:
             and e.evidence_id not in (report or "")
         ]
         if orphaned_high_auth:
-            proof.add_violation(
-                "ORPHANED-HIGH-AUTH-EVIDENCE", "WARN",
-                f"{len(orphaned_high_auth)} archived HIGH/AUTHORITATIVE evidence items not cited in synthesis: "
-                f"{[e.evidence_id for e in orphaned_high_auth[:5]]}",
+            raise BrainError(
+                "orphaned_high_authority_evidence",
+                "Archived HIGH/AUTHORITATIVE evidence was not explained in synthesis",
+                error_class="FATAL_INTEGRITY",
+                detail=f"Missing evidence IDs: {[e.evidence_id for e in orphaned_high_auth[:5]]}",
             )
 
         # Legacy string-match residue check (supplementary)
@@ -3485,6 +3513,8 @@ class Brain:
             analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
             analogies=divergence_result.cross_domain_analogies if divergence_result.cross_domain_analogies else None,
             known_evidence_ids=evidence.all_evidence_ids(),
+            round_model_counts=[len(st.round_responded.get(str(i), [])) for i in range(1, self._config.rounds + 1)],
+            expected_round_model_counts=[len(ROUND_TOPOLOGY[i]) for i in range(1, self._config.rounds + 1)],
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,
@@ -3914,6 +3944,8 @@ def _eval_decide_rules(
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
     known_evidence_ids: Optional[set[str]] = None,
+    round_model_counts: Optional[list[int]] = None,
+    expected_round_model_counts: Optional[list[int]] = None,
 ) -> tuple[Outcome, list[dict]]:
     """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
     trace: list[dict] = []
@@ -3978,11 +4010,17 @@ def _eval_decide_rules(
         dimensions is not None and len(dimensions.items) == 0
     )
     has_fatal_stages = bool(stage_integrity_fatal)
-    fatal_integrity = no_pipeline_output or empty_dimensions or has_fatal_stages
+    topology_mismatch = (
+        round_model_counts is not None
+        and expected_round_model_counts is not None
+        and round_model_counts != expected_round_model_counts
+    )
+    fatal_integrity = no_pipeline_output or empty_dimensions or has_fatal_stages or topology_mismatch
     if _t("D1", fatal_integrity,
           f"models={len(positions)}, args={total_arguments}, "
           f"dims={'none' if dimensions is None else len(dimensions.items)}, "
-          f"fatal_stages={stage_integrity_fatal or []}"):
+          f"fatal_stages={stage_integrity_fatal or []}, "
+          f"round_model_counts={round_model_counts}, expected_round_model_counts={expected_round_model_counts}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
@@ -4203,6 +4241,8 @@ def run_gate2_deterministic(
     synthesis_present: bool = True,
     analysis_map_present: bool = True,
     known_evidence_ids: Optional[set[str]] = None,
+    round_model_counts: Optional[list[int]] = None,
+    expected_round_model_counts: Optional[list[int]] = None,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
@@ -4264,6 +4304,8 @@ def run_gate2_deterministic(
             stage_integrity_fatal=stage_integrity_fatal,
             analogies=analogies,
             known_evidence_ids=known_evidence_ids,
+            round_model_counts=round_model_counts,
+            expected_round_model_counts=expected_round_model_counts,
         )
 
     # Identify which rule fired
@@ -6290,6 +6332,27 @@ def format_r2_frame_enforcement() -> str:
     )
 
 
+def validate_r2_frame_obligations(round_texts: dict[str, str]) -> dict[str, list[str]]:
+    """Return missing R2 frame obligations per model."""
+    missing_by_model: dict[str, list[str]] = {}
+    required_markers = {
+        "ADOPT": "ADOPT:",
+        "REBUT": "REBUT:",
+        "NEW_FRAME": "NEW_FRAME:",
+    }
+
+    for model_id, text in round_texts.items():
+        normalized = text.upper()
+        missing = [
+            label for label, marker in required_markers.items()
+            if marker not in normalized
+        ]
+        if missing:
+            missing_by_model[model_id] = missing
+
+    return missing_by_model
+
+
 def _valid_drop_vote_refs(refs: list[str]) -> list[str]:
     """Keep only traceable drop-vote refs tied to arguments or evidence."""
     valid = []
@@ -6745,7 +6808,7 @@ class BrainConfig:
     brave_api_key: str = ""
     outdir: str = "./output"
     analysis_debug_runs_remaining: int = 10  # DOD §18.4: debug sunset counter
-    skip_assumption_gate: bool = False  # Override: skip fatal assumption check (for self-review briefs)
+    skip_assumption_gate: bool = False  # Deprecated no-op: requester-fixable defects always block admission
 
 ```
 
