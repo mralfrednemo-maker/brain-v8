@@ -271,9 +271,17 @@ class Brain:
             "max_search_queries_per_phase": self._config.max_search_queries_per_phase,
             "search_after_rounds": self._config.search_after_rounds,
         })
+        # DOD §19: stage_integrity and budgeting required "always" — set defaults
+        # so they're present even on early NEED_MORE returns
+        proof.set_stage_integrity(required=[], order=[], fatal=[])
+        proof.set_budgeting({
+            "effort_tier": "STANDARD", "per_round_token_budgets": {},
+            "search_budget_policy": "NONE", "speculative_expansion_allowed": False,
+            "high_authority_evidence_required": False,
+            "short_circuit_taken": False, "fallback_from_short_circuit": False,
+        })
+
         # Truncated brief for Sonnet extraction stages (framing, synthesis, etc.)
-        # Deliberating models (R1/Reasoner/GLM5/Kimi) get the full brief.
-        # Sonnet extraction stages only need the question context, not full source code.
         brief_for_sonnet = brief[:15000] if len(brief) > 15000 else brief
         brief_keywords = {w.lower() for w in brief.split() if len(w) >= 4}
         search_log_entries: list = []
@@ -1273,6 +1281,9 @@ class Brain:
         # --- Final: Wire all remaining proof sections ---
         outcome = gate2.outcome
         proof.set_outcome(outcome, agreement, outcome_class)
+        # DOD §1.5: ERROR implies error_class in {INFRASTRUCTURE, FATAL_INTEGRITY}
+        if outcome == Outcome.ERROR:
+            proof.set_error_class("FATAL_INTEGRITY")
         proof.set_final_status("COMPLETE")
         proof.set_evidence_count(len(evidence.items))
 
