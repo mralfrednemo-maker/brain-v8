@@ -54,16 +54,9 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             if match:
                 fields[field_name] = match.group(1).strip()
 
-        # DOD §7.3: missing card or field → ERROR
-        # In practice, models don't always follow structured output format.
-        # We extract what we can; missing fields become empty strings.
-        # A fully empty card (no text output at all) is the ERROR case.
+        # Skip models that produced no output — they're already in round_result.failed
         if not text.strip():
-            raise BrainError(
-                "perspective_cards",
-                f"Model {model_id} produced no R1 output at all",
-                detail="DOD §7.3: Missing card → ERROR.",
-            )
+            continue
 
         time_horizon = _parse_time_horizon(fields.get("time_horizon", "MEDIUM"))
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
