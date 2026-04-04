@@ -215,7 +215,7 @@ class ProofBuilder:
 
     def set_ungrounded_stats(self, data) -> None:
         """Set ungrounded statistic detection results (DOD §9.2 schema)."""
-        self._ungrounded_stats = data
+        self._ungrounded_stats = data.to_dict() if hasattr(data, "to_dict") else data
 
     def set_evidence_two_tier(self, active: list, archive: list, eviction_log: list) -> None:
         """Set two-tier evidence data."""

@@ -50,10 +50,17 @@ class BrainError(Exception):
     Raised when a critical component fails: LLM call, position extraction,
     argument tracking, synthesis. The pipeline must stop immediately.
     """
-    def __init__(self, stage: str, message: str, detail: str = ""):
+    def __init__(
+        self,
+        stage: str,
+        message: str,
+        detail: str = "",
+        error_class: str = "PIPELINE",
+    ):
         self.stage = stage
         self.message = message
         self.detail = detail
+        self.error_class = error_class
         super().__init__(f"[{stage}] {message}")
 
 
@@ -252,6 +259,7 @@ class DispositionTargetType(Enum):
 class ErrorClass(Enum):
     INFRASTRUCTURE = "INFRASTRUCTURE"
     FATAL_INTEGRITY = "FATAL_INTEGRITY"
+    PIPELINE = "PIPELINE"
 
 
 class AssumptionVerifiability(Enum):
@@ -861,6 +869,21 @@ class UngroundedStatItem:
 
 
 @dataclass
+class UngroundedStatResult:
+    """DOD Â§9.2 container for detector findings and execution state."""
+    items: list[UngroundedStatItem] = field(default_factory=list)
+    post_r1_executed: bool = False
+    post_r2_executed: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "items": [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
+            "post_r1_executed": self.post_r1_executed,
+            "post_r2_executed": self.post_r2_executed,
+        }
+
+
+@dataclass
 class SynthesisPacket:
     """DOD §14.1 controller-curated synthesis packet."""
     packet_complete: bool = False
@@ -927,7 +950,7 @@ class ResidueVerification:
 @dataclass
 class AnalysisMap:
     """DOD §18.3 analysis-mode exploratory map."""
-    header: str = "EXPLORATORY MAP - NOT A DECISION"
+    header: str = "EXPLORATORY MAP — NOT A DECISION"
     dimensions: dict = field(default_factory=dict)
     hypothesis_ledger: list[dict] = field(default_factory=list)
     total_argument_count: int = 0

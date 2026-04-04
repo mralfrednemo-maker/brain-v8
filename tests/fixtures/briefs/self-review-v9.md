@@ -1405,7 +1405,7 @@ class Blocker:
 @dataclass
 class Contradiction:
     """A detected contradiction between evidence items."""
-    contradiction_id: str
+    ctr_id: str
     evidence_ids: list[str]
     topic: str
     severity: str  # LOW, MEDIUM, HIGH, CRITICAL
@@ -1418,6 +1418,30 @@ class Contradiction:
     evidence_ref_b: str = ""
     same_entity: bool = False
     same_timeframe: bool = False
+
+    @property
+    def contradiction_id(self) -> str:
+        """Backward-compatible alias for older callers."""
+        return self.ctr_id
+
+    @contradiction_id.setter
+    def contradiction_id(self, value: str) -> None:
+        self.ctr_id = value
+
+    def to_dict(self) -> dict:
+        return {
+            "ctr_id": self.ctr_id,
+            "detection_mode": self.detection_mode,
+            "evidence_ref_a": self.evidence_ref_a,
+            "evidence_ref_b": self.evidence_ref_b,
+            "same_entity": self.same_entity,
+            "same_timeframe": self.same_timeframe,
+            "topic": self.topic,
+            "severity": self.severity,
+            "status": self.status,
+            "justification": self.justification,
+            "linked_claim_ids": self.linked_claim_ids,
+        }
 
 
 @dataclass
@@ -1878,6 +1902,135 @@ class DispositionObject:
             "importance": self.importance,
             "narrative_explanation": self.narrative_explanation,
             "evidence_refs": self.evidence_refs,
+        }
+
+
+@dataclass
+class UngroundedStatItem:
+    """DOD §9.2 schema for a flagged ungrounded statistical claim."""
+    claim_id: str
+    text: str
+    numeric: bool = True
+    verified: bool = False
+    blocker_id: Optional[str] = None
+    severity: str = "MEDIUM"
+    status: str = "UNVERIFIED_CLAIM"
+
+    def to_dict(self) -> dict:
+        return {
+            "claim_id": self.claim_id,
+            "text": self.text,
+            "numeric": self.numeric,
+            "verified": self.verified,
+            "blocker_id": self.blocker_id,
+            "severity": self.severity,
+            "status": self.status,
+        }
+
+
+@dataclass
+class SynthesisPacket:
+    """DOD §14.1 controller-curated synthesis packet."""
+    packet_complete: bool = False
+    brief_excerpt: str = ""
+    final_positions: dict = field(default_factory=dict)
+    argument_lifecycle: list[dict] = field(default_factory=list)
+    argument_count_total: int = 0
+    argument_count_open: int = 0
+    frame_summary: list[dict] = field(default_factory=list)
+    material_unrebutted_frames: int = 0
+    blocker_summary: list[dict] = field(default_factory=list)
+    open_blocker_count: int = 0
+    decisive_claims: list[dict] = field(default_factory=list)
+    contradiction_summary: list[dict] = field(default_factory=list)
+    premise_flag_summary: list[dict] = field(default_factory=list)
+    evidence_count: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "packet_complete": self.packet_complete,
+            "brief_excerpt": self.brief_excerpt,
+            "final_positions": self.final_positions,
+            "argument_lifecycle": self.argument_lifecycle,
+            "argument_count_total": self.argument_count_total,
+            "argument_count_open": self.argument_count_open,
+            "frame_summary": self.frame_summary,
+            "material_unrebutted_frames": self.material_unrebutted_frames,
+            "blocker_summary": self.blocker_summary,
+            "open_blocker_count": self.open_blocker_count,
+            "decisive_claims": self.decisive_claims,
+            "contradiction_summary": self.contradiction_summary,
+            "premise_flag_summary": self.premise_flag_summary,
+            "evidence_count": self.evidence_count,
+        }
+
+
+@dataclass
+class ResidueVerification:
+    """DOD §14.4 residue verification / disposition coverage result."""
+    coverage_pass: bool = True
+    omission_rate: float = 0.0
+    omissions: list[dict] = field(default_factory=list)
+    deep_scan_triggered: bool = False
+    expected_disposition_count: int = 0
+    emitted_disposition_count: int = 0
+    total_required: int = 0
+    total_disposed: int = 0
+    deep_scan: Optional[dict] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "coverage_pass": self.coverage_pass,
+            "omission_rate": self.omission_rate,
+            "omissions": self.omissions,
+            "deep_scan_triggered": self.deep_scan_triggered,
+            "expected_disposition_count": self.expected_disposition_count,
+            "emitted_disposition_count": self.emitted_disposition_count,
+            "total_required": self.total_required,
+            "total_disposed": self.total_disposed,
+            "deep_scan": self.deep_scan,
+        }
+
+
+@dataclass
+class AnalysisMap:
+    """DOD §18.3 analysis-mode exploratory map."""
+    header: str = "EXPLORATORY MAP - NOT A DECISION"
+    dimensions: dict = field(default_factory=dict)
+    hypothesis_ledger: list[dict] = field(default_factory=list)
+    total_argument_count: int = 0
+    dimension_coverage_score: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "header": self.header,
+            "dimensions": self.dimensions,
+            "hypothesis_ledger": self.hypothesis_ledger,
+            "total_argument_count": self.total_argument_count,
+            "dimension_coverage_score": self.dimension_coverage_score,
+        }
+
+
+@dataclass
+class AnalysisDebug:
+    """DOD §18.4 analysis-mode debug audit record."""
+    debug_mode: bool = False
+    debug_gate2_result: Optional[str] = None
+    actual_output: Optional[str] = None
+    rules_enforced: bool = True
+    remaining_debug_runs: int = 0
+    analysis_mode_active: bool = True
+    dimension_coverage_score: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "debug_mode": self.debug_mode,
+            "debug_gate2_result": self.debug_gate2_result,
+            "actual_output": self.actual_output,
+            "rules_enforced": self.rules_enforced,
+            "remaining_debug_runs": self.remaining_debug_runs,
+            "analysis_mode_active": self.analysis_mode_active,
+            "dimension_coverage_score": self.dimension_coverage_score,
         }
 
 
@@ -2807,12 +2960,12 @@ class Brain:
 
                 # Wire evidence contradictions into blocker ledger
                 for ctr in evidence.contradictions:
-                    if not any(b.detail == ctr.contradiction_id for b in blocker_ledger.blockers):
+                    if not any(b.detail == ctr.ctr_id for b in blocker_ledger.blockers):
                         blocker_ledger.add(
                             kind=BlockerKind.CONTRADICTION,
                             source="evidence_ledger",
                             detected_round=round_num,
-                            detail=ctr.contradiction_id,
+                            detail=ctr.ctr_id,
                             models=[],
                         )
 
@@ -3143,6 +3296,15 @@ class Brain:
                     severity="CRITICAL",
                 )
 
+        if not self._stage_done("residue_verification"):
+            if self._checkpoint("residue_verification"):
+                return BrainResult(
+                    outcome=Outcome.ESCALATE,
+                    proof=proof.build(),
+                    report=report,
+                    preflight=preflight_result,
+                )
+
         # DOD §14.3: Orphaned high-authority archive evidence must be explained
         orphaned_high_auth = [
             e for e in evidence.archive_items
@@ -3173,6 +3335,7 @@ class Brain:
         # --- Gate 2 (deterministic) ---
         # Compute stage integrity for D1 (DOD §3.3)
         # Include conditional stages that should have executed
+        semantic_pass_required = len(evidence.active_items) >= 2
         required_stages = ["preflight", "dimensions"]
         for i in range(1, self._config.rounds + 1):
             required_stages.append(f"r{i}")
@@ -3187,7 +3350,9 @@ class Brain:
                     required_stages.append("ungrounded_r2")
             if i == 3:
                 required_stages.append("frame_survival_r3")
-        required_stages.extend(["semantic_contradiction", "decisive_claims", "synthesis_packet", "synthesis"])
+        if semantic_pass_required:
+            required_stages.append("semantic_contradiction")
+        required_stages.extend(["decisive_claims", "synthesis_packet", "synthesis", "residue_verification"])
         completed = set(self.state.completed_stages)
         fatal_stages = [s for s in required_stages if s not in completed]
 
@@ -3220,6 +3385,7 @@ class Brain:
             dimensions=dimension_result,
             total_arguments=len(all_args),
             archive_evidence_count=len(evidence.archive_items),
+            evidence_present=True,
             stage_integrity_fatal=fatal_stages if fatal_stages else None,
             synthesis_present=bool(report),
             analysis_map_present=bool(proof._analysis_map) if is_analysis_mode else True,
@@ -3290,7 +3456,11 @@ class Brain:
         })
 
         # Contradictions (numeric + semantic)
-        proof.set_contradictions(evidence.contradictions, semantic_ctrs)
+        proof.set_contradictions(
+            evidence.contradictions,
+            semantic_ctrs,
+            semantic_pass_executed=semantic_pass_required,
+        )
 
         # Cross-domain analogies from divergence
         if divergence_result.cross_domain_analogies:
@@ -3671,7 +3841,7 @@ def _eval_decide_rules(
     # HIGH/CRITICAL unresolved contradictions (handle both enum and string severity)
     high_contradictions = [
         c for c in contradictions
-        if getattr(c, "status", "OPEN") in ("OPEN", "open")
+        if str(getattr(getattr(c, "status", "OPEN"), "value", getattr(c, "status", "OPEN"))) in ("OPEN", "open")
         and str(getattr(getattr(c, "severity", "LOW"), "value", getattr(c, "severity", "LOW"))) in ("HIGH", "CRITICAL")
     ]
 
@@ -3810,6 +3980,7 @@ def _eval_analysis_rules(
     dimensions: Optional[DimensionSeedResult],
     total_arguments: int,
     archive_evidence_count: int = 0,
+    evidence_present: bool = True,
     synthesis_present: bool = True,
     analysis_map_present: bool = True,
 ) -> tuple[Outcome, list[dict]]:
@@ -3841,17 +4012,17 @@ def _eval_analysis_rules(
         return Outcome.ERROR, trace
 
     # --- A3: Missing required shared pipeline artifacts (DOD §17) ---
-    # Checks: dimension seeder, analysis_map, synthesis, arguments.
+    # Checks: dimension seeder, analysis_map, synthesis, evidence artifact presence.
     # Note: evidence_count==0 is handled by A4 (ESCALATE, not ERROR).
     missing_artifacts = (
         (dimensions is None or len(dimensions.items) == 0)
-        or total_arguments == 0
+        or not evidence_present
         or not synthesis_present
         or not analysis_map_present
     )
     if _t("A3", missing_artifacts,
           f"dimensions={'empty' if not dimensions or not dimensions.items else len(dimensions.items)}, "
-          f"args={total_arguments}, evidence={evidence_count}, "
+          f"args={total_arguments}, evidence={evidence_count}, evidence_present={evidence_present}, "
           f"synthesis_present={synthesis_present}, analysis_map_present={analysis_map_present}"):
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
@@ -3906,6 +4077,7 @@ def run_gate2_deterministic(
     dimensions: Optional[DimensionSeedResult] = None,
     total_arguments: int = 0,
     archive_evidence_count: int = 0,
+    evidence_present: bool = True,
     stage_integrity_fatal: Optional[list[str]] = None,
     analogies: Optional[list[CrossDomainAnalogy]] = None,
     synthesis_present: bool = True,
@@ -3949,6 +4121,7 @@ def run_gate2_deterministic(
             dimensions=dimensions,
             total_arguments=total_arguments,
             archive_evidence_count=archive_evidence_count,
+            evidence_present=evidence_present,
             synthesis_present=synthesis_present,
             analysis_map_present=analysis_map_present,
         )
@@ -4026,6 +4199,10 @@ from typing import Optional
 
 from thinker.types import Outcome, Position
 from thinker.tools.blocker import BlockerLedger
+
+
+def _serialize_blocker_status(status: str) -> str:
+    return "DEFERRED" if status == "DROPPED" else status
 
 
 class ProofBuilder:
@@ -4262,7 +4439,11 @@ class ProofBuilder:
         self._arguments = {}
         for a in arguments:
             if hasattr(a, 'argument_id'):
-                links = dim_blockers.get(a.dimension_id, []) if a.dimension_id else []
+                links = list(getattr(a, "blocker_link_ids", []))
+                if a.dimension_id:
+                    for blocker_id in dim_blockers.get(a.dimension_id, []):
+                        if blocker_id not in links:
+                            links.append(blocker_id)
                 self._arguments[a.argument_id] = {
                     "argument_id": a.argument_id, "round_origin": a.round_num,
                     "model_id": a.model, "text": a.text,
@@ -4286,13 +4467,13 @@ class ProofBuilder:
         """Set both numeric and semantic contradictions."""
         self._semantic_pass_executed = semantic_pass_executed
         self._contradictions_numeric = [
-            {"ctr_id": c.contradiction_id,  # DOD §12.1: "ctr_id" not "contradiction_id"
+            {"ctr_id": c.ctr_id,
              "detection_mode": c.detection_mode,
              "evidence_ref_a": c.evidence_ref_a, "evidence_ref_b": c.evidence_ref_b,
              "same_entity": c.same_entity, "same_timeframe": c.same_timeframe,
              "topic": c.topic, "severity": c.severity, "status": c.status,
              "justification": c.justification, "linked_claim_ids": c.linked_claim_ids}
-            if hasattr(c, 'contradiction_id') else c
+            if hasattr(c, 'ctr_id') else c
             for c in numeric
         ]
         self._contradictions_semantic = [
@@ -4354,20 +4535,33 @@ class ProofBuilder:
         blocker_summary = {"total_blockers": 0, "by_status": {}, "by_kind": {}, "open_at_end": 0}
         if self._blocker_ledger:
             for b in self._blocker_ledger.blockers:
+                serialized_history = []
+                for entry in b.status_history:
+                    status = entry.get("status")
+                    serialized_history.append({
+                        **entry,
+                        "status": _serialize_blocker_status(status) if status else status,
+                    })
                 blocker_list.append({
                     "blocker_id": b.blocker_id,
                     "type": b.kind.value,  # DOD §19: "type" not "kind"
                     "severity": b.severity,
                     "source_dimension": b.source,
                     "detected_round": b.detected_round,
-                    "status": b.status.value,
-                    "status_history": b.status_history,
+                    "status": _serialize_blocker_status(b.status.value),
+                    "status_history": serialized_history,
                     "models_involved": b.models_involved,
                     "linked_ids": b.evidence_ids,  # DOD §19: "linked_ids" not "evidence_ids"
                     "detail": b.detail,
                     "resolution_summary": b.resolution_note,  # DOD §19: "resolution_summary"
                 })
             blocker_summary = self._blocker_ledger.summary()
+            if blocker_summary.get("by_status"):
+                by_status = {}
+                for status, count in blocker_summary["by_status"].items():
+                    serialized = _serialize_blocker_status(status)
+                    by_status[serialized] = by_status.get(serialized, 0) + count
+                blocker_summary = {**blocker_summary, "by_status": by_status}
 
         proof = {
             # --- DOD §19 canonical keys ---
@@ -4870,8 +5064,8 @@ def check_synthesis_residue(
 
     # Check contradiction IDs
     for c in contradictions:
-        if c.contradiction_id not in report:
-            omissions.append({"type": "contradiction", "id": c.contradiction_id})
+        if c.ctr_id not in report:
+            omissions.append({"type": "contradiction", "id": c.ctr_id})
 
     # Check unaddressed argument IDs
     for a in unaddressed_arguments:
@@ -4918,7 +5112,7 @@ def check_disposition_coverage(
 
     for c in contradictions_numeric:
         if c.status not in ("RESOLVED", "NON_MATERIAL"):
-            required_targets.append(("CONTRADICTION", c.contradiction_id))
+            required_targets.append(("CONTRADICTION", c.ctr_id))
 
     for c in contradictions_semantic:
         if c.status.value not in ("RESOLVED", "NON_MATERIAL"):
@@ -5320,12 +5514,12 @@ def _register_argument_tracker(): pass
 
 
 ```python
-"""Perspective Cards — structured R1 output extraction (DoD v3.0 Section 7).
+"""Perspective Cards - structured R1 output extraction (DoD v3.0 Section 7).
 
 Parses R1 model outputs to extract 5 structured fields per model.
 Primary: regex extraction from R1 output (native).
-Fallback: post-hoc LLM extraction via Haiku → Sonnet (inferred).
-DOD §7.2: Exactly 4 cards required. DOD §7.3: Missing card → ERROR.
+Fallback: post-hoc LLM extraction via Haiku -> Sonnet (inferred).
+DOD Section 7.2: Exactly 4 cards required. DOD Section 7.3: Missing card -> ERROR.
 """
 from __future__ import annotations
 
@@ -5361,7 +5555,7 @@ RULES:
 - PRIMARY_FRAME: The model's primary analytical lens or way of looking at the question
 - HIDDEN_ASSUMPTION_ATTACKED: Which assumption the model is challenging or questioning
 - STAKEHOLDER_LENS: Whose perspective the model is representing
-- TIME_HORIZON: SHORT, MEDIUM, or LONG — based on the timeframe of the analysis
+- TIME_HORIZON: SHORT, MEDIUM, or LONG - based on the timeframe of the analysis
 - FAILURE_MODE: What could go wrong with the model's recommended approach
 
 Output EXACTLY these 5 lines and nothing else:
@@ -5431,9 +5625,9 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
     """Extract perspective cards from R1 model outputs.
 
     Phase 1: regex extraction (native).
-    Phase 2: for models with missing fields, post-hoc LLM extraction via Haiku → Sonnet.
-    DOD §7.2: Exactly N cards required (one per R1 model).
-    DOD §7.3: Missing card → ERROR.
+    Phase 2: for models with missing fields, post-hoc LLM extraction via Haiku -> Sonnet.
+    DOD Section 7.2: Exactly N cards required (one per R1 model).
+    DOD Section 7.3: Missing card -> ERROR.
     """
     from thinker.types import BrainError
 
@@ -5445,8 +5639,8 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
         if not text.strip():
             raise BrainError(
                 "perspective_cards",
-                f"Model {model_id} produced no R1 output — zero tolerance",
-                detail="DOD §7.3: Missing card → ERROR.",
+                f"Model {model_id} produced no R1 output - zero tolerance",
+                detail="DOD Section 7.3: Missing card -> ERROR.",
             )
 
         fields = _extract_fields_regex(text)
@@ -5463,34 +5657,28 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
     # Phase 2: post-hoc LLM extraction for models with missing fields
     if needs_extraction and llm_client:
         async def _extract_one(model_id: str, text: str, native_fields: dict[str, str]) -> PerspectiveCard | None:
-            missing = [f for f in REQUIRED_FIELDS if not native_fields.get(f)]
+            merged = dict(native_fields)
+            provenance = {f: "native" for f in REQUIRED_FIELDS if native_fields.get(f)}
 
             # Try Haiku first, Sonnet as fallback
             for extractor in ("haiku", "sonnet"):
                 inferred = await _extract_fields_llm(llm_client, extractor, text)
                 if inferred:
-                    # Merge: native fields take priority, fill missing with inferred
-                    # EXCEPTION: hidden_assumption_attacked must NEVER be inferred
-                    # (Brain V9 round 20: systematic hallucination risk — set NOT_STATED)
-                    merged = dict(native_fields)
-                    provenance = {}
+                    # Merge: native fields take priority, fill other gaps with inferred values.
                     for f in REQUIRED_FIELDS:
-                        if native_fields.get(f):
-                            provenance[f] = "native"
-                        elif f == "hidden_assumption_attacked":
-                            merged[f] = "NOT_STATED"
-                            provenance[f] = "not_stated"
-                        elif inferred.get(f):
+                        if merged.get(f):
+                            continue
+                        if f != "hidden_assumption_attacked" and inferred.get(f):
                             merged[f] = inferred[f]
                             provenance[f] = f"inferred:{extractor}"
-                        else:
-                            provenance[f] = "missing"
 
-                    still_missing = [f for f in REQUIRED_FIELDS if not merged.get(f)]
-                    if not still_missing:
-                        return _build_card(model_id, merged, provenance)
-                    # If still missing fields, try next extractor
-                    native_fields = merged  # carry over any fields we did get
+            if not merged.get("hidden_assumption_attacked"):
+                merged["hidden_assumption_attacked"] = "NOT_STATED"
+                provenance["hidden_assumption_attacked"] = "not_stated"
+
+            still_missing = [f for f in REQUIRED_FIELDS if not merged.get(f)]
+            if not still_missing:
+                return _build_card(model_id, merged, provenance)
 
             return None
 
@@ -5509,12 +5697,12 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
                 "perspective_cards",
                 f"Failed to extract perspective cards for: {failed_models} "
                 f"(regex and LLM extraction both failed)",
-                detail=f"DOD §7.2-7.3: All {len(r1_texts)} cards required. "
+                detail=f"DOD Section 7.2-7.3: All {len(r1_texts)} cards required. "
                        f"Post-hoc extraction via Haiku+Sonnet could not produce valid fields.",
             )
 
     elif needs_extraction and not llm_client:
-        # No LLM client — fall back to majority threshold (legacy mode)
+        # No LLM client - fall back to majority threshold (legacy mode)
         min_required = max(2, len(r1_texts) // 2)
         if len(cards) < min_required:
             nc_models = [mid for mid, _, _ in needs_extraction]
@@ -5522,15 +5710,15 @@ async def extract_perspective_cards(r1_texts: dict[str, str], llm_client=None) -
                 "perspective_cards",
                 f"Only {len(cards)}/{len(r1_texts)} models produced valid perspective cards "
                 f"(minimum {min_required} required, no LLM client for post-hoc extraction)",
-                detail=f"DOD §7.3: Missing card → ERROR. Non-compliant: {nc_models}",
+                detail=f"DOD Section 7.3: Missing card -> ERROR. Non-compliant: {nc_models}",
             )
 
-    # DOD §7.2: exactly N cards required
+    # DOD Section 7.2: exactly N cards required
     if len(cards) != len(r1_texts):
         raise BrainError(
             "perspective_cards",
             f"Only {len(cards)}/{len(r1_texts)} perspective cards produced",
-            detail="DOD §7.2: Exactly one card per R1 model required.",
+            detail="DOD Section 7.2: Exactly one card per R1 model required.",
         )
 
     return cards
@@ -6324,7 +6512,7 @@ class BlockerLedger:
         self._update_status(blocker_id, BlockerStatus.DEFERRED, round_num, trigger, note)
 
     def drop(self, blocker_id: str, round_num: int, trigger: str, note: str = ""):
-        self._update_status(blocker_id, BlockerStatus.DROPPED, round_num, trigger, note)
+        self._update_status(blocker_id, BlockerStatus.DEFERRED, round_num, trigger, note)
 
     def open_blockers(self) -> list[Blocker]:
         return [b for b in self.blockers if b.status == BlockerStatus.OPEN]
@@ -6471,7 +6659,7 @@ def detect_contradiction(
     exclusive_b = nums_b - nums_a
     severity = "HIGH" if exclusive_a and exclusive_b else "MEDIUM"
     return Contradiction(
-        contradiction_id=f"CTR{_CONTRADICTION_COUNTER:03d}",
+        ctr_id=f"CTR{_CONTRADICTION_COUNTER:03d}",
         evidence_ids=[item_a.evidence_id, item_b.evidence_id],
         topic=item_a.topic,
         severity=severity,

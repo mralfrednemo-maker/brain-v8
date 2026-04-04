@@ -7,7 +7,7 @@ from thinker.types import (
     PremiseFlagSeverity, PremiseFlagRouting, DimensionSeedResult, DimensionItem,
     StabilityResult, FrameInfo, FrameType, FrameSurvivalStatus,
     AssumptionVerifiability, CriticalAssumption, AnalysisDebug, AnalysisMap,
-    ResidueVerification, SynthesisPacket, UngroundedStatItem,
+    ResidueVerification, SynthesisPacket, UngroundedStatItem, UngroundedStatResult,
 )
 from thinker.config import ROUND_TOPOLOGY, MODEL_REGISTRY, BrainConfig
 
@@ -215,7 +215,15 @@ def test_gate2_assessment_rule_trace():
 
 def test_missing_schema_dataclasses_exist():
     assert UngroundedStatItem(claim_id="UG-1", text="42%").to_dict()["claim_id"] == "UG-1"
+    assert UngroundedStatResult(items=[UngroundedStatItem(claim_id="UG-1", text="42%")]).to_dict()["items"][0]["claim_id"] == "UG-1"
     assert SynthesisPacket(packet_complete=True).to_dict()["packet_complete"] is True
     assert ResidueVerification().to_dict()["coverage_pass"] is True
-    assert AnalysisMap().to_dict()["header"] == "EXPLORATORY MAP - NOT A DECISION"
+    assert AnalysisMap().to_dict()["header"] == "EXPLORATORY MAP — NOT A DECISION"
     assert AnalysisDebug(debug_mode=True).to_dict()["debug_mode"] is True
+
+
+def test_brain_error_defaults_to_pipeline_error_class():
+    from thinker.types import BrainError
+
+    err = BrainError("stage", "boom")
+    assert err.error_class == "PIPELINE"

@@ -1,6 +1,9 @@
 """Tests for proof.json builder."""
 from thinker.proof import ProofBuilder
-from thinker.types import AcceptanceStatus, Argument, BlockerKind, Confidence, Outcome, Position
+from thinker.types import (
+    AcceptanceStatus, Argument, BlockerKind, Confidence, Outcome, Position,
+    UngroundedStatItem, UngroundedStatResult,
+)
 from thinker.tools.blocker import BlockerLedger
 
 
@@ -214,14 +217,34 @@ class TestProofV9:
         proof = pb.build()
         assert proof["arguments"]["ARG-1"]["blocker_link_ids"] == ["BLK-ARG"]
 
+    def test_argument_wire_format_uses_model_id(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_arguments([Argument("ARG-1", 1, "r1", "text")])
+        wire = pb.build()["arguments"]["ARG-1"]
+        assert wire["model_id"] == "r1"
+        assert "model" not in wire
+
     def test_blocker_wire_format_uses_dod_field_names(self):
         pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
         ledger = BlockerLedger()
         blocker = ledger.add(kind=BlockerKind.EVIDENCE_GAP, source="dim", detected_round=1)
-        ledger.drop(blocker.blocker_id, 2, "obsolete")
+        ledger.drop(blocker.blocker_id, 2, "obsolete", "Deferred pending more evidence")
         pb.set_blocker_ledger(ledger)
         proof = pb.build()
         wire = proof["blockers"][0]
         assert "type" in wire
         assert "linked_ids" in wire
+        assert wire["resolution_summary"] == "Deferred pending more evidence"
         assert wire["status"] == "DEFERRED"
+
+    def test_ungrounded_stats_container_uses_items_and_execution_flags(self):
+        pb = ProofBuilder(run_id="test", brief="b", rounds_requested=4)
+        pb.set_ungrounded_stats(UngroundedStatResult(
+            items=[UngroundedStatItem(claim_id="UG-1", text="42%")],
+            post_r1_executed=True,
+            post_r2_executed=False,
+        ))
+        wire = pb.build()["ungrounded_stats"]
+        assert wire["post_r1_executed"] is True
+        assert wire["post_r2_executed"] is False
+        assert wire["items"][0]["claim_id"] == "UG-1"

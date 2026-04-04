@@ -156,7 +156,12 @@ async def run_preflight(client, brief: str) -> PreflightResult:
             assumptions.append(CriticalAssumption(
                 assumption_id=a.get("assumption_id", "CA-?"),
                 text=a.get("text", ""),
-                verifiability=AssumptionVerifiability(a.get("verifiability", "UNKNOWN")),
+                verifiability=AssumptionVerifiability(
+                    {"VERIFIED": "VERIFIABLE"}.get(
+                        a.get("verifiability", "UNKNOWN"),
+                        a.get("verifiability", "UNKNOWN")
+                    )
+                ),
                 material=a.get("material", True),
             ))
 

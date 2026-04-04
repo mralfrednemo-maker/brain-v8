@@ -193,3 +193,17 @@ class TestBrainE2E:
         except BrainError as e:
             # DOD-compliant ERROR (e.g. disposition coverage) — verify partial proof exists
             assert hasattr(e, 'partial_proof')
+
+    async def test_partial_proof_uses_explicit_brain_error_class(self):
+        mock = MockLLMClient()
+        brain = Brain(config=BrainConfig(rounds=3), llm_client=mock, search_fn=None)
+
+        async def _boom(*args, **kwargs):
+            raise BrainError("test_stage", "synthetic failure", error_class="FATAL_INTEGRITY")
+
+        brain._run_pipeline = _boom
+
+        with pytest.raises(BrainError) as exc:
+            await brain.run("brief")
+
+        assert exc.value.partial_proof["error_class"] == "FATAL_INTEGRITY"
