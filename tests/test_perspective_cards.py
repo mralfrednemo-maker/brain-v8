@@ -18,7 +18,7 @@ def test_extract_cards_from_r1():
 
 
 def test_extract_cards_missing_fields_raises_error():
-    """DOD §7.3 + zero tolerance: missing perspective card fields → ERROR."""
+    """DOD §7.3 + zero tolerance: if too few models produce cards → ERROR."""
     from thinker.perspective_cards import extract_perspective_cards
     r1_texts = {
         "kimi": "Some analysis without structured fields",
@@ -26,7 +26,7 @@ def test_extract_cards_missing_fields_raises_error():
         "reasoner": "Third analysis",
         "glm5": "Fourth analysis",
     }
-    with pytest.raises(BrainError, match="missing perspective card fields"):
+    with pytest.raises(BrainError, match="produced perspective cards"):
         extract_perspective_cards(r1_texts)
 
 

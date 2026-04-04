@@ -44,6 +44,7 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
     from thinker.types import BrainError
 
     cards = []
+    noncompliant_models = []
     required_fields = ["primary_frame", "hidden_assumption_attacked",
                        "stakeholder_lens", "time_horizon", "failure_mode"]
 
@@ -63,11 +64,9 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             )
         missing = [f for f in required_fields if not fields.get(f)]
         if missing:
-            raise BrainError(
-                "perspective_cards",
-                f"Model {model_id} missing perspective card fields: {missing}",
-                detail=f"DOD §7.3: Missing field → ERROR. Extracted: {list(fields.keys())}",
-            )
+            # Track non-compliant models; enforce minimum card count after loop
+            noncompliant_models.append((model_id, missing))
+            continue
 
         time_horizon = _parse_time_horizon(fields["time_horizon"])
         obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
@@ -82,6 +81,17 @@ def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]
             coverage_obligation=obligation,
         )
         cards.append(card)
+
+    # DOD §7.3: zero tolerance — at least half the R1 models must produce valid cards
+    min_required = max(2, len(r1_texts) // 2)
+    if len(cards) < min_required:
+        nc_details = "; ".join(f"{m}: missing {f}" for m, f in noncompliant_models)
+        raise BrainError(
+            "perspective_cards",
+            f"Only {len(cards)}/{len(r1_texts)} models produced perspective cards "
+            f"(minimum {min_required} required)",
+            detail=f"DOD §7.3: Missing card → ERROR. Non-compliant: {nc_details}",
+        )
 
     return cards
 
