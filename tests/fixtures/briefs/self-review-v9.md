@@ -1059,7 +1059,7 @@ Brain V8 v3.0 is Done only if ALL of the following are true:
 ---
 
 
-## Source Code
+## Source Code (core modules — full implementation)
 
 
 ### thinker/types.py
@@ -2179,9 +2179,17 @@ class Brain:
             "max_search_queries_per_phase": self._config.max_search_queries_per_phase,
             "search_after_rounds": self._config.search_after_rounds,
         })
+        # DOD §19: stage_integrity and budgeting required "always" — set defaults
+        # so they're present even on early NEED_MORE returns
+        proof.set_stage_integrity(required=[], order=[], fatal=[])
+        proof.set_budgeting({
+            "effort_tier": "STANDARD", "per_round_token_budgets": {},
+            "search_budget_policy": "NONE", "speculative_expansion_allowed": False,
+            "high_authority_evidence_required": False,
+            "short_circuit_taken": False, "fallback_from_short_circuit": False,
+        })
+
         # Truncated brief for Sonnet extraction stages (framing, synthesis, etc.)
-        # Deliberating models (R1/Reasoner/GLM5/Kimi) get the full brief.
-        # Sonnet extraction stages only need the question context, not full source code.
         brief_for_sonnet = brief[:15000] if len(brief) > 15000 else brief
         brief_keywords = {w.lower() for w in brief.split() if len(w) >= 4}
         search_log_entries: list = []
@@ -3181,6 +3189,9 @@ class Brain:
         # --- Final: Wire all remaining proof sections ---
         outcome = gate2.outcome
         proof.set_outcome(outcome, agreement, outcome_class)
+        # DOD §1.5: ERROR implies error_class in {INFRASTRUCTURE, FATAL_INTEGRITY}
+        if outcome == Outcome.ERROR:
+            proof.set_error_class("FATAL_INTEGRITY")
         proof.set_final_status("COMPLETE")
         proof.set_evidence_count(len(evidence.items))
 
@@ -3435,1679 +3446,6 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-
-```
-
-
-### thinker/preflight.py
-
-
-```python
-"""PreflightAssessment — merged Gate 1 + CS Audit (DoD v3.0 Section 4).
-
-Single Sonnet call. Handles admission, modality selection, effort calibration,
-defect typing, hidden-context discovery, assumption surfacing, and search scope.
-
-Replaces the separate gate1.py for V9. gate1.py is kept for backward compat
-but preflight.py is the canonical admission stage.
-"""
-from __future__ import annotations
-
-import json
-
-from thinker.pipeline import pipeline_stage
-from thinker.types import (
-    Answerability, AssumptionVerifiability, BrainError, CriticalAssumption,
-    EffortTier, HiddenContextGap, Modality, PremiseFlag, PremiseFlagRouting,
-    PremiseFlagSeverity, PremiseFlagType, PreflightResult, QuestionClass,
-    SearchScope, StakesClass,
-)
-
-PREFLIGHT_PROMPT = """You are a preflight assessor for a multi-model deliberation system.
-
-Analyze the brief below and produce a structured JSON assessment. Your job is to:
-1. Determine if the brief is answerable as-is
-2. Classify the question type, stakes, and required effort
-3. Detect premise defects, hidden context gaps, and critical assumptions
-4. Recommend search scope and modality (DECIDE vs ANALYSIS)
-
-## Brief
-{brief}
-
-## Output Format — STRICT JSON (no markdown, no commentary, just the JSON object)
-
-{{
-  "answerability": "ANSWERABLE | NEED_MORE | INVALID_FORM",
-  "question_class": "TRIVIAL | WELL_ESTABLISHED | OPEN | AMBIGUOUS",
-  "stakes_class": "LOW | STANDARD | HIGH",
-  "effort_tier": "SHORT_CIRCUIT | STANDARD | ELEVATED",
-  "modality": "DECIDE | ANALYSIS",
-  "search_scope": "NONE | TARGETED | BROAD",
-  "exploration_required": true/false,
-  "short_circuit_allowed": true/false,
-  "fatal_premise": true/false,
-  "follow_up_questions": ["specific question 1", ...],
-  "premise_flags": [
-    {{
-      "flag_id": "PFLAG-1",
-      "flag_type": "INTERNAL_CONTRADICTION | UNSUPPORTED_ASSUMPTION | AMBIGUITY | IMPOSSIBLE_REQUEST | FRAMING_DEFECT",
-      "severity": "INFO | WARNING | CRITICAL",
-      "summary": "description of the defect",
-      "routing": "REQUESTER_FIXABLE | MANAGEABLE_UNKNOWN | FRAMING_DEFECT | FATAL_PREMISE"
-    }}
-  ],
-  "hidden_context_gaps": [
-    {{
-      "gap_id": "GAP-1",
-      "description": "what context is missing",
-      "impact_if_unresolved": "what happens if we proceed without it",
-      "material": true/false
-    }}
-  ],
-  "critical_assumptions": [
-    {{
-      "assumption_id": "CA-1",
-      "text": "what we're assuming",
-      "verifiability": "VERIFIABLE | UNVERIFIABLE | FALSE | UNKNOWN",
-      "material": true/false
-    }}
-  ],
-  "reasoning": "one paragraph explaining your assessment"
-}}
-
-## Rules
-- ANSWERABLE: question is specific, has enough context, clear deliverable
-- NEED_MORE: critical context missing, ambiguous, or fatal premise
-- INVALID_FORM: question is malformed or nonsensical (maps to NEED_MORE outcome, NOT ERROR)
-- short_circuit_allowed: ONLY true when question_class in [TRIVIAL, WELL_ESTABLISHED] AND stakes_class = LOW AND no CRITICAL premise flags AND no material hidden_context_gaps
-- effort_tier = ELEVATED when: stakes_class = HIGH OR question_class = AMBIGUOUS OR any CRITICAL premise flag
-- Surface 3-5 critical unstated assumptions. If any is UNVERIFIABLE or FALSE and material, answerability should be NEED_MORE
-- ANALYSIS modality: when the question asks for exploration/mapping rather than a verdict
-- DECIDE modality: when the question asks for a recommendation/assessment/verdict"""
-
-
-@pipeline_stage(
-    name="PreflightAssessment",
-    description="Merged Gate 1 + CS Audit. Single Sonnet call. Handles admission, modality, effort, defect routing, assumptions, search scope.",
-    stage_type="gate",
-    order=1,
-    provider="sonnet",
-    inputs=["brief"],
-    outputs=["PreflightResult"],
-    logic="Parse JSON. ANSWERABLE->admit. NEED_MORE->reject with questions. INVALID_FORM->NEED_MORE. Parse fail->BrainError.",
-    failure_mode="LLM failure or parse failure: BrainError (zero tolerance).",
-    cost="1 Sonnet call",
-    stage_id="preflight",
-)
-async def run_preflight(client, brief: str) -> PreflightResult:
-    """Run the PreflightAssessment stage.
-
-    Returns PreflightResult on success.
-    Raises BrainError on LLM failure or parse failure.
-    """
-    prompt = PREFLIGHT_PROMPT.format(brief=brief)
-    resp = await client.call("sonnet", prompt)
-
-    if not resp.ok:
-        raise BrainError("preflight", f"PreflightAssessment LLM call failed: {resp.error}")
-
-    # Parse JSON response
-    text = resp.text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-    if text.endswith("```"):
-        text = "\n".join(text.split("\n")[:-1])
-    text = text.strip()
-
-    try:
-        from thinker.types import extract_json
-        data = extract_json(text)
-    except json.JSONDecodeError as e:
-        raise BrainError("preflight", f"Failed to parse PreflightAssessment JSON: {e}",
-                         detail=resp.text[:500])
-
-    # Validate required fields
-    required = ["answerability", "question_class", "stakes_class", "effort_tier", "modality"]
-    for field in required:
-        if field not in data:
-            raise BrainError("preflight", f"Missing required field: {field}",
-                             detail=f"Got keys: {list(data.keys())}")
-
-    # Build result
-    try:
-        premise_flags = []
-        for pf in data.get("premise_flags", []):
-            premise_flags.append(PremiseFlag(
-                flag_id=pf.get("flag_id", "PFLAG-?"),
-                flag_type=PremiseFlagType(pf.get("flag_type", "FRAMING_DEFECT")),
-                severity=PremiseFlagSeverity(pf.get("severity", "WARNING")),
-                summary=pf.get("summary", ""),
-                routing=PremiseFlagRouting(pf.get("routing", "MANAGEABLE_UNKNOWN")),
-                blocking=pf.get("severity") == "CRITICAL",
-            ))
-
-        hidden_gaps = []
-        for g in data.get("hidden_context_gaps", []):
-            hidden_gaps.append(HiddenContextGap(
-                gap_id=g.get("gap_id", "GAP-?"),
-                description=g.get("description", ""),
-                impact_if_unresolved=g.get("impact_if_unresolved", ""),
-                material=g.get("material", False),
-            ))
-
-        assumptions = []
-        for a in data.get("critical_assumptions", []):
-            assumptions.append(CriticalAssumption(
-                assumption_id=a.get("assumption_id", "CA-?"),
-                text=a.get("text", ""),
-                verifiability=AssumptionVerifiability(a.get("verifiability", "UNKNOWN")),
-                material=a.get("material", True),
-            ))
-
-        result = PreflightResult(
-            executed=True,
-            parse_ok=True,
-            answerability=Answerability(data["answerability"]),
-            question_class=QuestionClass(data["question_class"]),
-            stakes_class=StakesClass(data["stakes_class"]),
-            effort_tier=EffortTier(data["effort_tier"]),
-            modality=Modality(data["modality"]),
-            search_scope=SearchScope(data.get("search_scope", "TARGETED")),
-            exploration_required=data.get("exploration_required", False),
-            short_circuit_allowed=data.get("short_circuit_allowed", False),
-            fatal_premise=data.get("fatal_premise", False),
-            follow_up_questions=data.get("follow_up_questions", []),
-            premise_flags=premise_flags,
-            hidden_context_gaps=hidden_gaps,
-            critical_assumptions=assumptions,
-            reasoning=data.get("reasoning", ""),
-        )
-
-    except (ValueError, KeyError) as e:
-        raise BrainError("preflight", f"Invalid enum value in PreflightAssessment: {e}",
-                         detail=resp.text[:500])
-
-    # Enforce admission guards (DoD v3.0 Section 4.4)
-    if result.short_circuit_allowed:
-        if result.question_class not in (QuestionClass.TRIVIAL, QuestionClass.WELL_ESTABLISHED):
-            result.short_circuit_allowed = False
-        if result.stakes_class != StakesClass.LOW:
-            result.short_circuit_allowed = False
-        if result.has_critical_flags:
-            result.short_circuit_allowed = False
-        if result.has_material_unresolved_gaps:
-            result.short_circuit_allowed = False
-
-    # Enforce elevated effort
-    if (result.stakes_class == StakesClass.HIGH
-            or result.question_class == QuestionClass.AMBIGUOUS
-            or result.has_critical_flags):
-        if result.effort_tier != EffortTier.ELEVATED:
-            result.effort_tier = EffortTier.ELEVATED
-
-    return result
-
-```
-
-
-### thinker/dimension_seeder.py
-
-
-```python
-"""Dimension Seeder — pre-R1 exploration dimension generation (DoD v3.0 Section 6).
-
-One Sonnet call generates 3-5 mandatory exploration dimensions from the brief.
-Injected into all R1 prompts. Models must address all dimensions or justify irrelevance.
-"""
-from __future__ import annotations
-
-import json
-
-from thinker.pipeline import pipeline_stage
-from thinker.types import BrainError, DimensionItem, DimensionSeedResult
-
-SEEDER_PROMPT = """You are an exploration dimension generator for a multi-model deliberation system.
-
-Given the brief below, identify 3-5 mandatory exploration dimensions that models MUST address in their analysis. Each dimension is a distinct aspect or lens through which the question should be examined.
-
-## Brief
-{brief}
-
-## Output Format — STRICT JSON (no markdown, no commentary)
-
-{{
-  "dimensions": [
-    {{
-      "dimension_id": "DIM-1",
-      "name": "short descriptive name",
-      "mandatory": true
-    }}
-  ]
-}}
-
-## Rules
-- Generate exactly 3-5 dimensions. No fewer than 3, no more than 5.
-- Each dimension should be substantively different (not overlapping).
-- Dimensions should cover: technical, organizational, risk, ethical/legal, and operational aspects as relevant.
-- Use short, descriptive names (2-5 words each).
-- All dimensions are mandatory=true."""
-
-
-@pipeline_stage(
-    name="Dimension Seeder",
-    description="Pre-R1 Sonnet call generating 3-5 mandatory exploration dimensions. Injected into all R1 prompts.",
-    stage_type="seeder",
-    order=2,
-    provider="sonnet",
-    inputs=["brief"],
-    outputs=["DimensionSeedResult"],
-    logic="Parse JSON. 3-5 dimensions required. <3 -> BrainError.",
-    failure_mode="LLM failure or parse failure or <3 dimensions: BrainError.",
-    cost="1 Sonnet call",
-    stage_id="dimensions",
-)
-async def run_dimension_seeder(client, brief: str) -> DimensionSeedResult:
-    """Run the Dimension Seeder. Returns DimensionSeedResult."""
-    # Truncate brief for seeder — it needs the question, not full source code
-    brief_for_seeder = brief[:15000] if len(brief) > 15000 else brief
-    prompt = SEEDER_PROMPT.format(brief=brief_for_seeder)
-    resp = await client.call("sonnet", prompt)
-
-    if not resp.ok:
-        raise BrainError("dimension_seeder", f"Dimension Seeder LLM call failed: {resp.error}")
-
-    text = resp.text.strip()
-    if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-    if text.endswith("```"):
-        text = "\n".join(text.split("\n")[:-1])
-    text = text.strip()
-
-    try:
-        from thinker.types import extract_json
-        data = extract_json(text)
-    except json.JSONDecodeError as e:
-        raise BrainError("dimension_seeder", f"Failed to parse Dimension Seeder JSON: {e}",
-                         detail=resp.text[:500])
-
-    dims_data = data.get("dimensions", [])
-    if not dims_data:
-        raise BrainError("dimension_seeder", "No dimensions in response",
-                         detail=resp.text[:500])
-
-    # Cap at 5
-    dims_data = dims_data[:5]
-
-    items = []
-    for d in dims_data:
-        items.append(DimensionItem(
-            dimension_id=d.get("dimension_id", f"DIM-{len(items)+1}"),
-            name=d.get("name", "Unknown"),
-            mandatory=d.get("mandatory", True),
-        ))
-
-    if len(items) < 3:
-        raise BrainError("dimension_seeder",
-                         f"Fewer than 3 dimensions generated ({len(items)}). DoD requires 3-5.",
-                         detail=f"Got: {[d.name for d in items]}")
-
-    return DimensionSeedResult(
-        seeded=True,
-        parse_ok=True,
-        items=items,
-        dimension_count=len(items),
-        dimension_coverage_score=0.0,
-    )
-
-
-def format_dimensions_for_prompt(dimensions: list[DimensionItem]) -> str:
-    """Format dimensions for injection into R1 prompts."""
-    lines = ["## Mandatory Exploration Dimensions",
-             "You MUST address ALL of the following dimensions in your analysis.",
-             "If a dimension is genuinely irrelevant, explain why.\n"]
-    for d in dimensions:
-        lines.append(f"- **{d.dimension_id}: {d.name}**")
-    return "\n".join(lines)
-
-```
-
-
-### thinker/perspective_cards.py
-
-
-```python
-"""Perspective Cards — structured R1 output extraction (DoD v3.0 Section 7).
-
-Parses R1 model outputs to extract 5 structured fields per model.
-No LLM call — regex/text parsing only.
-"""
-from __future__ import annotations
-
-import re
-
-from thinker.types import CoverageObligation, PerspectiveCard, TimeHorizon
-
-# Coverage obligation assignments (fixed per model)
-_MODEL_OBLIGATIONS = {
-    "kimi": CoverageObligation.CONTRARIAN,
-    "r1": CoverageObligation.MECHANISM_ANALYSIS,
-    "reasoner": CoverageObligation.OPERATIONAL_RISK,
-    "glm5": CoverageObligation.OBJECTIVE_REFRAMING,
-}
-
-# Field patterns to extract from model output
-_FIELD_PATTERNS = {
-    "primary_frame": re.compile(r"PRIMARY_FRAME:\s*(.+)", re.IGNORECASE),
-    "hidden_assumption_attacked": re.compile(r"HIDDEN_ASSUMPTION_ATTACKED:\s*(.+)", re.IGNORECASE),
-    "stakeholder_lens": re.compile(r"STAKEHOLDER_LENS:\s*(.+)", re.IGNORECASE),
-    "time_horizon": re.compile(r"TIME_HORIZON:\s*(\w+)", re.IGNORECASE),
-    "failure_mode": re.compile(r"FAILURE_MODE:\s*(.+)", re.IGNORECASE),
-}
-
-
-def _parse_time_horizon(text: str) -> TimeHorizon:
-    text = text.strip().upper()
-    if text in ("SHORT", "SHORT-TERM", "SHORT_TERM"):
-        return TimeHorizon.SHORT
-    elif text in ("LONG", "LONG-TERM", "LONG_TERM"):
-        return TimeHorizon.LONG
-    return TimeHorizon.MEDIUM
-
-
-def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]:
-    """Extract perspective cards from R1 model outputs.
-
-    DOD §7.3: "Missing card or field → ERROR"
-    """
-    from thinker.types import BrainError
-
-    cards = []
-    required_fields = ["primary_frame", "hidden_assumption_attacked",
-                       "stakeholder_lens", "time_horizon", "failure_mode"]
-
-    for model_id, text in r1_texts.items():
-        fields = {}
-        for field_name, pattern in _FIELD_PATTERNS.items():
-            match = pattern.search(text)
-            if match:
-                fields[field_name] = match.group(1).strip()
-
-        # DOD §7.3 + zero-tolerance: missing card or field → ERROR
-        if not text.strip():
-            raise BrainError(
-                "perspective_cards",
-                f"Model {model_id} produced no R1 output — zero tolerance",
-                detail="DOD §7.3: Missing card → ERROR.",
-            )
-        missing = [f for f in required_fields if not fields.get(f)]
-        if missing:
-            raise BrainError(
-                "perspective_cards",
-                f"Model {model_id} missing perspective card fields: {missing}",
-                detail=f"DOD §7.3: Missing field → ERROR. Extracted: {list(fields.keys())}",
-            )
-
-        time_horizon = _parse_time_horizon(fields["time_horizon"])
-        obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
-
-        card = PerspectiveCard(
-            model_id=model_id,
-            primary_frame=fields["primary_frame"],
-            hidden_assumption_attacked=fields["hidden_assumption_attacked"],
-            stakeholder_lens=fields["stakeholder_lens"],
-            time_horizon=time_horizon,
-            failure_mode=fields["failure_mode"],
-            coverage_obligation=obligation,
-        )
-        cards.append(card)
-
-    return cards
-
-
-def format_perspective_card_instructions() -> str:
-    """Generate the perspective card instruction text for R1 prompts."""
-    return (
-        "\n## Structured Output Requirements (MANDATORY)\n"
-        "After your analysis, you MUST include these 5 fields on separate lines:\n\n"
-        "PRIMARY_FRAME: [your primary way of looking at this question]\n"
-        "HIDDEN_ASSUMPTION_ATTACKED: [which assumption you are challenging]\n"
-        "STAKEHOLDER_LENS: [whose perspective you are representing]\n"
-        "TIME_HORIZON: [SHORT | MEDIUM | LONG]\n"
-        "FAILURE_MODE: [what could go wrong with your recommended approach]\n"
-    )
-
-```
-
-
-### thinker/divergent_framing.py
-
-
-```python
-"""Divergent Framing — framing pass, frame survival, exploration stress (DoD v3.0 Section 8).
-
-Framing pass: Sonnet extracts alt frames from R1 outputs.
-Frame survival: 3-vote R2 drop (traceable), CONTESTED in R3/R4 (never dropped).
-Exploration stress: inject seed frames when R1 agreement > 0.75 on OPEN/HIGH.
-"""
-from __future__ import annotations
-
-import json
-from typing import Optional
-
-from thinker.pipeline import pipeline_stage
-from thinker.types import (
-    BrainError, CrossDomainAnalogy, DivergenceResult, FrameInfo,
-    FrameSurvivalStatus, FrameType, QuestionClass, StakesClass,
-)
-
-FRAMING_EXTRACT_PROMPT = """You are a framing analyst for a multi-model deliberation system.
-
-Given the R1 model outputs below, extract ALL material alternative frames (ways of looking at this question that differ from the obvious framing).
-
-## Brief
-{brief}
-
-## R1 Model Outputs
-{r1_texts_formatted}
-
-## Output Format — STRICT JSON (no markdown, no commentary)
-
-{{
-  "frames": [
-    {{
-      "frame_id": "FRAME-1",
-      "text": "description of the alternative frame",
-      "origin_model": "model_id that proposed this",
-      "frame_type": "INVERSION | OBJECTIVE_REWRITE | PREMISE_CHALLENGE | CROSS_DOMAIN_ANALOGY | OPPOSITE_STANCE | REMOVE_PROBLEM",
-      "material_to_outcome": true/false
-    }}
-  ],
-  "cross_domain_analogies": [
-    {{
-      "analogy_id": "ANA-1",
-      "source_domain": "domain the analogy comes from",
-      "target_claim_id": "claim this analogy supports/challenges",
-      "transfer_mechanism": "how the analogy applies"
-    }}
-  ]
-}}
-
-## Rules
-- Extract frames that are genuinely different from the default framing
-- A frame is material if it could change the outcome
-- Cross-domain analogies: look for when models draw parallels from other fields
-- Be generous: if in doubt, include it as a frame"""
-
-
-FRAME_SURVIVAL_PROMPT = """Evaluate whether each alternative frame survives this round of deliberation.
-
-## Active Frames
-{frames_formatted}
-
-## Round {round_num} Model Outputs
-{round_texts_formatted}
-
-## Output Format — STRICT JSON
-
-{{
-  "evaluations": [
-    {{
-      "frame_id": "FRAME-1",
-      "status": "ACTIVE | CONTESTED | DROPPED | ADOPTED | REBUTTED",
-      "drop_vote_models": ["model_id"],
-      "reasoning": "why this status"
-    }}
-  ]
-}}
-
-## Rules (Round {round_num})
-{survival_rules}"""
-
-
-@pipeline_stage(
-    name="Framing Pass",
-    description="Sonnet extracts alternative frames from R1 outputs. Tracks frame survival through rounds.",
-    stage_type="track",
-    order=5,
-    provider="sonnet",
-    inputs=["brief", "r1_texts"],
-    outputs=["DivergenceResult"],
-    logic="Extract frames. Track survival. 3-vote R2 drop. CONTESTED never dropped in R3/R4.",
-    failure_mode="LLM failure or parse failure: BrainError.",
-    cost="1-3 Sonnet calls",
-    stage_id="framing_pass",
-)
-async def run_framing_extract(client, brief: str, r1_texts: dict[str, str]) -> DivergenceResult:
-    """Extract alternative frames from R1 outputs."""
-    # Format R1 texts
-    r1_formatted = "\n\n".join(f"### {model}\n{text}" for model, text in r1_texts.items())
-    prompt = FRAMING_EXTRACT_PROMPT.format(brief=brief, r1_texts_formatted=r1_formatted)
-
-    resp = await client.call("sonnet", prompt)
-    if not resp.ok:
-        raise BrainError("framing_pass", f"Framing extract LLM call failed: {resp.error}")
-
-    text = resp.text.strip()
-    if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-    if text.endswith("```"):
-        text = "\n".join(text.split("\n")[:-1])
-    text = text.strip()
-
-    try:
-        from thinker.types import extract_json
-        data = extract_json(text)
-    except json.JSONDecodeError as e:
-        raise BrainError("framing_pass", f"Failed to parse framing extract JSON: {e}",
-                         detail=resp.text[:500])
-
-    frames = []
-    for f in data.get("frames", []):
-        try:
-            frame_type = FrameType(f.get("frame_type", "INVERSION"))
-        except ValueError:
-            frame_type = FrameType.INVERSION
-        frames.append(FrameInfo(
-            frame_id=f.get("frame_id", f"FRAME-{len(frames)+1}"),
-            text=f.get("text", ""),
-            origin_round=1,
-            origin_model=f.get("origin_model", ""),
-            frame_type=frame_type,
-            material_to_outcome=f.get("material_to_outcome", True),
-        ))
-
-    analogies = []
-    for a in data.get("cross_domain_analogies", []):
-        analogies.append(CrossDomainAnalogy(
-            analogy_id=a.get("analogy_id", f"ANA-{len(analogies)+1}"),
-            source_domain=a.get("source_domain", ""),
-            target_claim_id=a.get("target_claim_id", ""),
-            transfer_mechanism=a.get("transfer_mechanism", ""),
-        ))
-
-    return DivergenceResult(
-        required=True,
-        framing_pass_executed=True,
-        alt_frames=frames,
-        cross_domain_analogies=analogies,
-    )
-
-
-async def run_frame_survival_check(
-    client,
-    frames: list[FrameInfo],
-    round_texts: dict[str, str],
-    round_num: int,
-    is_analysis_mode: bool = False,
-) -> list[FrameInfo]:
-    """Check frame survival against a round's outputs.
-
-    R2: frame DROPPED only if 3+ traceable drop votes.
-    R3/R4: frames are never dropped, only CONTESTED.
-    """
-    if not frames:
-        return frames
-
-    active_frames = [f for f in frames if f.survival_status in
-                     (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
-    if not active_frames:
-        return frames
-
-    frames_formatted = "\n".join(
-        f"- {f.frame_id}: {f.text} (status: {f.survival_status.value})"
-        for f in active_frames
-    )
-    round_formatted = "\n\n".join(f"### {m}\n{t}" for m, t in round_texts.items())
-
-    if is_analysis_mode:
-        # DOD §18.2: ANALYSIS frames use EXPLORED/NOTED/UNEXPLORED, never dropped
-        rules = ("- ANALYSIS mode: frames are NEVER dropped.\n"
-                 "- Use statuses: EXPLORED (substantively investigated), NOTED (acknowledged but not deep), "
-                 "UNEXPLORED (identified but not investigated).\n"
-                 "- Do NOT use ACTIVE/CONTESTED/DROPPED in ANALYSIS mode.")
-    elif round_num == 2:
-        rules = "- A frame is DROPPED only if 3 or more models explicitly reject it with traceable reasoning.\n- A frame is CONTESTED if at least 1 model challenges it but fewer than 3.\n- A frame is ADOPTED if a model explicitly takes it up.\n- A frame is REBUTTED if substantively countered."
-    else:
-        rules = "- Frames are NEVER dropped in R3/R4. They can only be CONTESTED, ADOPTED, or remain ACTIVE.\n- CONTESTED frames stay CONTESTED (never downgraded to DROPPED)."
-
-    prompt = FRAME_SURVIVAL_PROMPT.format(
-        frames_formatted=frames_formatted,
-        round_num=round_num,
-        round_texts_formatted=round_formatted,
-        survival_rules=rules,
-    )
-
-    resp = await client.call("sonnet", prompt)
-    if not resp.ok:
-        raise BrainError(f"frame_survival_r{round_num}",
-                         f"Frame survival LLM call failed: {resp.error}")
-
-    text = resp.text.strip()
-    if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-    if text.endswith("```"):
-        text = "\n".join(text.split("\n")[:-1])
-    text = text.strip()
-
-    try:
-        from thinker.types import extract_json
-        data = extract_json(text)
-    except json.JSONDecodeError as e:
-        raise BrainError(f"frame_survival_r{round_num}",
-                         f"Failed to parse frame survival JSON: {e}",
-                         detail=resp.text[:500])
-
-    # Build lookup
-    eval_lookup = {e["frame_id"]: e for e in data.get("evaluations", [])}
-
-    for frame in frames:
-        ev = eval_lookup.get(frame.frame_id)
-        if not ev:
-            continue
-
-        try:
-            new_status = FrameSurvivalStatus(ev.get("status", "ACTIVE"))
-        except ValueError:
-            new_status = FrameSurvivalStatus.ACTIVE
-
-        # ANALYSIS mode: frames are NEVER dropped (DOD 18.2)
-        if is_analysis_mode and new_status == FrameSurvivalStatus.DROPPED:
-            new_status = FrameSurvivalStatus.CONTESTED
-
-        # R3/R4: never allow DROPPED
-        if round_num >= 3 and new_status == FrameSurvivalStatus.DROPPED:
-            new_status = FrameSurvivalStatus.CONTESTED
-
-        # R2: require 3 drop votes for DROPPED
-        if round_num == 2 and new_status == FrameSurvivalStatus.DROPPED:
-            drop_models = ev.get("drop_vote_models", [])
-            if len(drop_models) < 3:
-                new_status = FrameSurvivalStatus.CONTESTED
-            else:
-                frame.r2_drop_vote_count = len(drop_models)
-                frame.r2_drop_vote_refs = drop_models
-
-        frame.survival_status = new_status
-
-    return frames
-
-
-def check_exploration_stress(
-    agreement_ratio: float,
-    question_class: QuestionClass,
-    stakes_class: StakesClass,
-) -> bool:
-    """Check if exploration stress trigger should fire.
-
-    Returns True if R1 agreement > 0.75 on OPEN/HIGH questions.
-    """
-    if agreement_ratio <= 0.75:
-        return False
-    # DOD Section 8.3: OPEN OR HIGH (not AMBIGUOUS)
-    if question_class == QuestionClass.OPEN:
-        return True
-    if stakes_class == StakesClass.HIGH:
-        return True
-    return False
-
-
-def format_frames_for_prompt(frames: list[FrameInfo]) -> str:
-    """Format active/contested frames for injection into R2+ prompts."""
-    active = [f for f in frames if f.survival_status in
-              (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
-    if not active:
-        return ""
-
-    lines = ["## Alternative Frames (must address)",
-             "The following alternative frames have survived deliberation so far.\n"]
-    for f in active:
-        status_tag = f" [{f.survival_status.value}]" if f.survival_status == FrameSurvivalStatus.CONTESTED else ""
-        lines.append(f"- **{f.frame_id}**: {f.text}{status_tag}")
-
-    return "\n".join(lines)
-
-
-def format_r2_frame_enforcement() -> str:
-    """R2 frame enforcement instruction text."""
-    return (
-        "\n## Frame Engagement Requirements (MANDATORY for R2)\n"
-        "You MUST:\n"
-        "1. ADOPT at least one alternative frame and argue from its perspective\n"
-        "2. REBUT at least one alternative frame with substantive counter-arguments\n"
-        "3. GENERATE at least one NEW alternative frame not yet proposed\n"
-        "\nFor each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
-    )
-
-```
-
-
-### thinker/semantic_contradiction.py
-
-
-```python
-"""Semantic Contradiction — Sonnet-based contradiction detection (DoD v3.0 Section 12).
-
-Shortlists evidence pairs by topic cluster + polarity/entity/timeframe overlap.
-Runs Sonnet per pair to detect contradictions. Complements existing numeric detector.
-"""
-from __future__ import annotations
-
-import json
-from itertools import combinations
-
-from thinker.pipeline import pipeline_stage
-from thinker.types import (
-    BrainError, ContradictionSeverity, ContradictionStatus,
-    DetectionMode, EvidenceItem, SemanticContradiction,
-)
-
-CONTRADICTION_PROMPT = """You are a semantic contradiction detector.
-
-Evaluate whether these two evidence items contradict each other.
-
-## Evidence A
-- ID: {ev_a_id}
-- Topic: {ev_a_topic}
-- Fact: {ev_a_fact}
-- URL: {ev_a_url}
-
-## Evidence B
-- ID: {ev_b_id}
-- Topic: {ev_b_topic}
-- Fact: {ev_b_fact}
-- URL: {ev_b_url}
-
-## Output Format — STRICT JSON
-
-{{
-  "contradicts": true/false,
-  "severity": "LOW | MEDIUM | HIGH",
-  "same_entity": true/false,
-  "same_timeframe": true/false,
-  "justification": "explanation of the contradiction or why there is none"
-}}
-
-## Rules
-- Two items contradict if they make claims that cannot both be true
-- severity HIGH: directly opposite claims about the same entity/event
-- severity MEDIUM: inconsistent implications or conflicting metrics
-- severity LOW: tension but not direct contradiction
-- same_entity: both items discuss the same organization, product, event
-- same_timeframe: both items describe the same time period"""
-
-
-def shortlist_pairs(evidence_items: list[EvidenceItem]) -> list[tuple[EvidenceItem, EvidenceItem]]:
-    """Shortlist evidence pairs for semantic contradiction checking.
-
-    Criteria: same topic_cluster + any of:
-    - same entity (inferred from topic overlap)
-    - linked to claim/blocker/contradiction (referenced_by non-empty)
-    """
-    pairs = []
-    for a, b in combinations(evidence_items, 2):
-        # Must share topic cluster (or both have empty cluster)
-        if a.topic_cluster and b.topic_cluster and a.topic_cluster != b.topic_cluster:
-            continue
-
-        # At least one qualifying condition
-        qualifies = False
-
-        # Same topic suggests same entity
-        if a.topic and b.topic and (
-            a.topic.lower() == b.topic.lower()
-            or a.topic.lower() in b.topic.lower()
-            or b.topic.lower() in a.topic.lower()
-        ):
-            qualifies = True
-
-        # Both referenced by something
-        if a.referenced_by and b.referenced_by:
-            qualifies = True
-
-        # Both have high authority (important to check)
-        if a.authority_tier in ("HIGH", "AUTHORITATIVE") and b.authority_tier in ("HIGH", "AUTHORITATIVE"):
-            qualifies = True
-
-        if qualifies:
-            pairs.append((a, b))
-
-    return pairs
-
-
-@pipeline_stage(
-    name="Semantic Contradiction",
-    description="Sonnet-based contradiction detection on shortlisted evidence pairs.",
-    stage_type="track",
-    order=15,
-    provider="sonnet",
-    inputs=["evidence_pairs"],
-    outputs=["SemanticContradiction[]"],
-    logic="Shortlist by topic cluster. Sonnet per pair. Build CTR records.",
-    failure_mode="LLM failure: BrainError per pair.",
-    cost="1 Sonnet call per shortlisted pair",
-    stage_id="semantic_contradiction",
-)
-async def run_semantic_contradiction_pass(
-    client,
-    evidence_items: list[EvidenceItem],
-) -> list[SemanticContradiction]:
-    """Run semantic contradiction detection on shortlisted evidence pairs."""
-    pairs = shortlist_pairs(evidence_items)
-    if not pairs:
-        return []
-
-    contradictions = []
-    ctr_counter = 1
-
-    for ev_a, ev_b in pairs:
-        prompt = CONTRADICTION_PROMPT.format(
-            ev_a_id=ev_a.evidence_id, ev_a_topic=ev_a.topic,
-            ev_a_fact=ev_a.fact, ev_a_url=ev_a.url,
-            ev_b_id=ev_b.evidence_id, ev_b_topic=ev_b.topic,
-            ev_b_fact=ev_b.fact, ev_b_url=ev_b.url,
-        )
-
-        resp = await client.call("sonnet", prompt)
-        if not resp.ok:
-            raise BrainError("semantic_contradiction",
-                             f"Semantic contradiction LLM call failed for {ev_a.evidence_id} vs {ev_b.evidence_id}: {resp.error}")
-
-        text = resp.text.strip()
-        if text.startswith("```"):
-            text = "\n".join(text.split("\n")[1:])
-        if text.endswith("```"):
-            text = "\n".join(text.split("\n")[:-1])
-        text = text.strip()
-
-        try:
-            from thinker.types import extract_json
-            data = extract_json(text)
-        except json.JSONDecodeError as e:
-            raise BrainError("semantic_contradiction",
-                             f"Failed to parse contradiction JSON for {ev_a.evidence_id} vs {ev_b.evidence_id}: {e}",
-                             detail=resp.text[:500])
-
-        if data.get("contradicts", False):
-            try:
-                severity = ContradictionSeverity(data.get("severity", "MEDIUM"))
-            except ValueError:
-                severity = ContradictionSeverity.MEDIUM
-
-            contradictions.append(SemanticContradiction(
-                ctr_id=f"CTR-SEM-{ctr_counter}",
-                detection_mode=DetectionMode.SEMANTIC,
-                evidence_ref_a=ev_a.evidence_id,
-                evidence_ref_b=ev_b.evidence_id,
-                same_entity=data.get("same_entity", False),
-                same_timeframe=data.get("same_timeframe", False),
-                severity=severity,
-                status=ContradictionStatus.OPEN,
-                justification=data.get("justification", ""),
-            ))
-            ctr_counter += 1
-
-    return contradictions
-
-```
-
-
-### thinker/decisive_claims.py
-
-
-```python
-"""Decisive Claim Extraction — identifies claims that carry the conclusion (DESIGN-V3.md Section 3.2).
-
-One Sonnet call post-R4. Extracts claims that are material to the conclusion,
-with evidence bindings showing what supports each claim.
-"""
-from __future__ import annotations
-
-import json
-
-from thinker.pipeline import pipeline_stage
-from thinker.types import (
-    BrainError, DecisiveClaim, EvidenceSupportStatus,
-)
-
-CLAIM_EXTRACTION_PROMPT = """You are a decisive claim extractor for a multi-model deliberation system.
-
-Given the final round model outputs and available evidence, identify the 3-8 most decisive claims —
-the claims that CARRY the conclusion. A decisive claim is one where, if it were false, the conclusion
-would change.
-
-## Final Round Model Outputs
-{final_views}
-
-## Available Evidence
-{evidence_text}
-
-## Output Format — STRICT JSON (no markdown, no commentary)
-
-{{
-  "claims": [
-    {{
-      "claim_id": "DC-1",
-      "text": "the decisive claim in one sentence",
-      "material_to_conclusion": true,
-      "evidence_refs": ["E001", "E003"],
-      "evidence_support_status": "SUPPORTED | PARTIAL | UNSUPPORTED",
-      "supporting_model_ids": ["r1", "reasoner"]
-    }}
-  ]
-}}
-
-## Rules
-- 3-8 claims maximum. Focus on the ones that MATTER.
-- SUPPORTED: claim is directly backed by cited evidence
-- PARTIAL: some evidence exists but doesn't fully prove the claim
-- UNSUPPORTED: claim is asserted by models but has no evidence backing
-- evidence_refs: list evidence IDs (E001-E999) that support this claim. Empty list = UNSUPPORTED.
-- material_to_conclusion: true if removing this claim would change the outcome
-- supporting_model_ids: list which models made or endorsed this claim (e.g. ["r1", "reasoner"])"""
-
-
-@pipeline_stage(
-    name="Decisive Claim Extraction",
-    description="Post-R4 Sonnet call extracting 3-8 claims that carry the conclusion, with evidence bindings.",
-    stage_type="track",
-    order=16,
-    provider="sonnet",
-    inputs=["final_views", "evidence_text"],
-    outputs=["DecisiveClaim[]"],
-    logic="Parse JSON. 3-8 claims. Each with evidence refs and support status.",
-    failure_mode="LLM or parse failure: return empty list (non-fatal — degrades D4/stability but doesn't halt).",
-    cost="1 Sonnet call",
-    stage_id="decisive_claims",
-)
-async def extract_decisive_claims(
-    client,
-    final_views: dict[str, str],
-    evidence_text: str,
-) -> list[DecisiveClaim]:
-    """Extract decisive claims from final round outputs."""
-    views_formatted = "\n\n".join(f"### {m}\n{t}" for m, t in final_views.items())
-    prompt = CLAIM_EXTRACTION_PROMPT.format(
-        final_views=views_formatted,
-        evidence_text=evidence_text or "No evidence available.",
-    )
-
-    resp = await client.call("sonnet", prompt)
-    if not resp.ok:
-        # Non-fatal: decisive claims degrade gracefully
-        return []
-
-    text = resp.text.strip()
-    if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-    if text.endswith("```"):
-        text = "\n".join(text.split("\n")[:-1])
-    text = text.strip()
-
-    try:
-        from thinker.types import extract_json
-        data = extract_json(text)
-    except json.JSONDecodeError:
-        return []
-
-    claims = []
-    for c in data.get("claims", [])[:8]:
-        try:
-            support = EvidenceSupportStatus(c.get("evidence_support_status", "UNSUPPORTED"))
-        except ValueError:
-            support = EvidenceSupportStatus.UNSUPPORTED
-
-        claims.append(DecisiveClaim(
-            claim_id=c.get("claim_id", f"DC-{len(claims)+1}"),
-            text=c.get("text", ""),
-            material_to_conclusion=c.get("material_to_conclusion", True),
-            evidence_refs=c.get("evidence_refs", []),
-            evidence_support_status=support,
-            supporting_model_ids=c.get("supporting_model_ids", []),
-        ))
-
-    return claims
-
-```
-
-
-### thinker/synthesis_packet.py
-
-
-```python
-"""Synthesis Packet — controller-curated state bundle (DoD v3.0 Section 14).
-
-Builds the curated packet that synthesis receives instead of raw R4 views.
-Includes: final positions, argument lifecycle, frame summary, blocker summary,
-decisive claim bindings, contradiction summary, premise flag summary.
-"""
-from __future__ import annotations
-
-from typing import Optional
-
-from thinker.types import (
-    Argument, Blocker, BlockerStatus, Contradiction, CriticalAssumption,
-    DecisiveClaim, DivergenceResult, EvidenceItem, FrameInfo,
-    FrameSurvivalStatus, Position, PremiseFlag, SemanticContradiction,
-)
-
-
-def build_synthesis_packet(
-    brief: str,
-    final_positions: dict[str, Position],
-    arguments: list[Argument],
-    frames: list[FrameInfo],
-    blockers: list[Blocker],
-    decisive_claims: list[DecisiveClaim],
-    contradictions_numeric: list[Contradiction],
-    contradictions_semantic: list[SemanticContradiction],
-    premise_flags: list[PremiseFlag],
-    evidence_items: list[EvidenceItem],
-    max_arguments: int = 20,
-) -> dict:
-    """Build the curated synthesis packet.
-
-    Returns a dict suitable for injection into the synthesis prompt.
-    """
-    # Argument lifecycle — cap at max_arguments, prioritize open/material
-    sorted_args = sorted(arguments, key=lambda a: (not a.open, a.round_num))
-    capped_args = sorted_args[:max_arguments]
-    arg_entries = []
-    for a in capped_args:
-        arg_entries.append({
-            "argument_id": a.argument_id,
-            "round": a.round_num,
-            "model": a.model,
-            "text": a.text[:200],
-            "status": a.status.value,
-            "resolution_status": a.resolution_status.value,
-            "open": a.open,
-            "dimension_id": a.dimension_id,
-        })
-
-    # Frame summary
-    frame_entries = []
-    for f in frames:
-        frame_entries.append({
-            "frame_id": f.frame_id,
-            "text": f.text[:150],
-            "survival_status": f.survival_status.value,
-            "material": f.material_to_outcome,
-            "disposition": f.synthesis_disposition_status,
-        })
-
-    # Blocker summary
-    open_blockers = [b for b in blockers if b.status == BlockerStatus.OPEN]
-    blocker_entries = []
-    for b in open_blockers:
-        blocker_entries.append({
-            "blocker_id": b.blocker_id,
-            "kind": b.kind.value,
-            "detail": b.detail[:150],
-        })
-
-    # Decisive claim bindings
-    claim_entries = [c.to_dict() for c in decisive_claims] if decisive_claims else []
-
-    # Contradiction summary
-    ctr_entries = []
-    for c in contradictions_numeric:
-        if c.status != "RESOLVED":
-            ctr_entries.append({
-                "id": c.contradiction_id,
-                "mode": "NUMERIC",
-                "topic": c.topic,
-                "severity": c.severity,
-            })
-    for c in contradictions_semantic:
-        if c.status.value != "RESOLVED":
-            ctr_entries.append({
-                "id": c.ctr_id,
-                "mode": "SEMANTIC",
-                "severity": c.severity.value,
-                "justification": c.justification[:150],
-            })
-
-    # Premise flags
-    flag_entries = []
-    for f in premise_flags:
-        if not f.resolved:
-            flag_entries.append({
-                "flag_id": f.flag_id,
-                "type": f.flag_type.value,
-                "severity": f.severity.value,
-                "summary": f.summary[:150],
-            })
-
-    # DOD §14: packet_complete — all required sections present
-    packet_complete = (
-        len(final_positions) > 0
-        and len(arguments) > 0
-        and evidence_items is not None
-    )
-
-    return {
-        "packet_complete": packet_complete,
-        "brief_excerpt": brief[:500],
-        "final_positions": {
-            m: {"option": p.primary_option, "confidence": p.confidence.value}
-            for m, p in final_positions.items()
-        },
-        "argument_lifecycle": arg_entries,
-        "argument_count_total": len(arguments),
-        "argument_count_open": sum(1 for a in arguments if a.open),
-        "frame_summary": frame_entries,
-        "material_unrebutted_frames": sum(
-            1 for f in frames
-            if f.material_to_outcome
-            and f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)
-        ),
-        "blocker_summary": blocker_entries,
-        "open_blocker_count": len(open_blockers),
-        "decisive_claims": claim_entries,
-        "contradiction_summary": ctr_entries,
-        "premise_flag_summary": flag_entries,
-        "evidence_count": len(evidence_items),
-    }
-
-
-def format_synthesis_packet_for_prompt(packet: dict) -> str:
-    """Format the synthesis packet as text for the synthesis prompt."""
-    lines = ["## Curated State Bundle (AUTHORITATIVE — use this, not raw round views)\n"]
-
-    # Positions
-    lines.append("### Final Positions")
-    for model, pos in packet.get("final_positions", {}).items():
-        lines.append(f"- **{model}**: {pos['option']} [{pos['confidence']}]")
-
-    # Arguments
-    lines.append(f"\n### Argument Lifecycle ({packet.get('argument_count_open', 0)} open / {packet.get('argument_count_total', 0)} total)")
-    for a in packet.get("argument_lifecycle", [])[:10]:
-        status = "OPEN" if a["open"] else a["resolution_status"]
-        lines.append(f"- [{a['argument_id']}] {a['text'][:100]}... ({status})")
-
-    # Frames
-    frames = packet.get("frame_summary", [])
-    if frames:
-        lines.append(f"\n### Alternative Frames ({len(frames)})")
-        for f in frames:
-            lines.append(f"- [{f['frame_id']}] {f['text'][:80]}... ({f['survival_status']})")
-
-    # Blockers
-    blockers = packet.get("blocker_summary", [])
-    if blockers:
-        lines.append(f"\n### Open Blockers ({len(blockers)})")
-        for b in blockers:
-            lines.append(f"- [{b['blocker_id']}] {b['kind']}: {b['detail'][:80]}...")
-
-    # Claims
-    claims = packet.get("decisive_claims", [])
-    if claims:
-        lines.append(f"\n### Decisive Claims ({len(claims)})")
-        for c in claims:
-            status = c.get("evidence_support_status", "UNSUPPORTED")
-            lines.append(f"- [{c['claim_id']}] {c['text'][:80]}... ({status})")
-
-    # Contradictions
-    ctrs = packet.get("contradiction_summary", [])
-    if ctrs:
-        lines.append(f"\n### Unresolved Contradictions ({len(ctrs)})")
-        for c in ctrs:
-            lines.append(f"- [{c['id']}] {c['mode']} | {c['severity']}")
-
-    # Premise flags
-    flags = packet.get("premise_flag_summary", [])
-    if flags:
-        lines.append(f"\n### Unresolved Premise Flags ({len(flags)})")
-        for f in flags:
-            lines.append(f"- [{f['flag_id']}] {f['type']}: {f['summary'][:80]}...")
-
-    lines.append("\n### Disposition Requirements")
-    lines.append("You MUST provide a structured disposition for EVERY:")
-    lines.append("- Open blocker")
-    lines.append("- Active/contested frame")
-    lines.append("- Decisive claim")
-    lines.append("- Unresolved contradiction")
-    lines.append("- Orphaned high-authority evidence not cited in your report")
-
-    return "\n".join(lines)
-
-```
-
-
-### thinker/synthesis.py
-
-
-```python
-"""Synthesis Gate — generates the final deliberation report.
-
-Not an agent — a single LLM call that synthesizes the final round's views
-into a dual-format output: JSON (machine-readable) + markdown (human-readable).
-
-The deterministic classification label (CONSENSUS, CLOSED_WITH_ACCEPTED_RISKS, etc.)
-is appended to the output after the LLM call.
-"""
-from __future__ import annotations
-
-from thinker.pipeline import pipeline_stage
-
-SYNTHESIS_PROMPT = """You are the synthesis gate for a multi-model deliberation system.
-
-Your job is to write a clear, honest report summarizing what the models concluded.
-
-## Rules
-1. You may ONLY summarize and synthesize the views below. DO NOT INVENT NEW ARGUMENTS.
-2. If models disagreed, state the disagreement clearly — do not paper over it.
-3. If evidence is weak, say so. Do not inflate confidence.
-4. Use evidence IDs (E001-E999) when referencing specific facts.
-
-## Brief
-{brief}
-
-## Final Round Views (these are the ONLY inputs you may use)
-{views}
-
-## Blocker Summary
-{blocker_summary}
-
-## Output Format
-
-You MUST produce TWO sections separated by a line containing only "---JSON---".
-
-SECTION 1: Markdown report
-# Deliberation Report: [Title]
-
-## TL;DR
-[2-3 sentence executive summary]
-
-## Verdict
-[Position + confidence + consensus level]
-
-## Consensus Map
-### Agreed
-[Points all models agreed on]
-### Contested
-[Points where models diverged — state both sides honestly]
-
-## Key Findings
-[Numbered, with evidence citations where available]
-
-## Risk Factors
-[Table: Risk | Severity | Mitigation]
-
----JSON---
-
-SECTION 2: JSON object (fill fields if applicable, use "N/A" if not)
-{{
-  "title": "...",
-  "tldr": "...",
-  "verdict": "...",
-  "confidence": "high|medium|low",
-  "agreed_points": ["...", "..."],
-  "contested_points": ["...", "..."],
-  "key_findings": ["...", "..."],
-  "risk_factors": [{{"risk": "...", "severity": "...", "mitigation": "..."}}],
-  "evidence_cited": ["E001", "E002"],
-  "unresolved_questions": ["...", "..."]
-}}
-
----DISPOSITIONS---
-
-SECTION 3: Structured dispositions (one per line)
-For EVERY open finding listed in the Curated State Bundle (open blockers, active/contested frames,
-decisive claims, unresolved contradictions), emit a disposition line:
-
-DISPOSITION: [BLOCKER|FRAME|CLAIM|CONTRADICTION] | [target_id] | [RESOLVED|DEFERRED|ACCEPTED_RISK|MITIGATED] | [LOW|MEDIUM|HIGH|CRITICAL] | [one-sentence explanation]
-
-If you cannot address a finding, still emit DISPOSITION with status DEFERRED and explain why.
-Omitting dispositions for open findings is a compliance failure."""
-
-
-def build_synthesis_prompt(
-    brief: str,
-    final_views: dict[str, str],
-    blocker_summary: dict,
-    evidence_text: str = "",
-    synthesis_packet_text: str = "",
-) -> str:
-    views_text = "\n\n".join(f"### {m}\n{v}" for m, v in final_views.items())
-    blocker_text = "\n".join(f"- {k}: {v}" for k, v in blocker_summary.items()) if blocker_summary else "None"
-    prompt = SYNTHESIS_PROMPT.format(
-        brief=brief, views=views_text, blocker_summary=blocker_text,
-    )
-    if evidence_text:
-        prompt += (
-            "\n\n## Web-Verified Evidence (AUTHORITATIVE)\n\n"
-            "The following evidence was retrieved from web sources during deliberation. "
-            "Cite evidence IDs when referencing specific facts.\n\n"
-            f"{evidence_text}\n"
-        )
-    if synthesis_packet_text:
-        prompt += f"\n\n{synthesis_packet_text}\n"
-    return prompt
-
-
-def parse_synthesis_output(text: str) -> tuple[str, dict, list[dict]]:
-    """Split synthesis output into markdown report, JSON object, and dispositions.
-
-    Returns (markdown_report, json_data, dispositions).
-    """
-    import json
-
-    dispositions = []
-
-    # Extract dispositions section first
-    if "---DISPOSITIONS---" in text:
-        parts = text.split("---DISPOSITIONS---", 1)
-        text = parts[0]
-        disp_text = parts[1].strip()
-        # Also split off JSON if it appears after dispositions
-        if "---JSON---" in disp_text:
-            disp_text, extra = disp_text.split("---JSON---", 1)
-            text = text + "---JSON---" + extra
-        for line in disp_text.split("\n"):
-            line = line.strip()
-            if line.startswith("DISPOSITION:"):
-                parts_d = [p.strip() for p in line[len("DISPOSITION:"):].split("|")]
-                if len(parts_d) >= 5:
-                    dispositions.append({
-                        "target_type": parts_d[0],
-                        "target_id": parts_d[1],
-                        "status": parts_d[2],
-                        "importance": parts_d[3],
-                        "narrative_explanation": parts_d[4],
-                    })
-
-    if "---JSON---" in text:
-        parts = text.split("---JSON---", 1)
-        markdown = parts[0].strip()
-        json_text = parts[1].strip()
-    else:
-        markdown = text.strip()
-        json_text = ""
-
-    json_data = {}
-    if json_text:
-        json_text = json_text.strip()
-        if json_text.startswith("```"):
-            json_text = "\n".join(json_text.split("\n")[1:])
-        if json_text.endswith("```"):
-            json_text = "\n".join(json_text.split("\n")[:-1])
-        try:
-            json_data = json.loads(json_text.strip())
-        except json.JSONDecodeError:
-            json_data = {"parse_error": "Failed to parse JSON section", "raw": json_text[:500]}
-
-    return markdown, json_data, dispositions
-
-
-@pipeline_stage(
-    name="Synthesis Gate",
-    description="Single Sonnet call. Sees ONLY final round views. Produces dual output: markdown (human-readable) + JSON (machine-readable). DO NOT INVENT NEW ARGUMENTS. Deterministic classification label appended after LLM call.",
-    stage_type="synthesis",
-    order=6,
-    provider="sonnet",
-    inputs=["brief", "final_views (R3 only)", "blocker_summary", "outcome_class"],
-    outputs=["markdown_report (str)", "json_data (dict)"],
-    prompt=SYNTHESIS_PROMPT,
-    logic="""Rules: ONLY summarize final views. State disagreement honestly. Cite evidence IDs.
-Dual output separated by ---JSON--- line.
-Classification (CONSENSUS/CLOSED_WITH_ACCEPTED_RISKS/etc.) appended deterministically.""",
-    failure_mode="LLM fails: return FAILED status with error details.",
-    cost="1 Sonnet call ($0 on Max subscription)",
-    stage_id="synthesis",
-)
-async def run_synthesis(
-    client,
-    brief: str,
-    final_views: dict[str, str],
-    blocker_summary: dict,
-    outcome_class: str = "",
-    evidence_text: str = "",
-    synthesis_packet_text: str = "",
-) -> tuple[str, dict, list[dict]]:
-    """Run the Synthesis Gate. Returns (markdown_report, json_data, dispositions).
-
-    The outcome_class is appended to both outputs after the LLM call.
-    V9: Accepts curated synthesis packet text + returns structured dispositions.
-    """
-    prompt = build_synthesis_prompt(
-        brief, final_views, blocker_summary,
-        evidence_text=evidence_text,
-        synthesis_packet_text=synthesis_packet_text,
-    )
-    resp = await client.call("sonnet", prompt)
-
-    if not resp.ok:
-        from thinker.types import BrainError
-        raise BrainError("synthesis", f"Synthesis gate LLM call failed: {resp.error}",
-                         detail="Cannot produce deliberation report without a working Sonnet call.")
-
-    markdown, json_data, dispositions = parse_synthesis_output(resp.text)
-
-    # Append deterministic classification
-    if outcome_class:
-        markdown += f"\n\n---\n**Classification: {outcome_class}**\n"
-        json_data["outcome_class"] = outcome_class
-
-    return markdown, json_data, dispositions
-
-```
-
-
-### thinker/analysis_mode.py
-
-
-```python
-"""ANALYSIS mode — modified prompts and contracts for exploration modality (DESIGN-V3.md Section 4).
-
-~80% pipeline reuse. What changes:
-- Round prompts: exploration, not convergence
-- Frame survival: EXPLORED/NOTED/UNEXPLORED (no dropping)
-- Synthesis: analysis map per dimension, not verdict
-- Gate 2: A1-A7 rules (in gate2.py)
-
-Deployed with debug_mode per Section 4.6: rules log without enforcing initially.
-"""
-from __future__ import annotations
-
-
-def get_analysis_round_preamble() -> str:
-    """Get the ANALYSIS-mode preamble prepended to round prompts."""
-    return (
-        "## Mode: EXPLORATORY ANALYSIS\n"
-        "Your task is to EXPLORE and MAP this question by dimension — identify:\n"
-        "- **Knowns** (evidence-backed facts)\n"
-        "- **Inferred** (model-supported but unverified)\n"
-        "- **Unknowns** (gaps in knowledge)\n\n"
-        "Do NOT seek agreement or converge on a verdict. Deepen exploration.\n"
-        "Do NOT propose recommendations — map the territory.\n\n"
-    )
-
-
-def get_analysis_synthesis_contract() -> str:
-    """Get the modified synthesis contract for ANALYSIS mode."""
-    return (
-        "\n## ANALYSIS Mode Synthesis Contract\n"
-        "You are producing an EXPLORATORY MAP, NOT a decision.\n"
-        "Header: 'EXPLORATORY MAP — NOT A DECISION'\n\n"
-        "Required output structure:\n"
-        "1. Framing of the question\n"
-        "2. Aspect map (by dimension)\n"
-        "3. Competing hypotheses or lenses\n"
-        "4. Evidence for and against each\n"
-        "5. Unresolved uncertainties\n"
-        "6. What information would most change the map\n\n"
-        "Do NOT provide a verdict, recommendation, or conclusion.\n"
-    )
-
-```
-
-
-### thinker/stability.py
-
-
-```python
-"""Stability Tests — deterministic computation (DoD v3.0 Section 15).
-
-No LLM calls. Three booleans: conclusion_stable, reason_stable, assumption_stable.
-Plus: fast_consensus_observed, groupthink_warning, independent_evidence_present.
-"""
-from __future__ import annotations
-
-from thinker.types import (
-    CriticalAssumption, DecisiveClaim, Position, QuestionClass,
-    StabilityResult, StakesClass,
-)
-
-
-def compute_conclusion_stability(positions: dict[str, Position]) -> bool:
-    """Do surviving models agree on the primary recommendation?
-
-    Stable = all models with positions share the same primary_option.
-    """
-    if not positions:
-        return False
-
-    options = set()
-    for p in positions.values():
-        if p.primary_option:
-            options.add(p.primary_option.lower().strip())
-
-    return len(options) <= 1
-
-
-def compute_reason_stability(
-    positions: dict[str, Position],
-    decisive_claims: list[DecisiveClaim],
-) -> bool:
-    """Do models converge for the same reasons? (DOD §15.2)
-
-    Stable = models share the same decisive claim set AND all material
-    claims are evidence-supported. If model attribution is available
-    (supporting_model_ids), checks that surviving models share claims.
-    """
-    if not decisive_claims:
-        return False
-
-    material_claims = [c for c in decisive_claims if c.material_to_conclusion]
-    if not material_claims:
-        return False
-
-    # All material claims must be evidence-supported
-    if not all(c.evidence_support_status.value == "SUPPORTED" for c in material_claims):
-        return False
-
-    # DOD §15.2: "Models converge for the same reasons (shared decisive claim set)"
-    # All surviving models must endorse the SAME set of material claims.
-    surviving_models = set(positions.keys()) if positions else set()
-    if surviving_models and any(c.supporting_model_ids for c in material_claims):
-        for claim in material_claims:
-            if not claim.supporting_model_ids:
-                continue  # No attribution data — can't check
-            # Every surviving model must endorse every material claim
-            claim_models = set(claim.supporting_model_ids)
-            if not surviving_models.issubset(claim_models):
-                return False  # Not all models share this decisive claim
-
-    return True
-
-
-def compute_assumption_stability(assumptions: list[CriticalAssumption]) -> bool:
-    """Are we relying on unresolved material assumptions?
-
-    Stable = no unresolved material assumptions with UNVERIFIABLE/FALSE verifiability.
-    """
-    if not assumptions:
-        return True
-
-    for a in assumptions:
-        if (a.material and not a.resolved
-                and a.verifiability.value in ("UNVERIFIABLE", "FALSE")):
-            return False
-    return True
-
-
-def detect_fast_consensus(
-    round_positions: dict[int, dict[str, Position]],
-) -> bool:
-    """Detect if models agreed too quickly (from R1).
-
-    DOD §15.1: fast_consensus_observed = true if R1 agreement_ratio >= 0.95.
-    Agreement ratio = (count of most common option) / total models.
-    """
-    r1_positions = round_positions.get(1, {})
-    if not r1_positions or len(r1_positions) < 2:
-        return False
-
-    options: list[str] = []
-    for p in r1_positions.values():
-        if p.primary_option:
-            options.append(p.primary_option.lower().strip())
-
-    if not options:
-        return False
-
-    from collections import Counter
-    counts = Counter(options)
-    most_common_count = counts.most_common(1)[0][1]
-    agreement_ratio = most_common_count / len(options)
-    return agreement_ratio >= 0.95
-
-
-def compute_groupthink_warning(
-    fast_consensus: bool,
-    question_class: QuestionClass,
-    stakes_class: StakesClass,
-    independent_evidence_present: bool,
-) -> bool:
-    """Groupthink warning if fast consensus on non-trivial questions.
-
-    Warning if: fast_consensus AND (OPEN/AMBIGUOUS OR HIGH stakes) AND no independent evidence.
-    """
-    if not fast_consensus:
-        return False
-
-    # DOD §15.2: question_class = OPEN OR stakes_class = HIGH (not AMBIGUOUS)
-    non_trivial = question_class == QuestionClass.OPEN
-    high_stakes = stakes_class == StakesClass.HIGH
-
-    if not (non_trivial or high_stakes):
-        return False
-
-    # Independent evidence mitigates groupthink concern
-    if independent_evidence_present:
-        return False
-
-    return True
-
-
-def run_stability_tests(
-    positions: dict[str, Position],
-    decisive_claims: list[DecisiveClaim],
-    assumptions: list[CriticalAssumption],
-    round_positions: dict[int, dict[str, Position]],
-    question_class: QuestionClass,
-    stakes_class: StakesClass,
-    independent_evidence_present: bool = False,
-) -> StabilityResult:
-    """Run all stability tests. Returns StabilityResult."""
-    conclusion_stable = compute_conclusion_stability(positions)
-    reason_stable = compute_reason_stability(positions, decisive_claims)
-    assumption_stable = compute_assumption_stability(assumptions)
-    fast_consensus = detect_fast_consensus(round_positions)
-    groupthink = compute_groupthink_warning(
-        fast_consensus, question_class, stakes_class, independent_evidence_present,
-    )
-
-    return StabilityResult(
-        conclusion_stable=conclusion_stable,
-        reason_stable=reason_stable,
-        assumption_stable=assumption_stable,
-        independent_evidence_present=independent_evidence_present,
-        fast_consensus_observed=fast_consensus,
-        groupthink_warning=groupthink,
-    )
 
 ```
 
@@ -5585,804 +3923,6 @@ def run_gate2_deterministic(
 ```
 
 
-### thinker/rounds.py
-
-
-```python
-"""Round execution for the Brain deliberation engine.
-
-Topology: 4 -> 3 -> 2 -> 2
-- R1: brief only (4 models, parallel)
-- R2: brief + R1 views + evidence + unaddressed arguments (3 models)
-- R3: brief + R2 views + evidence + unaddressed arguments (2 models)
-
-Search requests: R1 and R2 prompts include a section asking models to list
-0-5 search queries as an appendix. R3 does not (final convergence round).
-"""
-from __future__ import annotations
-
-import asyncio
-
-from thinker.config import ROUND_TOPOLOGY
-from thinker.pipeline import pipeline_stage
-from thinker.types import ModelResponse, RoundResult
-
-# Evidence framing — makes clear that web-verified evidence outranks model opinions
-_EVIDENCE_HEADER = (
-    "## Web-Verified Evidence (AUTHORITATIVE — outranks model opinions)\n\n"
-    "The following facts were retrieved from web sources and verified. "
-    "When a model's prior claim conflicts with evidence below, the evidence takes precedence. "
-    "Cite evidence IDs (E001-E999) when referencing these facts.\n\n"
-)
-
-_SEARCH_REQUEST_SECTION = (
-    "\n## Search Requests (optional, 0-5)\n"
-    "After your analysis, you may list 0-5 specific questions you want fact-checked "
-    "via web search before the next round. These will be searched and results injected "
-    "into the next round's prompt. If you have no search requests, write NONE.\n\n"
-    "Format:\n"
-    "SEARCH_REQUESTS:\n"
-    "1. [specific, searchable query]\n"
-    "2. ...\n"
-)
-
-
-_ADVERSARIAL_PREAMBLE = (
-    "## ADVERSARIAL ROLE (assigned to you)\n"
-    "You are the designated adversarial voice. Your job is to:\n"
-    "- Challenge the dominant framing\n"
-    "- Attack hidden assumptions\n"
-    "- Propose alternative interpretations\n"
-    "- Be the devil's advocate\n"
-    "Do NOT simply agree with the obvious position.\n\n"
-)
-
-_FRAME_ENGAGEMENT_SECTION = (
-    "\n## Frame Engagement Requirements (MANDATORY for R2)\n"
-    "You MUST:\n"
-    "1. ADOPT at least one alternative frame and argue from its perspective\n"
-    "2. REBUT at least one alternative frame with substantive counter-arguments\n"
-    "3. GENERATE at least one NEW alternative frame not yet proposed\n\n"
-    "For each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
-)
-
-
-def build_round_prompt(
-    round_num: int,
-    brief: str,
-    prior_views: dict[str, str],
-    evidence_text: str,
-    unaddressed_arguments: str,
-    is_last_round: bool = False,
-    adversarial_model: str = "",
-    model_id: str = "",
-    alt_frames_text: str = "",
-    dimension_text: str = "",
-    perspective_card_instructions: str = "",
-) -> str:
-    """Build the prompt for a given round.
-
-    R1: brief + search request appendix.
-    R2: brief + prior views + evidence + unaddressed args + search request appendix.
-    R3: brief + prior views + evidence + unaddressed args (no search — final round).
-
-    V9 extensions:
-    - R1: adversarial preamble (if model_id == adversarial_model),
-      dimension_text, perspective_card_instructions injected after brief.
-    - R2: alt_frames_text injected after evidence, plus frame engagement section.
-    """
-    parts = []
-
-    # Adversarial preamble — R1 only, only for the designated adversarial model
-    if round_num == 1 and adversarial_model and model_id == adversarial_model:
-        parts.append(_ADVERSARIAL_PREAMBLE)
-
-    parts.append("You are participating in a multi-model deliberation. "
-                 "Analyze the following brief independently and thoroughly.\n")
-
-    # R1: perspective card instructions BEFORE brief (so models see them even on huge briefs)
-    if round_num == 1 and perspective_card_instructions:
-        parts.append(f"## MANDATORY Structured Output (include at END of your response)\n\n{perspective_card_instructions}\n")
-
-    if round_num == 1 and dimension_text:
-        parts.append(f"## Dimension Focus\n\n{dimension_text}\n")
-
-    parts.append(f"## Brief\n\n{brief}\n")
-
-    if round_num >= 2 and prior_views:
-        parts.append("## Prior Round Views\n")
-        parts.append("Other models provided these analyses in the previous round. "
-                     "Consider their arguments but form your own independent judgment.\n")
-        for model, view in prior_views.items():
-            parts.append(f"### {model}\n{view}\n")
-
-    if round_num >= 2 and evidence_text:
-        parts.append(_EVIDENCE_HEADER)
-        parts.append(f"{evidence_text}\n")
-
-    # R2+: inject alternative frames after evidence (visible in R2, R3, R4)
-    if round_num >= 2 and alt_frames_text:
-        parts.append(f"## Alternative Frames\n\n{alt_frames_text}\n")
-
-    if round_num >= 2 and unaddressed_arguments:
-        parts.append("## Unaddressed Arguments From Prior Rounds\n")
-        parts.append("The following arguments were raised but NOT substantively engaged with. "
-                     "You MUST engage with each one — agree, rebut, or refine.\n")
-        parts.append(f"{unaddressed_arguments}\n")
-
-    # R2: frame engagement requirements
-    if round_num == 2 and alt_frames_text:
-        parts.append(_FRAME_ENGAGEMENT_SECTION)
-
-    parts.append("\n## Your Analysis\n")
-    parts.append("Provide your independent assessment. Structure your response as:\n"
-                 "1. Key findings\n"
-                 "2. Your position (with confidence: HIGH/MEDIUM/LOW)\n"
-                 "3. Key arguments supporting your position\n"
-                 "4. Risks or uncertainties\n")
-
-    # Search request appendix — R1 and R2 only (not the final round)
-    if not is_last_round:
-        parts.append(_SEARCH_REQUEST_SECTION)
-
-    return "\n".join(parts)
-
-
-@pipeline_stage(
-    name="Deliberation Round",
-    description="Calls all models for a round in parallel. R1: brief only (4 models). R2: brief + R1 views + evidence + unaddressed args (3 models). R3: final convergence (2 models). Models include search request appendix (0-5 queries) in R1 and R2.",
-    stage_type="round",
-    order=2,
-    provider="r1, reasoner, glm5, kimi (topology narrows 4→3→2)",
-    inputs=["brief", "prior_views", "evidence_text", "unaddressed_arguments"],
-    outputs=["responses (dict[model, text])", "responded (list)", "failed (list)"],
-    prompt="""R1 PROMPT:
-You are participating in a multi-model deliberation.
-Analyze the following brief independently and thoroughly.
-
-## Brief
-{brief}
-
-## Your Analysis
-1. Key findings
-2. Your position (with confidence: HIGH/MEDIUM/LOW)
-3. Key arguments supporting your position
-4. Risks or uncertainties
-
-## Search Requests (optional, 0-5)
-SEARCH_REQUESTS:
-1. [specific, searchable query]
-(or NONE)
-
----
-R2+ PROMPT adds:
-## Prior Round Views (all models from previous round)
-## Web-Verified Evidence (AUTHORITATIVE — outranks model opinions)
-## Unaddressed Arguments (You MUST engage with each one)
-
-R3 (final round): no search request section.""",
-    logic="All models called in parallel. Any model failure = BrainError (zero tolerance).",
-    failure_mode="Any model failure: BrainError raised by Brain orchestrator. Zero tolerance.",
-    cost="R1: ~$0.40 (4 models) | R2: ~$0.30 (3 models) | R3: ~$0.20 (2 models)",
-    stage_id="round",
-)
-async def execute_round(
-    client,
-    round_num: int,
-    brief: str,
-    prior_views: dict[str, str] | None = None,
-    evidence_text: str = "",
-    unaddressed_arguments: str = "",
-    is_last_round: bool = False,
-    adversarial_model: str = "",
-    alt_frames_text: str = "",
-    dimension_text: str = "",
-    perspective_card_instructions: str = "",
-) -> RoundResult:
-    """Execute a single deliberation round.
-
-    Calls all models for this round in parallel. Returns a RoundResult
-    with successful responses and a list of failed models.
-    """
-    models = ROUND_TOPOLOGY[round_num]
-
-    # R1: build per-model prompts (adversarial model gets different preamble)
-    # R2+: shared prompt with frames injection
-    if round_num == 1 and adversarial_model:
-        # Per-model prompts for R1 when adversarial is active
-        tasks = {}
-        for model in models:
-            prompt = build_round_prompt(
-                round_num=round_num,
-                brief=brief,
-                prior_views=prior_views or {},
-                evidence_text=evidence_text,
-                unaddressed_arguments=unaddressed_arguments,
-                is_last_round=is_last_round,
-                adversarial_model=adversarial_model,
-                model_id=model,
-                dimension_text=dimension_text,
-                perspective_card_instructions=perspective_card_instructions,
-            )
-            tasks[model] = client.call(model, prompt)
-    else:
-        prompt = build_round_prompt(
-            round_num=round_num,
-            brief=brief,
-            prior_views=prior_views or {},
-            evidence_text=evidence_text,
-            unaddressed_arguments=unaddressed_arguments,
-            is_last_round=is_last_round,
-            alt_frames_text=alt_frames_text,
-            dimension_text=dimension_text,
-            perspective_card_instructions=perspective_card_instructions,
-        )
-        # Call all models in parallel
-        tasks = {model: client.call(model, prompt) for model in models}
-
-    responses: dict[str, ModelResponse] = {}
-    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-    failed = []
-    for model, result in zip(tasks.keys(), results):
-        if isinstance(result, Exception):
-            responses[model] = ModelResponse(
-                model=model, ok=False, text="", elapsed_s=0.0, error=str(result),
-            )
-            failed.append(model)
-        elif not result.ok:
-            responses[model] = result
-            failed.append(model)
-        else:
-            responses[model] = result
-
-    return RoundResult(round_num=round_num, responses=responses, failed=failed)
-
-```
-
-
-### thinker/evidence.py
-
-
-```python
-"""Evidence Ledger — stores, deduplicates, scores, and formats evidence.
-
-Evidence items are kept in insertion order (search engine's ranking order).
-V8-F3 adds relevance scoring: under cap pressure, the lowest-scored item
-is evicted instead of blindly rejecting new items.
-Cap at max_items. Within the same score tier, insertion order is preserved.
-
-V9: Two-tier ledger — active_items (capped) + archive_items (uncapped).
-Eviction moves to archive, never deletes. Referenced evidence always available.
-"""
-from __future__ import annotations
-
-import hashlib
-from typing import Optional
-from urllib.parse import urlparse
-
-from thinker.types import Confidence, EvidenceItem, EvictionEvent
-from thinker.tools.cross_domain import is_cross_domain
-
-# Authoritative domains that get a score boost
-_AUTHORITY_DOMAINS = {
-    "nvd.nist.gov", "cve.mitre.org", "owasp.org", "sec.gov",
-    "who.int", "cdc.gov", "fda.gov", "nih.gov",
-    "ieee.org", "acm.org", "arxiv.org",
-    "reuters.com", "bloomberg.com", "ft.com",
-    "github.com", "docs.python.org", "docs.microsoft.com",
-}
-
-
-def score_evidence(item: EvidenceItem, brief_keywords: set[str]) -> float:
-    """Score evidence item for relevance.
-
-    Factors:
-    - Keyword overlap with brief (0-5 points, 1 per keyword match, capped)
-    - Source authority (0 or 2 points for known authoritative domains)
-    - Base score of 1.0 so all items have positive score
-    """
-    score = 1.0
-
-    # Keyword overlap
-    text_lower = (item.topic + " " + item.fact).lower()
-    kw_hits = 0
-    for kw in brief_keywords:
-        if kw.lower() in text_lower:
-            kw_hits += 1
-    score += min(kw_hits, 5)
-
-    # Source authority + set authority_tier
-    try:
-        domain = urlparse(item.url).netloc.lower()
-        if any(auth in domain for auth in _AUTHORITY_DOMAINS):
-            score += 2.0
-            item.authority_tier = "HIGH"
-    except Exception:
-        pass
-
-    return score
-
-
-class EvidenceLedger:
-    """Manages evidence items with dedup, cross-domain filtering, scoring, and cap enforcement.
-
-    V9 two-tier architecture:
-    - active_items: capped at max_items, used in prompts
-    - archive_items: uncapped, evicted items preserved here
-    - eviction_log: tracks all movements
-    - Never deletes evidence — eviction moves to archive.
-    """
-
-    def __init__(self, max_items: int = 10, brief_domain: Optional[str] = None,
-                 brief_keywords: Optional[set[str]] = None):
-        self.active_items: list[EvidenceItem] = []
-        self.archive_items: list[EvidenceItem] = []
-        self.eviction_log: list[EvictionEvent] = []
-        self.max_items = max_items
-        self.brief_domain = brief_domain
-        self.brief_keywords: set[str] = brief_keywords or set()
-        self._content_hashes: set[str] = set()
-        self._seen_urls: set[str] = set()
-        self.cross_domain_rejections: int = 0
-        self.contradictions: list = []
-        self._eviction_counter: int = 0
-
-    @property
-    def items(self) -> list[EvidenceItem]:
-        """Backward compatibility: returns active items."""
-        return self.active_items
-
-    @property
-    def all_items(self) -> list[EvidenceItem]:
-        """All evidence items (active + archived)."""
-        return self.active_items + self.archive_items
-
-    @property
-    def high_authority_evidence_present(self) -> bool:
-        """Whether any evidence (active or archive) has HIGH or AUTHORITATIVE authority tier."""
-        return any(
-            e.authority_tier in ("HIGH", "AUTHORITATIVE")
-            for e in self.active_items + self.archive_items
-        )
-
-    def get_from_any(self, evidence_id: str) -> Optional[EvidenceItem]:
-        """Search both active and archive for an evidence item by ID."""
-        for item in self.active_items:
-            if item.evidence_id == evidence_id:
-                return item
-        for item in self.archive_items:
-            if item.evidence_id == evidence_id:
-                return item
-        return None
-
-    def all_evidence_ids(self) -> set[str]:
-        """Return all evidence IDs across active and archive."""
-        return {e.evidence_id for e in self.active_items} | {e.evidence_id for e in self.archive_items}
-
-    def validate_refs(self, refs: list[str]) -> list[str]:
-        """Return any evidence_refs that don't exist in either store.
-
-        DOD §10.3: "Cited evidence missing from both stores → ERROR"
-        """
-        known = self.all_evidence_ids()
-        return [ref for ref in refs if ref and ref not in known]
-
-    def _evict_to_archive(self, item: EvidenceItem, reason: str = "cap_pressure") -> None:
-        """Move an item from active to archive."""
-        self.active_items.remove(item)
-        item.is_active = False
-        item.is_archived = True
-        self.archive_items.append(item)
-        self._eviction_counter += 1
-        self.eviction_log.append(EvictionEvent(
-            event_id=f"EVICT-{self._eviction_counter}",
-            evidence_id=item.evidence_id,
-            from_active=True,
-            to_archive=True,
-            reason=reason,
-        ))
-
-    def add(self, item: EvidenceItem) -> bool:
-        """Add evidence item. Returns False if rejected.
-
-        Rejection reasons: duplicate content, duplicate URL, cross-domain,
-        or lower-scored than all existing items when ledger is full.
-        Under cap pressure: if the new item scores higher than the
-        lowest-scored existing item, evict that item to archive.
-        """
-        # Cross-domain filter
-        if self.brief_domain and is_cross_domain(item.fact + " " + item.topic, self.brief_domain):
-            self.cross_domain_rejections += 1
-            return False
-
-        # Content dedup
-        content_hash = hashlib.sha256(item.fact.encode()).hexdigest()[:16]
-        if content_hash in self._content_hashes:
-            return False
-
-        # URL dedup
-        if item.url in self._seen_urls:
-            return False
-
-        # Score the new item
-        item.score = score_evidence(item, self.brief_keywords)
-        item.is_active = True
-        item.is_archived = False
-
-        # Cap check with eviction to archive
-        if len(self.active_items) >= self.max_items:
-            min_item = min(self.active_items, key=lambda e: e.score)
-            if item.score > min_item.score:
-                # Evict the lowest-scored item to archive
-                self._content_hashes.discard(min_item.content_hash)
-                self._seen_urls.discard(min_item.url)
-                self._evict_to_archive(min_item, reason="cap_pressure_score_eviction")
-            else:
-                return False
-
-        self._content_hashes.add(content_hash)
-        self._seen_urls.add(item.url)
-        item.content_hash = content_hash
-        self.active_items.append(item)
-
-        # DOD §10.3: "Active exceeds 10 → ERROR" — post-condition check
-        if len(self.active_items) > self.max_items:
-            from thinker.types import BrainError
-            raise BrainError(
-                "evidence_ledger",
-                f"Active evidence exceeds cap: {len(self.active_items)} > {self.max_items}",
-                detail="DOD §10.3: Active exceeds 10 → ERROR",
-            )
-
-        # Check for contradictions with existing active items
-        from thinker.tools.contradiction import detect_contradiction
-        for existing in self.active_items[:-1]:
-            ctr = detect_contradiction(existing, item)
-            if ctr:
-                self.contradictions.append(ctr)
-
-        return True
-
-    def format_for_prompt(self) -> str:
-        """Format active evidence for injection into a model prompt."""
-        if not self.active_items:
-            return ""
-        lines = []
-        for i, item in enumerate(self.active_items, 1):
-            lines.append(
-                f"{{{item.evidence_id}}} {item.fact}\n"
-                f"Source: {item.url}\n"
-            )
-        lines.append(
-            "Any specific number, percentage, or dollar figure in your analysis "
-            "MUST cite an evidence ID (E001-E999) from above."
-        )
-        return "\n".join(lines)
-
-```
-
-
-### thinker/evidence_extractor.py
-
-
-```python
-"""LLM-based evidence extraction from fetched page content.
-
-V8-F5 (Spec Section 6): After fetching full page content, one Sonnet call
-per page extracts specific facts, numbers, dates, and regulatory references.
-Output: structured fact items for the evidence ledger.
-"""
-from __future__ import annotations
-
-import re
-
-from thinker.pipeline import pipeline_stage
-
-EXTRACTION_PROMPT = """Extract specific, verifiable facts from this web page content.
-
-URL: {url}
-Content:
-{content}
-
-Extract ONLY concrete facts — specific numbers, dates, percentages, versions,
-regulatory references, statistics, named entities. Skip opinions, commentary,
-and vague claims.
-
-Format each fact as:
-FACT-N: [the specific fact]
-
-If the content has no extractable facts, respond with: NONE"""
-
-
-def parse_extracted_facts(text: str) -> list[dict]:
-    """Parse extracted facts from Sonnet's response.
-
-    Returns list of {"fact": str} dicts.
-    """
-    if not text or text.strip().upper() == "NONE":
-        return []
-
-    facts = []
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-
-        # Try FACT-N: format (handles bold markdown like **FACT-1:**)
-        match = re.match(r"[*]*FACT-?\d+[*]*:?[*]*\s+(.+)", line)
-        if match:
-            facts.append({"fact": match.group(1).strip()})
-            continue
-
-        # Try numbered format: 1. fact text
-        match = re.match(r"^\d+[.)]\s+(.+)", line)
-        if match:
-            facts.append({"fact": match.group(1).strip()})
-            continue
-
-        # Try bullet format: - FACT-N: text
-        match = re.match(r"^[-*]\s+(?:FACT-?\d+:?\s+)?(.+)", line)
-        if match:
-            fact_text = match.group(1).strip()
-            if len(fact_text) > 10:  # Skip very short fragments
-                facts.append({"fact": fact_text})
-
-    return facts
-
-
-async def extract_evidence_from_page(
-    llm_client, url: str, content: str, max_content: int = 30_000,
-) -> list[dict]:
-    """Extract structured facts from a page's content using Sonnet.
-
-    Returns list of {"fact": str} dicts.
-    Raises BrainError if the LLM call fails.
-    """
-    from thinker.types import BrainError
-
-    if not content:
-        return []
-
-    truncated = content[:max_content]
-    prompt = EXTRACTION_PROMPT.format(url=url, content=truncated)
-    resp = await llm_client.call("sonnet", prompt)
-
-    if not resp.ok:
-        raise BrainError(
-            "evidence_extraction",
-            f"Evidence extraction failed for {url[:60]}: {resp.error}",
-            detail="Sonnet could not extract facts from fetched page content.",
-        )
-
-    return parse_extracted_facts(resp.text)
-
-
-@pipeline_stage(
-    name="Evidence Extractor",
-    description="LLM-based fact extraction from fetched page content. One Sonnet call per page extracts specific numbers, dates, percentages, versions, regulatory references, and statistics. Replaces raw snippet injection with curated, structured facts.",
-    stage_type="search",
-    order=5.2,
-    provider="sonnet (1 call per page, $0 on Max subscription)",
-    inputs=["url", "full_content (from page fetch)"],
-    outputs=["facts (list[dict]) — each with 'fact' key"],
-    prompt=EXTRACTION_PROMPT,
-    logic="""1. Truncate page content to 30k chars
-2. Sonnet extracts FACT-N: lines (concrete, verifiable facts only)
-3. Parser handles FACT-N:, numbered (1.), and bullet (-) formats
-4. NONE response = no extractable facts
-5. Short fragments (<10 chars) skipped""",
-    failure_mode="BrainError if Sonnet call fails (zero tolerance). Empty content returns empty list.",
-    cost="1 Sonnet call per page ($0 on Max subscription)",
-    stage_id="evidence_extractor",
-)
-def _register_evidence_extractor(): pass
-
-```
-
-
-### thinker/residue.py
-
-
-```python
-"""Post-synthesis residue verification.
-
-V8-F1 (DoD D7): After synthesis, scan the report text to verify it
-mentions all structural findings — blocker IDs, contradiction IDs,
-and unaddressed argument IDs. This is a narrative completeness check,
-not truth verification.
-
-V9 (DoD Section 14): Structured dispositions. Schema validation + coverage
-validation replaces string matching. Disposition object for every open blocker,
-active frame, decisive claim, contradiction. omission_rate > 0.20 triggers
-deep semantic scan.
-"""
-from __future__ import annotations
-
-from thinker.pipeline import pipeline_stage
-from thinker.types import (
-    Argument, Blocker, BlockerStatus, Contradiction, DecisiveClaim,
-    DispositionObject, DispositionTargetType, FrameInfo, FrameSurvivalStatus,
-    SemanticContradiction,
-)
-
-
-def check_synthesis_residue(
-    report: str,
-    blockers: list[Blocker],
-    contradictions: list[Contradiction],
-    unaddressed_arguments: list[Argument],
-) -> list[dict]:
-    """Scan synthesis report for structural finding references.
-
-    Returns list of omission dicts:
-    {"type": "blocker"|"contradiction"|"argument", "id": str}
-
-    If >30% of total structural findings are omitted, each omission
-    gets threshold_violation=True.
-    """
-    omissions: list[dict] = []
-    total_items = len(blockers) + len(contradictions) + len(unaddressed_arguments)
-
-    # Check blocker IDs
-    for b in blockers:
-        if b.blocker_id not in report:
-            omissions.append({"type": "blocker", "id": b.blocker_id})
-
-    # Check contradiction IDs
-    for c in contradictions:
-        if c.contradiction_id not in report:
-            omissions.append({"type": "contradiction", "id": c.contradiction_id})
-
-    # Check unaddressed argument IDs
-    for a in unaddressed_arguments:
-        if a.argument_id not in report:
-            omissions.append({"type": "argument", "id": a.argument_id})
-
-    # Threshold check: >30% omitted
-    threshold_violated = (
-        total_items > 0 and len(omissions) / total_items > 0.30
-    )
-    if threshold_violated:
-        for o in omissions:
-            o["threshold_violation"] = True
-
-    return omissions
-
-
-def check_disposition_coverage(
-    dispositions: list[DispositionObject],
-    open_blockers: list[Blocker],
-    active_frames: list[FrameInfo],
-    decisive_claims: list[DecisiveClaim],
-    contradictions_numeric: list[Contradiction],
-    contradictions_semantic: list[SemanticContradiction],
-    open_material_arguments: list[Argument] | None = None,
-) -> dict:
-    """V9: Check that synthesis dispositions cover all tracked open findings.
-
-    Returns dict with: coverage_pass, omission_rate, omissions[], deep_scan_triggered.
-    """
-    # Build required targets
-    required_targets: list[tuple[str, str]] = []  # (target_type, target_id)
-
-    for b in open_blockers:
-        if b.status == BlockerStatus.OPEN:
-            required_targets.append(("BLOCKER", b.blocker_id))
-
-    for f in active_frames:
-        if f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED):
-            required_targets.append(("FRAME", f.frame_id))
-
-    for c in decisive_claims:
-        required_targets.append(("CLAIM", c.claim_id))
-
-    for c in contradictions_numeric:
-        if c.status not in ("RESOLVED", "NON_MATERIAL"):
-            required_targets.append(("CONTRADICTION", c.contradiction_id))
-
-    for c in contradictions_semantic:
-        if c.status.value not in ("RESOLVED", "NON_MATERIAL"):
-            required_targets.append(("CONTRADICTION", c.ctr_id))
-
-    # DOD §11.3: open material arguments need dispositions
-    for a in (open_material_arguments or []):
-        if a.open:
-            required_targets.append(("ARGUMENT", a.argument_id))
-
-    if not required_targets:
-        return {
-            "coverage_pass": True,
-            "omission_rate": 0.0,
-            "omissions": [],
-            "deep_scan_triggered": False,
-            "total_required": 0,
-            "total_disposed": 0,
-        }
-
-    # Build disposition lookup
-    disposed = set()
-    for d in dispositions:
-        disposed.add((d.target_type.value, d.target_id))
-
-    # Find omissions
-    omissions = []
-    for target_type, target_id in required_targets:
-        if (target_type, target_id) not in disposed:
-            omissions.append({"target_type": target_type, "target_id": target_id})
-
-    omission_rate = len(omissions) / len(required_targets) if required_targets else 0.0
-    deep_scan = omission_rate > 0.20
-
-    return {
-        "coverage_pass": len(omissions) == 0,
-        "omission_rate": round(omission_rate, 3),
-        "omissions": omissions,
-        "deep_scan_triggered": deep_scan,
-        "expected_disposition_count": len(required_targets),  # DOD §14.4
-        "emitted_disposition_count": len(required_targets) - len(omissions),  # DOD §14.4
-        # Keep old names for internal use
-        "total_required": len(required_targets),
-        "total_disposed": len(required_targets) - len(omissions),
-    }
-
-
-def run_deep_semantic_scan(
-    report: str,
-    omissions: list[dict],
-) -> dict:
-    """Deep semantic scan: second-pass string match for omitted dispositions.
-
-    DOD §14.5: omission_rate > 0.20 triggers deep semantic scan.
-    DOD §14.6: "Deep scan threshold exceeded but scan not run → ERROR."
-
-    Scans the synthesis report text for any reference to omitted targets.
-    If the report text mentions the target (by ID or partial text match),
-    the omission is downgraded to "addressed_in_text" (soft coverage).
-    Remaining true omissions after deep scan are material.
-    """
-    resolved = []
-    still_missing = []
-
-    for om in omissions:
-        target_id = om.get("target_id", "")
-        # Check if the synthesis text mentions this target by ID
-        if target_id and target_id in report:
-            resolved.append({**om, "deep_scan_result": "addressed_in_text"})
-        else:
-            still_missing.append({**om, "deep_scan_result": "confirmed_missing"})
-
-    return {
-        "deep_scan_run": True,
-        "resolved_by_scan": len(resolved),
-        "still_missing": len(still_missing),
-        "resolved": resolved,
-        "missing": still_missing,
-        "material_omissions_remain": len(still_missing) > 0,
-    }
-
-
-@pipeline_stage(
-    name="Residue Verification",
-    description="Post-synthesis narrative completeness check. Scans the synthesis report text for BLK IDs, CTR IDs, and unaddressed argument IDs. If >30% of structural findings are omitted, flags a threshold violation. This is NOT truth verification — it checks whether the synthesis mentioned the findings, not whether it got them right.",
-    stage_type="deterministic",
-    order=9,
-    provider="deterministic (no LLM)",
-    inputs=["synthesis report text", "blockers", "contradictions", "unaddressed_arguments"],
-    outputs=["omissions (list[dict]) — type, id, threshold_violation flag"],
-    logic="""For each BLK ID: is it mentioned in the report text? If not → omission.
-For each CTR ID: is it mentioned? If not → omission.
-For each unaddressed argument ID: is it mentioned? If not → omission.
-If omissions / total_items > 0.30 → threshold_violation=True on all omissions.""",
-    failure_mode="Cannot fail — string matching only.",
-    cost="$0 (no LLM call)",
-    stage_id="residue_verification",
-)
-def _register_residue_verification(): pass
-
-```
-
-
 ### thinker/proof.py
 
 
@@ -6817,210 +4357,584 @@ class ProofBuilder:
 ```
 
 
-### thinker/checkpoint.py
+### thinker/stability.py
 
 
 ```python
-"""Checkpoint system for step-by-step pipeline debugging.
+"""Stability Tests — deterministic computation (DoD v3.0 Section 15).
 
-Usage:
-  # Run up to a specific stage, save state, exit:
-  python -m thinker.brain --brief b1.md --stop-after preflight
+No LLM calls. Three booleans: conclusion_stable, reason_stable, assumption_stable.
+Plus: fast_consensus_observed, groupthink_warning, independent_evidence_present.
+"""
+from __future__ import annotations
 
-  # Inspect the checkpoint:
-  python -m thinker.checkpoint output/checkpoint.json
+from thinker.types import (
+    CriticalAssumption, DecisiveClaim, Position, QuestionClass,
+    StabilityResult, StakesClass,
+)
 
-  # Resume from checkpoint:
-  python -m thinker.brain --resume output/checkpoint.json --stop-after r1
 
-  # Resume and run to completion:
-  python -m thinker.brain --resume output/checkpoint.json
+def compute_conclusion_stability(positions: dict[str, Position]) -> bool:
+    """Do surviving models agree on the primary recommendation?
 
-Stage IDs for --stop-after (V9):
-  preflight, dimensions, r1, track1, perspective_cards, framing_pass,
-  ungrounded_r1, search1, r2, track2, frame_survival_r2, ungrounded_r2,
-  search2, r3, track3, frame_survival_r3, r4, track4,
-  semantic_contradiction, decisive_claims, synthesis_packet, synthesis, stability, gate2
+    Stable = all models with positions share the same primary_option.
+    """
+    if not positions:
+        return False
+
+    options = set()
+    for p in positions.values():
+        if p.primary_option:
+            options.add(p.primary_option.lower().strip())
+
+    return len(options) <= 1
+
+
+def compute_reason_stability(
+    positions: dict[str, Position],
+    decisive_claims: list[DecisiveClaim],
+) -> bool:
+    """Do models converge for the same reasons? (DOD §15.2)
+
+    Stable = models share the same decisive claim set AND all material
+    claims are evidence-supported. If model attribution is available
+    (supporting_model_ids), checks that surviving models share claims.
+    """
+    if not decisive_claims:
+        return False
+
+    material_claims = [c for c in decisive_claims if c.material_to_conclusion]
+    if not material_claims:
+        return False
+
+    # All material claims must be evidence-supported
+    if not all(c.evidence_support_status.value == "SUPPORTED" for c in material_claims):
+        return False
+
+    # DOD §15.2: "Models converge for the same reasons (shared decisive claim set)"
+    # All surviving models must endorse the SAME set of material claims.
+    surviving_models = set(positions.keys()) if positions else set()
+    if surviving_models and any(c.supporting_model_ids for c in material_claims):
+        for claim in material_claims:
+            if not claim.supporting_model_ids:
+                continue  # No attribution data — can't check
+            # Every surviving model must endorse every material claim
+            claim_models = set(claim.supporting_model_ids)
+            if not surviving_models.issubset(claim_models):
+                return False  # Not all models share this decisive claim
+
+    return True
+
+
+def compute_assumption_stability(assumptions: list[CriticalAssumption]) -> bool:
+    """Are we relying on unresolved material assumptions?
+
+    Stable = no unresolved material assumptions with UNVERIFIABLE/FALSE verifiability.
+    """
+    if not assumptions:
+        return True
+
+    for a in assumptions:
+        if (a.material and not a.resolved
+                and a.verifiability.value in ("UNVERIFIABLE", "FALSE")):
+            return False
+    return True
+
+
+def detect_fast_consensus(
+    round_positions: dict[int, dict[str, Position]],
+) -> bool:
+    """Detect if models agreed too quickly (from R1).
+
+    DOD §15.1: fast_consensus_observed = true if R1 agreement_ratio >= 0.95.
+    Agreement ratio = (count of most common option) / total models.
+    """
+    r1_positions = round_positions.get(1, {})
+    if not r1_positions or len(r1_positions) < 2:
+        return False
+
+    options: list[str] = []
+    for p in r1_positions.values():
+        if p.primary_option:
+            options.append(p.primary_option.lower().strip())
+
+    if not options:
+        return False
+
+    from collections import Counter
+    counts = Counter(options)
+    most_common_count = counts.most_common(1)[0][1]
+    agreement_ratio = most_common_count / len(options)
+    return agreement_ratio >= 0.95
+
+
+def compute_groupthink_warning(
+    fast_consensus: bool,
+    question_class: QuestionClass,
+    stakes_class: StakesClass,
+    independent_evidence_present: bool,
+) -> bool:
+    """Groupthink warning if fast consensus on non-trivial questions.
+
+    Warning if: fast_consensus AND (OPEN/AMBIGUOUS OR HIGH stakes) AND no independent evidence.
+    """
+    if not fast_consensus:
+        return False
+
+    # DOD §15.2: question_class = OPEN OR stakes_class = HIGH (not AMBIGUOUS)
+    non_trivial = question_class == QuestionClass.OPEN
+    high_stakes = stakes_class == StakesClass.HIGH
+
+    if not (non_trivial or high_stakes):
+        return False
+
+    # Independent evidence mitigates groupthink concern
+    if independent_evidence_present:
+        return False
+
+    return True
+
+
+def run_stability_tests(
+    positions: dict[str, Position],
+    decisive_claims: list[DecisiveClaim],
+    assumptions: list[CriticalAssumption],
+    round_positions: dict[int, dict[str, Position]],
+    question_class: QuestionClass,
+    stakes_class: StakesClass,
+    independent_evidence_present: bool = False,
+) -> StabilityResult:
+    """Run all stability tests. Returns StabilityResult."""
+    conclusion_stable = compute_conclusion_stability(positions)
+    reason_stable = compute_reason_stability(positions, decisive_claims)
+    assumption_stable = compute_assumption_stability(assumptions)
+    fast_consensus = detect_fast_consensus(round_positions)
+    groupthink = compute_groupthink_warning(
+        fast_consensus, question_class, stakes_class, independent_evidence_present,
+    )
+
+    return StabilityResult(
+        conclusion_stable=conclusion_stable,
+        reason_stable=reason_stable,
+        assumption_stable=assumption_stable,
+        independent_evidence_present=independent_evidence_present,
+        fast_consensus_observed=fast_consensus,
+        groupthink_warning=groupthink,
+    )
+
+```
+
+
+### thinker/preflight.py
+
+
+```python
+"""PreflightAssessment — merged Gate 1 + CS Audit (DoD v3.0 Section 4).
+
+Single Sonnet call. Handles admission, modality selection, effort calibration,
+defect typing, hidden-context discovery, assumption surfacing, and search scope.
+
+Replaces the separate gate1.py for V9. gate1.py is kept for backward compat
+but preflight.py is the canonical admission stage.
 """
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import Optional
 
-CHECKPOINT_VERSION = "2.0"
+from thinker.pipeline import pipeline_stage
+from thinker.types import (
+    Answerability, AssumptionVerifiability, BrainError, CriticalAssumption,
+    EffortTier, HiddenContextGap, Modality, PremiseFlag, PremiseFlagRouting,
+    PremiseFlagSeverity, PremiseFlagType, PreflightResult, QuestionClass,
+    SearchScope, StakesClass,
+)
 
+PREFLIGHT_PROMPT = """You are a preflight assessor for a multi-model deliberation system.
 
-@dataclass
-class PipelineState:
-    """Serializable pipeline state for checkpointing."""
-    checkpoint_version: str = CHECKPOINT_VERSION
-    brief: str = ""
-    rounds: int = 4
-    run_id: str = ""
-    current_stage: str = ""
-    completed_stages: list[str] = field(default_factory=list)
+Analyze the brief below and produce a structured JSON assessment. Your job is to:
+1. Determine if the brief is answerable as-is
+2. Classify the question type, stakes, and required effort
+3. Detect premise defects, hidden context gaps, and critical assumptions
+4. Recommend search scope and modality (DECIDE vs ANALYSIS)
 
-    # Gate 1 (legacy, kept for backward compat)
-    gate1_passed: bool = False
-    gate1_reasoning: str = ""
-    gate1_questions: list[str] = field(default_factory=list)
-    gate1_search_recommended: bool = True
-    gate1_search_reasoning: str = ""
+## Brief
+{brief}
 
-    # V9: PreflightAssessment
-    preflight: dict = field(default_factory=dict)
-    modality: str = "DECIDE"
+## Output Format — STRICT JSON (no markdown, no commentary, just the JSON object)
 
-    # V9: Dimensions
-    dimensions: dict = field(default_factory=dict)
+{{
+  "answerability": "ANSWERABLE | NEED_MORE | INVALID_FORM",
+  "question_class": "TRIVIAL | WELL_ESTABLISHED | OPEN | AMBIGUOUS",
+  "stakes_class": "LOW | STANDARD | HIGH",
+  "effort_tier": "SHORT_CIRCUIT | STANDARD | ELEVATED",
+  "modality": "DECIDE | ANALYSIS",
+  "search_scope": "NONE | TARGETED | BROAD",
+  "exploration_required": true/false,
+  "short_circuit_allowed": true/false,
+  "fatal_premise": true/false,
+  "follow_up_questions": ["specific question 1", ...],
+  "premise_flags": [
+    {{
+      "flag_id": "PFLAG-1",
+      "flag_type": "INTERNAL_CONTRADICTION | UNSUPPORTED_ASSUMPTION | AMBIGUITY | IMPOSSIBLE_REQUEST | FRAMING_DEFECT",
+      "severity": "INFO | WARNING | CRITICAL",
+      "summary": "description of the defect",
+      "routing": "REQUESTER_FIXABLE | MANAGEABLE_UNKNOWN | FRAMING_DEFECT | FATAL_PREMISE"
+    }}
+  ],
+  "hidden_context_gaps": [
+    {{
+      "gap_id": "GAP-1",
+      "description": "what context is missing",
+      "impact_if_unresolved": "what happens if we proceed without it",
+      "material": true/false
+    }}
+  ],
+  "critical_assumptions": [
+    {{
+      "assumption_id": "CA-1",
+      "text": "what we're assuming",
+      "verifiability": "VERIFIABLE | UNVERIFIABLE | FALSE | UNKNOWN",
+      "material": true/false
+    }}
+  ],
+  "reasoning": "one paragraph explaining your assessment"
+}}
 
-    # V9: Perspective Cards
-    perspective_cards: list[dict] = field(default_factory=list)
-
-    # V9: Divergence
-    divergence: dict = field(default_factory=dict)
-    adversarial_model: str = ""
-
-    # Round outputs
-    round_texts: dict[str, dict[str, str]] = field(default_factory=dict)  # {round_num: {model: text}}
-    round_responded: dict[str, list[str]] = field(default_factory=dict)
-    round_failed: dict[str, list[str]] = field(default_factory=dict)
-
-    # Arguments
-    arguments_by_round: dict[str, list[dict]] = field(default_factory=dict)
-    unaddressed_text: str = ""
-    all_unaddressed: list[dict] = field(default_factory=list)
-
-    # Positions
-    positions_by_round: dict[str, dict[str, dict]] = field(default_factory=dict)
-    position_changes: list[dict] = field(default_factory=list)
-
-    # Evidence
-    evidence_items: list[dict] = field(default_factory=list)
-    evidence_count: int = 0
-
-    # V9: Search log
-    search_log: list[dict] = field(default_factory=list)
-
-    # Search
-    search_queries: dict[str, list[str]] = field(default_factory=dict)
-    search_results: dict[str, int] = field(default_factory=dict)
-
-    # V9: Ungrounded stats tracking (DOD §9.2)
-    ungrounded_flagged_claims: list[dict] = field(default_factory=list)
-    ungrounded_r1_executed: bool = False
-    ungrounded_r2_executed: bool = False
-
-    # Classification
-    agreement_ratio: float = 0.0
-    outcome_class: str = ""
-
-    # Synthesis
-    report: str = ""
-    report_json: dict = field(default_factory=dict)
-
-    # V9: Stability
-    stability: dict = field(default_factory=dict)
-
-    # Gate 2
-    outcome: str = ""
-
-    def save(self, path: Path):
-        path.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
-
-    @classmethod
-    def load(cls, path: Path) -> "PipelineState":
-        data = json.loads(path.read_text(encoding="utf-8"))
-        saved_version = data.get("checkpoint_version", "0.0")
-        if saved_version != CHECKPOINT_VERSION:
-            raise ValueError(
-                f"Checkpoint version mismatch: file has {saved_version}, "
-                f"code expects {CHECKPOINT_VERSION}. "
-                f"Delete the checkpoint and re-run from scratch."
-            )
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+## Rules
+- ANSWERABLE: question is specific, has enough context, clear deliverable
+- NEED_MORE: critical context missing, ambiguous, or fatal premise
+- INVALID_FORM: question is malformed or nonsensical (maps to NEED_MORE outcome, NOT ERROR)
+- short_circuit_allowed: ONLY true when question_class in [TRIVIAL, WELL_ESTABLISHED] AND stakes_class = LOW AND no CRITICAL premise flags AND no material hidden_context_gaps
+- effort_tier = ELEVATED when: stakes_class = HIGH OR question_class = AMBIGUOUS OR any CRITICAL premise flag
+- Surface 3-5 critical unstated assumptions. If any is UNVERIFIABLE or FALSE and material, answerability should be NEED_MORE
+- ANALYSIS modality: when the question asks for exploration/mapping rather than a verdict
+- DECIDE modality: when the question asks for a recommendation/assessment/verdict"""
 
 
-# Valid stage IDs in pipeline order (V9)
-STAGE_ORDER = [
-    "preflight", "dimensions",
-    "r1", "track1", "perspective_cards", "framing_pass",
-    "ungrounded_r1", "search1",
-    "r2", "track2", "frame_survival_r2",
-    "ungrounded_r2", "search2",
-    "r3", "track3", "frame_survival_r3",
-    "r4", "track4",
-    "semantic_contradiction", "decisive_claims", "synthesis_packet",
-    "synthesis", "stability", "gate2",
-]
+@pipeline_stage(
+    name="PreflightAssessment",
+    description="Merged Gate 1 + CS Audit. Single Sonnet call. Handles admission, modality, effort, defect routing, assumptions, search scope.",
+    stage_type="gate",
+    order=1,
+    provider="sonnet",
+    inputs=["brief"],
+    outputs=["PreflightResult"],
+    logic="Parse JSON. ANSWERABLE->admit. NEED_MORE->reject with questions. INVALID_FORM->NEED_MORE. Parse fail->BrainError.",
+    failure_mode="LLM failure or parse failure: BrainError (zero tolerance).",
+    cost="1 Sonnet call",
+    stage_id="preflight",
+)
+async def run_preflight(client, brief: str) -> PreflightResult:
+    """Run the PreflightAssessment stage.
+
+    Returns PreflightResult on success.
+    Raises BrainError on LLM failure or parse failure.
+    """
+    prompt = PREFLIGHT_PROMPT.format(brief=brief)
+    resp = await client.call("sonnet", prompt)
+
+    if not resp.ok:
+        raise BrainError("preflight", f"PreflightAssessment LLM call failed: {resp.error}")
+
+    # Parse JSON response
+    text = resp.text.strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:])
+    if text.endswith("```"):
+        text = "\n".join(text.split("\n")[:-1])
+    text = text.strip()
+
+    try:
+        from thinker.types import extract_json
+        data = extract_json(text)
+    except json.JSONDecodeError as e:
+        raise BrainError("preflight", f"Failed to parse PreflightAssessment JSON: {e}",
+                         detail=resp.text[:500])
+
+    # Validate required fields
+    required = ["answerability", "question_class", "stakes_class", "effort_tier", "modality"]
+    for field in required:
+        if field not in data:
+            raise BrainError("preflight", f"Missing required field: {field}",
+                             detail=f"Got keys: {list(data.keys())}")
+
+    # Build result
+    try:
+        premise_flags = []
+        for pf in data.get("premise_flags", []):
+            premise_flags.append(PremiseFlag(
+                flag_id=pf.get("flag_id", "PFLAG-?"),
+                flag_type=PremiseFlagType(pf.get("flag_type", "FRAMING_DEFECT")),
+                severity=PremiseFlagSeverity(pf.get("severity", "WARNING")),
+                summary=pf.get("summary", ""),
+                routing=PremiseFlagRouting(pf.get("routing", "MANAGEABLE_UNKNOWN")),
+                blocking=pf.get("severity") == "CRITICAL",
+            ))
+
+        hidden_gaps = []
+        for g in data.get("hidden_context_gaps", []):
+            hidden_gaps.append(HiddenContextGap(
+                gap_id=g.get("gap_id", "GAP-?"),
+                description=g.get("description", ""),
+                impact_if_unresolved=g.get("impact_if_unresolved", ""),
+                material=g.get("material", False),
+            ))
+
+        assumptions = []
+        for a in data.get("critical_assumptions", []):
+            assumptions.append(CriticalAssumption(
+                assumption_id=a.get("assumption_id", "CA-?"),
+                text=a.get("text", ""),
+                verifiability=AssumptionVerifiability(a.get("verifiability", "UNKNOWN")),
+                material=a.get("material", True),
+            ))
+
+        result = PreflightResult(
+            executed=True,
+            parse_ok=True,
+            answerability=Answerability(data["answerability"]),
+            question_class=QuestionClass(data["question_class"]),
+            stakes_class=StakesClass(data["stakes_class"]),
+            effort_tier=EffortTier(data["effort_tier"]),
+            modality=Modality(data["modality"]),
+            search_scope=SearchScope(data.get("search_scope", "TARGETED")),
+            exploration_required=data.get("exploration_required", False),
+            short_circuit_allowed=data.get("short_circuit_allowed", False),
+            fatal_premise=data.get("fatal_premise", False),
+            follow_up_questions=data.get("follow_up_questions", []),
+            premise_flags=premise_flags,
+            hidden_context_gaps=hidden_gaps,
+            critical_assumptions=assumptions,
+            reasoning=data.get("reasoning", ""),
+        )
+
+    except (ValueError, KeyError) as e:
+        raise BrainError("preflight", f"Invalid enum value in PreflightAssessment: {e}",
+                         detail=resp.text[:500])
+
+    # Enforce admission guards (DoD v3.0 Section 4.4)
+    if result.short_circuit_allowed:
+        if result.question_class not in (QuestionClass.TRIVIAL, QuestionClass.WELL_ESTABLISHED):
+            result.short_circuit_allowed = False
+        if result.stakes_class != StakesClass.LOW:
+            result.short_circuit_allowed = False
+        if result.has_critical_flags:
+            result.short_circuit_allowed = False
+        if result.has_material_unresolved_gaps:
+            result.short_circuit_allowed = False
+
+    # Enforce elevated effort
+    if (result.stakes_class == StakesClass.HIGH
+            or result.question_class == QuestionClass.AMBIGUOUS
+            or result.has_critical_flags):
+        if result.effort_tier != EffortTier.ELEVATED:
+            result.effort_tier = EffortTier.ELEVATED
+
+    return result
+
+```
 
 
-def should_stop(current_stage: str, stop_after: Optional[str]) -> bool:
-    """Check if we should stop after the current stage."""
-    if not stop_after:
-        return False
-    if current_stage == stop_after:
-        return True
-    return False
+### thinker/residue.py
 
 
-def print_checkpoint(path: str):
-    """Pretty-print a checkpoint file for inspection."""
-    state = PipelineState.load(Path(path))
-    print(f"\n{'='*60}")
-    print(f"  CHECKPOINT: {path}")
-    print(f"{'='*60}")
-    print(f"  Run ID:     {state.run_id}")
-    print(f"  Brief:      {len(state.brief)} chars")
-    print(f"  Stage:      {state.current_stage}")
-    print(f"  Completed:  {' → '.join(state.completed_stages)}")
-    print()
+```python
+"""Post-synthesis residue verification.
 
-    if "gate1" in state.completed_stages:
-        print(f"  Gate 1:     {'PASS' if state.gate1_passed else 'NEED_MORE'}")
-        print(f"  Reasoning:  {state.gate1_reasoning[:150]}...")
-        print()
+V8-F1 (DoD D7): After synthesis, scan the report text to verify it
+mentions all structural findings — blocker IDs, contradiction IDs,
+and unaddressed argument IDs. This is a narrative completeness check,
+not truth verification.
 
-    for rnd in ["1", "2", "3"]:
-        if rnd in state.round_responded:
-            responded = state.round_responded[rnd]
-            failed = state.round_failed.get(rnd, [])
-            print(f"  R{rnd}: responded={responded}, failed={failed}")
-            # Show positions if available
-            if rnd in state.positions_by_round:
-                for m, p in state.positions_by_round[rnd].items():
-                    print(f"    {m}: {p.get('option', '?')} [{p.get('confidence', '?')}]")
-            # Show args
-            if rnd in state.arguments_by_round:
-                n = len(state.arguments_by_round[rnd])
-                print(f"    Arguments: {n}")
-            print()
+V9 (DoD Section 14): Structured dispositions. Schema validation + coverage
+validation replaces string matching. Disposition object for every open blocker,
+active frame, decisive claim, contradiction. omission_rate > 0.20 triggers
+deep semantic scan.
+"""
+from __future__ import annotations
 
-    if state.search_results:
-        for phase, count in state.search_results.items():
-            print(f"  Search {phase}: {state.search_queries.get(phase, ['?'])} → {count} evidence")
-        print()
-
-    if state.outcome_class:
-        print(f"  Agreement:  {state.agreement_ratio:.2f}")
-        print(f"  Class:      {state.outcome_class}")
-        print(f"  Outcome:    {state.outcome}")
-        print()
-
-    if state.report:
-        print(f"  Report:     {len(state.report)} chars")
-    print(f"{'='*60}")
+from thinker.pipeline import pipeline_stage
+from thinker.types import (
+    Argument, Blocker, BlockerStatus, Contradiction, DecisiveClaim,
+    DispositionObject, DispositionTargetType, FrameInfo, FrameSurvivalStatus,
+    SemanticContradiction,
+)
 
 
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1:
-        print_checkpoint(sys.argv[1])
-    else:
-        print("Usage: python -m thinker.checkpoint <checkpoint.json>")
-        print(f"\nValid stage IDs for --stop-after: {', '.join(STAGE_ORDER)}")
+def check_synthesis_residue(
+    report: str,
+    blockers: list[Blocker],
+    contradictions: list[Contradiction],
+    unaddressed_arguments: list[Argument],
+) -> list[dict]:
+    """Scan synthesis report for structural finding references.
+
+    Returns list of omission dicts:
+    {"type": "blocker"|"contradiction"|"argument", "id": str}
+
+    If >30% of total structural findings are omitted, each omission
+    gets threshold_violation=True.
+    """
+    omissions: list[dict] = []
+    total_items = len(blockers) + len(contradictions) + len(unaddressed_arguments)
+
+    # Check blocker IDs
+    for b in blockers:
+        if b.blocker_id not in report:
+            omissions.append({"type": "blocker", "id": b.blocker_id})
+
+    # Check contradiction IDs
+    for c in contradictions:
+        if c.contradiction_id not in report:
+            omissions.append({"type": "contradiction", "id": c.contradiction_id})
+
+    # Check unaddressed argument IDs
+    for a in unaddressed_arguments:
+        if a.argument_id not in report:
+            omissions.append({"type": "argument", "id": a.argument_id})
+
+    # Threshold check: >30% omitted
+    threshold_violated = (
+        total_items > 0 and len(omissions) / total_items > 0.30
+    )
+    if threshold_violated:
+        for o in omissions:
+            o["threshold_violation"] = True
+
+    return omissions
+
+
+def check_disposition_coverage(
+    dispositions: list[DispositionObject],
+    open_blockers: list[Blocker],
+    active_frames: list[FrameInfo],
+    decisive_claims: list[DecisiveClaim],
+    contradictions_numeric: list[Contradiction],
+    contradictions_semantic: list[SemanticContradiction],
+    open_material_arguments: list[Argument] | None = None,
+) -> dict:
+    """V9: Check that synthesis dispositions cover all tracked open findings.
+
+    Returns dict with: coverage_pass, omission_rate, omissions[], deep_scan_triggered.
+    """
+    # Build required targets
+    required_targets: list[tuple[str, str]] = []  # (target_type, target_id)
+
+    for b in open_blockers:
+        if b.status == BlockerStatus.OPEN:
+            required_targets.append(("BLOCKER", b.blocker_id))
+
+    for f in active_frames:
+        if f.survival_status in (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED):
+            required_targets.append(("FRAME", f.frame_id))
+
+    for c in decisive_claims:
+        required_targets.append(("CLAIM", c.claim_id))
+
+    for c in contradictions_numeric:
+        if c.status not in ("RESOLVED", "NON_MATERIAL"):
+            required_targets.append(("CONTRADICTION", c.contradiction_id))
+
+    for c in contradictions_semantic:
+        if c.status.value not in ("RESOLVED", "NON_MATERIAL"):
+            required_targets.append(("CONTRADICTION", c.ctr_id))
+
+    # DOD §11.3: open material arguments need dispositions
+    for a in (open_material_arguments or []):
+        if a.open:
+            required_targets.append(("ARGUMENT", a.argument_id))
+
+    if not required_targets:
+        return {
+            "coverage_pass": True,
+            "omission_rate": 0.0,
+            "omissions": [],
+            "deep_scan_triggered": False,
+            "total_required": 0,
+            "total_disposed": 0,
+        }
+
+    # Build disposition lookup
+    disposed = set()
+    for d in dispositions:
+        disposed.add((d.target_type.value, d.target_id))
+
+    # Find omissions
+    omissions = []
+    for target_type, target_id in required_targets:
+        if (target_type, target_id) not in disposed:
+            omissions.append({"target_type": target_type, "target_id": target_id})
+
+    omission_rate = len(omissions) / len(required_targets) if required_targets else 0.0
+    deep_scan = omission_rate > 0.20
+
+    return {
+        "coverage_pass": len(omissions) == 0,
+        "omission_rate": round(omission_rate, 3),
+        "omissions": omissions,
+        "deep_scan_triggered": deep_scan,
+        "expected_disposition_count": len(required_targets),  # DOD §14.4
+        "emitted_disposition_count": len(required_targets) - len(omissions),  # DOD §14.4
+        # Keep old names for internal use
+        "total_required": len(required_targets),
+        "total_disposed": len(required_targets) - len(omissions),
+    }
+
+
+def run_deep_semantic_scan(
+    report: str,
+    omissions: list[dict],
+) -> dict:
+    """Deep semantic scan: second-pass string match for omitted dispositions.
+
+    DOD §14.5: omission_rate > 0.20 triggers deep semantic scan.
+    DOD §14.6: "Deep scan threshold exceeded but scan not run → ERROR."
+
+    Scans the synthesis report text for any reference to omitted targets.
+    If the report text mentions the target (by ID or partial text match),
+    the omission is downgraded to "addressed_in_text" (soft coverage).
+    Remaining true omissions after deep scan are material.
+    """
+    resolved = []
+    still_missing = []
+
+    for om in omissions:
+        target_id = om.get("target_id", "")
+        # Check if the synthesis text mentions this target by ID
+        if target_id and target_id in report:
+            resolved.append({**om, "deep_scan_result": "addressed_in_text"})
+        else:
+            still_missing.append({**om, "deep_scan_result": "confirmed_missing"})
+
+    return {
+        "deep_scan_run": True,
+        "resolved_by_scan": len(resolved),
+        "still_missing": len(still_missing),
+        "resolved": resolved,
+        "missing": still_missing,
+        "material_omissions_remain": len(still_missing) > 0,
+    }
+
+
+@pipeline_stage(
+    name="Residue Verification",
+    description="Post-synthesis narrative completeness check. Scans the synthesis report text for BLK IDs, CTR IDs, and unaddressed argument IDs. If >30% of structural findings are omitted, flags a threshold violation. This is NOT truth verification — it checks whether the synthesis mentioned the findings, not whether it got them right.",
+    stage_type="deterministic",
+    order=9,
+    provider="deterministic (no LLM)",
+    inputs=["synthesis report text", "blockers", "contradictions", "unaddressed_arguments"],
+    outputs=["omissions (list[dict]) — type, id, threshold_violation flag"],
+    logic="""For each BLK ID: is it mentioned in the report text? If not → omission.
+For each CTR ID: is it mentioned? If not → omission.
+For each unaddressed argument ID: is it mentioned? If not → omission.
+If omissions / total_items > 0.30 → threshold_violation=True on all omissions.""",
+    failure_mode="Cannot fail — string matching only.",
+    cost="$0 (no LLM call)",
+    stage_id="residue_verification",
+)
+def _register_residue_verification(): pass
 
 ```
 
@@ -7319,6 +5233,756 @@ def _register_argument_tracker(): pass
 ```
 
 
+### thinker/perspective_cards.py
+
+
+```python
+"""Perspective Cards — structured R1 output extraction (DoD v3.0 Section 7).
+
+Parses R1 model outputs to extract 5 structured fields per model.
+No LLM call — regex/text parsing only.
+"""
+from __future__ import annotations
+
+import re
+
+from thinker.types import CoverageObligation, PerspectiveCard, TimeHorizon
+
+# Coverage obligation assignments (fixed per model)
+_MODEL_OBLIGATIONS = {
+    "kimi": CoverageObligation.CONTRARIAN,
+    "r1": CoverageObligation.MECHANISM_ANALYSIS,
+    "reasoner": CoverageObligation.OPERATIONAL_RISK,
+    "glm5": CoverageObligation.OBJECTIVE_REFRAMING,
+}
+
+# Field patterns to extract from model output
+_FIELD_PATTERNS = {
+    "primary_frame": re.compile(r"PRIMARY_FRAME:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+    "hidden_assumption_attacked": re.compile(r"HIDDEN_ASSUMPTION_ATTACKED:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+    "stakeholder_lens": re.compile(r"STAKEHOLDER_LENS:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+    "time_horizon": re.compile(r"TIME_HORIZON:\s*\**(\w+)\**", re.IGNORECASE),
+    "failure_mode": re.compile(r"FAILURE_MODE:\s*\**(.+?)\**\s*$", re.IGNORECASE | re.MULTILINE),
+}
+
+
+def _parse_time_horizon(text: str) -> TimeHorizon:
+    text = text.strip().upper()
+    if text in ("SHORT", "SHORT-TERM", "SHORT_TERM"):
+        return TimeHorizon.SHORT
+    elif text in ("LONG", "LONG-TERM", "LONG_TERM"):
+        return TimeHorizon.LONG
+    return TimeHorizon.MEDIUM
+
+
+def extract_perspective_cards(r1_texts: dict[str, str]) -> list[PerspectiveCard]:
+    """Extract perspective cards from R1 model outputs.
+
+    DOD §7.3: "Missing card or field → ERROR"
+    """
+    from thinker.types import BrainError
+
+    cards = []
+    required_fields = ["primary_frame", "hidden_assumption_attacked",
+                       "stakeholder_lens", "time_horizon", "failure_mode"]
+
+    for model_id, text in r1_texts.items():
+        fields = {}
+        for field_name, pattern in _FIELD_PATTERNS.items():
+            match = pattern.search(text)
+            if match:
+                fields[field_name] = match.group(1).strip()
+
+        # DOD §7.3 + zero-tolerance: missing card or field → ERROR
+        if not text.strip():
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} produced no R1 output — zero tolerance",
+                detail="DOD §7.3: Missing card → ERROR.",
+            )
+        missing = [f for f in required_fields if not fields.get(f)]
+        if missing:
+            raise BrainError(
+                "perspective_cards",
+                f"Model {model_id} missing perspective card fields: {missing}",
+                detail=f"DOD §7.3: Missing field → ERROR. Extracted: {list(fields.keys())}",
+            )
+
+        time_horizon = _parse_time_horizon(fields["time_horizon"])
+        obligation = _MODEL_OBLIGATIONS.get(model_id, CoverageObligation.MECHANISM_ANALYSIS)
+
+        card = PerspectiveCard(
+            model_id=model_id,
+            primary_frame=fields["primary_frame"],
+            hidden_assumption_attacked=fields["hidden_assumption_attacked"],
+            stakeholder_lens=fields["stakeholder_lens"],
+            time_horizon=time_horizon,
+            failure_mode=fields["failure_mode"],
+            coverage_obligation=obligation,
+        )
+        cards.append(card)
+
+    return cards
+
+
+def format_perspective_card_instructions() -> str:
+    """Generate the perspective card instruction text for R1 prompts."""
+    return (
+        "\n## Structured Output Requirements (MANDATORY)\n"
+        "After your analysis, you MUST include these 5 fields on separate lines:\n\n"
+        "PRIMARY_FRAME: [your primary way of looking at this question]\n"
+        "HIDDEN_ASSUMPTION_ATTACKED: [which assumption you are challenging]\n"
+        "STAKEHOLDER_LENS: [whose perspective you are representing]\n"
+        "TIME_HORIZON: [SHORT | MEDIUM | LONG]\n"
+        "FAILURE_MODE: [what could go wrong with your recommended approach]\n"
+    )
+
+```
+
+
+### thinker/divergent_framing.py
+
+
+```python
+"""Divergent Framing — framing pass, frame survival, exploration stress (DoD v3.0 Section 8).
+
+Framing pass: Sonnet extracts alt frames from R1 outputs.
+Frame survival: 3-vote R2 drop (traceable), CONTESTED in R3/R4 (never dropped).
+Exploration stress: inject seed frames when R1 agreement > 0.75 on OPEN/HIGH.
+"""
+from __future__ import annotations
+
+import json
+from typing import Optional
+
+from thinker.pipeline import pipeline_stage
+from thinker.types import (
+    BrainError, CrossDomainAnalogy, DivergenceResult, FrameInfo,
+    FrameSurvivalStatus, FrameType, QuestionClass, StakesClass,
+)
+
+FRAMING_EXTRACT_PROMPT = """You are a framing analyst for a multi-model deliberation system.
+
+Given the R1 model outputs below, extract ALL material alternative frames (ways of looking at this question that differ from the obvious framing).
+
+## Brief
+{brief}
+
+## R1 Model Outputs
+{r1_texts_formatted}
+
+## Output Format — STRICT JSON (no markdown, no commentary)
+
+{{
+  "frames": [
+    {{
+      "frame_id": "FRAME-1",
+      "text": "description of the alternative frame",
+      "origin_model": "model_id that proposed this",
+      "frame_type": "INVERSION | OBJECTIVE_REWRITE | PREMISE_CHALLENGE | CROSS_DOMAIN_ANALOGY | OPPOSITE_STANCE | REMOVE_PROBLEM",
+      "material_to_outcome": true/false
+    }}
+  ],
+  "cross_domain_analogies": [
+    {{
+      "analogy_id": "ANA-1",
+      "source_domain": "domain the analogy comes from",
+      "target_claim_id": "claim this analogy supports/challenges",
+      "transfer_mechanism": "how the analogy applies"
+    }}
+  ]
+}}
+
+## Rules
+- Extract frames that are genuinely different from the default framing
+- A frame is material if it could change the outcome
+- Cross-domain analogies: look for when models draw parallels from other fields
+- Be generous: if in doubt, include it as a frame"""
+
+
+FRAME_SURVIVAL_PROMPT = """Evaluate whether each alternative frame survives this round of deliberation.
+
+## Active Frames
+{frames_formatted}
+
+## Round {round_num} Model Outputs
+{round_texts_formatted}
+
+## Output Format — STRICT JSON
+
+{{
+  "evaluations": [
+    {{
+      "frame_id": "FRAME-1",
+      "status": "ACTIVE | CONTESTED | DROPPED | ADOPTED | REBUTTED",
+      "drop_vote_models": ["model_id"],
+      "reasoning": "why this status"
+    }}
+  ]
+}}
+
+## Rules (Round {round_num})
+{survival_rules}"""
+
+
+@pipeline_stage(
+    name="Framing Pass",
+    description="Sonnet extracts alternative frames from R1 outputs. Tracks frame survival through rounds.",
+    stage_type="track",
+    order=5,
+    provider="sonnet",
+    inputs=["brief", "r1_texts"],
+    outputs=["DivergenceResult"],
+    logic="Extract frames. Track survival. 3-vote R2 drop. CONTESTED never dropped in R3/R4.",
+    failure_mode="LLM failure or parse failure: BrainError.",
+    cost="1-3 Sonnet calls",
+    stage_id="framing_pass",
+)
+async def run_framing_extract(client, brief: str, r1_texts: dict[str, str]) -> DivergenceResult:
+    """Extract alternative frames from R1 outputs."""
+    # Format R1 texts
+    r1_formatted = "\n\n".join(f"### {model}\n{text}" for model, text in r1_texts.items())
+    prompt = FRAMING_EXTRACT_PROMPT.format(brief=brief, r1_texts_formatted=r1_formatted)
+
+    resp = await client.call("sonnet", prompt)
+    if not resp.ok:
+        raise BrainError("framing_pass", f"Framing extract LLM call failed: {resp.error}")
+
+    text = resp.text.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:])
+    if text.endswith("```"):
+        text = "\n".join(text.split("\n")[:-1])
+    text = text.strip()
+
+    try:
+        from thinker.types import extract_json
+        data = extract_json(text)
+    except json.JSONDecodeError as e:
+        raise BrainError("framing_pass", f"Failed to parse framing extract JSON: {e}",
+                         detail=resp.text[:500])
+
+    frames = []
+    for f in data.get("frames", []):
+        try:
+            frame_type = FrameType(f.get("frame_type", "INVERSION"))
+        except ValueError:
+            frame_type = FrameType.INVERSION
+        frames.append(FrameInfo(
+            frame_id=f.get("frame_id", f"FRAME-{len(frames)+1}"),
+            text=f.get("text", ""),
+            origin_round=1,
+            origin_model=f.get("origin_model", ""),
+            frame_type=frame_type,
+            material_to_outcome=f.get("material_to_outcome", True),
+        ))
+
+    analogies = []
+    for a in data.get("cross_domain_analogies", []):
+        analogies.append(CrossDomainAnalogy(
+            analogy_id=a.get("analogy_id", f"ANA-{len(analogies)+1}"),
+            source_domain=a.get("source_domain", ""),
+            target_claim_id=a.get("target_claim_id", ""),
+            transfer_mechanism=a.get("transfer_mechanism", ""),
+        ))
+
+    return DivergenceResult(
+        required=True,
+        framing_pass_executed=True,
+        alt_frames=frames,
+        cross_domain_analogies=analogies,
+    )
+
+
+async def run_frame_survival_check(
+    client,
+    frames: list[FrameInfo],
+    round_texts: dict[str, str],
+    round_num: int,
+    is_analysis_mode: bool = False,
+) -> list[FrameInfo]:
+    """Check frame survival against a round's outputs.
+
+    R2: frame DROPPED only if 3+ traceable drop votes.
+    R3/R4: frames are never dropped, only CONTESTED.
+    """
+    if not frames:
+        return frames
+
+    active_frames = [f for f in frames if f.survival_status in
+                     (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
+    if not active_frames:
+        return frames
+
+    frames_formatted = "\n".join(
+        f"- {f.frame_id}: {f.text} (status: {f.survival_status.value})"
+        for f in active_frames
+    )
+    round_formatted = "\n\n".join(f"### {m}\n{t}" for m, t in round_texts.items())
+
+    if is_analysis_mode:
+        # DOD §18.2: ANALYSIS frames use EXPLORED/NOTED/UNEXPLORED, never dropped
+        rules = ("- ANALYSIS mode: frames are NEVER dropped.\n"
+                 "- Use statuses: EXPLORED (substantively investigated), NOTED (acknowledged but not deep), "
+                 "UNEXPLORED (identified but not investigated).\n"
+                 "- Do NOT use ACTIVE/CONTESTED/DROPPED in ANALYSIS mode.")
+    elif round_num == 2:
+        rules = "- A frame is DROPPED only if 3 or more models explicitly reject it with traceable reasoning.\n- A frame is CONTESTED if at least 1 model challenges it but fewer than 3.\n- A frame is ADOPTED if a model explicitly takes it up.\n- A frame is REBUTTED if substantively countered."
+    else:
+        rules = "- Frames are NEVER dropped in R3/R4. They can only be CONTESTED, ADOPTED, or remain ACTIVE.\n- CONTESTED frames stay CONTESTED (never downgraded to DROPPED)."
+
+    prompt = FRAME_SURVIVAL_PROMPT.format(
+        frames_formatted=frames_formatted,
+        round_num=round_num,
+        round_texts_formatted=round_formatted,
+        survival_rules=rules,
+    )
+
+    resp = await client.call("sonnet", prompt)
+    if not resp.ok:
+        raise BrainError(f"frame_survival_r{round_num}",
+                         f"Frame survival LLM call failed: {resp.error}")
+
+    text = resp.text.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:])
+    if text.endswith("```"):
+        text = "\n".join(text.split("\n")[:-1])
+    text = text.strip()
+
+    try:
+        from thinker.types import extract_json
+        data = extract_json(text)
+    except json.JSONDecodeError as e:
+        raise BrainError(f"frame_survival_r{round_num}",
+                         f"Failed to parse frame survival JSON: {e}",
+                         detail=resp.text[:500])
+
+    # Build lookup
+    eval_lookup = {e["frame_id"]: e for e in data.get("evaluations", [])}
+
+    for frame in frames:
+        ev = eval_lookup.get(frame.frame_id)
+        if not ev:
+            continue
+
+        try:
+            new_status = FrameSurvivalStatus(ev.get("status", "ACTIVE"))
+        except ValueError:
+            new_status = FrameSurvivalStatus.ACTIVE
+
+        # ANALYSIS mode: frames are NEVER dropped (DOD 18.2)
+        if is_analysis_mode and new_status == FrameSurvivalStatus.DROPPED:
+            new_status = FrameSurvivalStatus.CONTESTED
+
+        # R3/R4: never allow DROPPED
+        if round_num >= 3 and new_status == FrameSurvivalStatus.DROPPED:
+            new_status = FrameSurvivalStatus.CONTESTED
+
+        # R2: require 3 drop votes for DROPPED
+        if round_num == 2 and new_status == FrameSurvivalStatus.DROPPED:
+            drop_models = ev.get("drop_vote_models", [])
+            if len(drop_models) < 3:
+                new_status = FrameSurvivalStatus.CONTESTED
+            else:
+                frame.r2_drop_vote_count = len(drop_models)
+                frame.r2_drop_vote_refs = drop_models
+
+        frame.survival_status = new_status
+
+    return frames
+
+
+def check_exploration_stress(
+    agreement_ratio: float,
+    question_class: QuestionClass,
+    stakes_class: StakesClass,
+) -> bool:
+    """Check if exploration stress trigger should fire.
+
+    Returns True if R1 agreement > 0.75 on OPEN/HIGH questions.
+    """
+    if agreement_ratio <= 0.75:
+        return False
+    # DOD Section 8.3: OPEN OR HIGH (not AMBIGUOUS)
+    if question_class == QuestionClass.OPEN:
+        return True
+    if stakes_class == StakesClass.HIGH:
+        return True
+    return False
+
+
+def format_frames_for_prompt(frames: list[FrameInfo]) -> str:
+    """Format active/contested frames for injection into R2+ prompts."""
+    active = [f for f in frames if f.survival_status in
+              (FrameSurvivalStatus.ACTIVE, FrameSurvivalStatus.CONTESTED)]
+    if not active:
+        return ""
+
+    lines = ["## Alternative Frames (must address)",
+             "The following alternative frames have survived deliberation so far.\n"]
+    for f in active:
+        status_tag = f" [{f.survival_status.value}]" if f.survival_status == FrameSurvivalStatus.CONTESTED else ""
+        lines.append(f"- **{f.frame_id}**: {f.text}{status_tag}")
+
+    return "\n".join(lines)
+
+
+def format_r2_frame_enforcement() -> str:
+    """R2 frame enforcement instruction text."""
+    return (
+        "\n## Frame Engagement Requirements (MANDATORY for R2)\n"
+        "You MUST:\n"
+        "1. ADOPT at least one alternative frame and argue from its perspective\n"
+        "2. REBUT at least one alternative frame with substantive counter-arguments\n"
+        "3. GENERATE at least one NEW alternative frame not yet proposed\n"
+        "\nFor each, clearly label: ADOPT: [frame_id], REBUT: [frame_id], NEW_FRAME: [description]\n"
+    )
+
+```
+
+
+### thinker/decisive_claims.py
+
+
+```python
+"""Decisive Claim Extraction — identifies claims that carry the conclusion (DESIGN-V3.md Section 3.2).
+
+One Sonnet call post-R4. Extracts claims that are material to the conclusion,
+with evidence bindings showing what supports each claim.
+"""
+from __future__ import annotations
+
+import json
+
+from thinker.pipeline import pipeline_stage
+from thinker.types import (
+    BrainError, DecisiveClaim, EvidenceSupportStatus,
+)
+
+CLAIM_EXTRACTION_PROMPT = """You are a decisive claim extractor for a multi-model deliberation system.
+
+Given the final round model outputs and available evidence, identify the 3-8 most decisive claims —
+the claims that CARRY the conclusion. A decisive claim is one where, if it were false, the conclusion
+would change.
+
+## Final Round Model Outputs
+{final_views}
+
+## Available Evidence
+{evidence_text}
+
+## Output Format — STRICT JSON (no markdown, no commentary)
+
+{{
+  "claims": [
+    {{
+      "claim_id": "DC-1",
+      "text": "the decisive claim in one sentence",
+      "material_to_conclusion": true,
+      "evidence_refs": ["E001", "E003"],
+      "evidence_support_status": "SUPPORTED | PARTIAL | UNSUPPORTED",
+      "supporting_model_ids": ["r1", "reasoner"]
+    }}
+  ]
+}}
+
+## Rules
+- 3-8 claims maximum. Focus on the ones that MATTER.
+- SUPPORTED: claim is directly backed by cited evidence
+- PARTIAL: some evidence exists but doesn't fully prove the claim
+- UNSUPPORTED: claim is asserted by models but has no evidence backing
+- evidence_refs: list evidence IDs (E001-E999) that support this claim. Empty list = UNSUPPORTED.
+- material_to_conclusion: true if removing this claim would change the outcome
+- supporting_model_ids: list which models made or endorsed this claim (e.g. ["r1", "reasoner"])"""
+
+
+@pipeline_stage(
+    name="Decisive Claim Extraction",
+    description="Post-R4 Sonnet call extracting 3-8 claims that carry the conclusion, with evidence bindings.",
+    stage_type="track",
+    order=16,
+    provider="sonnet",
+    inputs=["final_views", "evidence_text"],
+    outputs=["DecisiveClaim[]"],
+    logic="Parse JSON. 3-8 claims. Each with evidence refs and support status.",
+    failure_mode="LLM or parse failure: return empty list (non-fatal — degrades D4/stability but doesn't halt).",
+    cost="1 Sonnet call",
+    stage_id="decisive_claims",
+)
+async def extract_decisive_claims(
+    client,
+    final_views: dict[str, str],
+    evidence_text: str,
+) -> list[DecisiveClaim]:
+    """Extract decisive claims from final round outputs."""
+    views_formatted = "\n\n".join(f"### {m}\n{t}" for m, t in final_views.items())
+    prompt = CLAIM_EXTRACTION_PROMPT.format(
+        final_views=views_formatted,
+        evidence_text=evidence_text or "No evidence available.",
+    )
+
+    resp = await client.call("sonnet", prompt)
+    if not resp.ok:
+        # Non-fatal: decisive claims degrade gracefully
+        return []
+
+    text = resp.text.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:])
+    if text.endswith("```"):
+        text = "\n".join(text.split("\n")[:-1])
+    text = text.strip()
+
+    try:
+        from thinker.types import extract_json
+        data = extract_json(text)
+    except json.JSONDecodeError:
+        return []
+
+    claims = []
+    for c in data.get("claims", [])[:8]:
+        try:
+            support = EvidenceSupportStatus(c.get("evidence_support_status", "UNSUPPORTED"))
+        except ValueError:
+            support = EvidenceSupportStatus.UNSUPPORTED
+
+        claims.append(DecisiveClaim(
+            claim_id=c.get("claim_id", f"DC-{len(claims)+1}"),
+            text=c.get("text", ""),
+            material_to_conclusion=c.get("material_to_conclusion", True),
+            evidence_refs=c.get("evidence_refs", []),
+            evidence_support_status=support,
+            supporting_model_ids=c.get("supporting_model_ids", []),
+        ))
+
+    return claims
+
+```
+
+
+### thinker/evidence.py
+
+
+```python
+"""Evidence Ledger — stores, deduplicates, scores, and formats evidence.
+
+Evidence items are kept in insertion order (search engine's ranking order).
+V8-F3 adds relevance scoring: under cap pressure, the lowest-scored item
+is evicted instead of blindly rejecting new items.
+Cap at max_items. Within the same score tier, insertion order is preserved.
+
+V9: Two-tier ledger — active_items (capped) + archive_items (uncapped).
+Eviction moves to archive, never deletes. Referenced evidence always available.
+"""
+from __future__ import annotations
+
+import hashlib
+from typing import Optional
+from urllib.parse import urlparse
+
+from thinker.types import Confidence, EvidenceItem, EvictionEvent
+from thinker.tools.cross_domain import is_cross_domain
+
+# Authoritative domains that get a score boost
+_AUTHORITY_DOMAINS = {
+    "nvd.nist.gov", "cve.mitre.org", "owasp.org", "sec.gov",
+    "who.int", "cdc.gov", "fda.gov", "nih.gov",
+    "ieee.org", "acm.org", "arxiv.org",
+    "reuters.com", "bloomberg.com", "ft.com",
+    "github.com", "docs.python.org", "docs.microsoft.com",
+}
+
+
+def score_evidence(item: EvidenceItem, brief_keywords: set[str]) -> float:
+    """Score evidence item for relevance.
+
+    Factors:
+    - Keyword overlap with brief (0-5 points, 1 per keyword match, capped)
+    - Source authority (0 or 2 points for known authoritative domains)
+    - Base score of 1.0 so all items have positive score
+    """
+    score = 1.0
+
+    # Keyword overlap
+    text_lower = (item.topic + " " + item.fact).lower()
+    kw_hits = 0
+    for kw in brief_keywords:
+        if kw.lower() in text_lower:
+            kw_hits += 1
+    score += min(kw_hits, 5)
+
+    # Source authority + set authority_tier
+    try:
+        domain = urlparse(item.url).netloc.lower()
+        if any(auth in domain for auth in _AUTHORITY_DOMAINS):
+            score += 2.0
+            item.authority_tier = "HIGH"
+    except Exception:
+        pass
+
+    return score
+
+
+class EvidenceLedger:
+    """Manages evidence items with dedup, cross-domain filtering, scoring, and cap enforcement.
+
+    V9 two-tier architecture:
+    - active_items: capped at max_items, used in prompts
+    - archive_items: uncapped, evicted items preserved here
+    - eviction_log: tracks all movements
+    - Never deletes evidence — eviction moves to archive.
+    """
+
+    def __init__(self, max_items: int = 10, brief_domain: Optional[str] = None,
+                 brief_keywords: Optional[set[str]] = None):
+        self.active_items: list[EvidenceItem] = []
+        self.archive_items: list[EvidenceItem] = []
+        self.eviction_log: list[EvictionEvent] = []
+        self.max_items = max_items
+        self.brief_domain = brief_domain
+        self.brief_keywords: set[str] = brief_keywords or set()
+        self._content_hashes: set[str] = set()
+        self._seen_urls: set[str] = set()
+        self.cross_domain_rejections: int = 0
+        self.contradictions: list = []
+        self._eviction_counter: int = 0
+
+    @property
+    def items(self) -> list[EvidenceItem]:
+        """Backward compatibility: returns active items."""
+        return self.active_items
+
+    @property
+    def all_items(self) -> list[EvidenceItem]:
+        """All evidence items (active + archived)."""
+        return self.active_items + self.archive_items
+
+    @property
+    def high_authority_evidence_present(self) -> bool:
+        """Whether any evidence (active or archive) has HIGH or AUTHORITATIVE authority tier."""
+        return any(
+            e.authority_tier in ("HIGH", "AUTHORITATIVE")
+            for e in self.active_items + self.archive_items
+        )
+
+    def get_from_any(self, evidence_id: str) -> Optional[EvidenceItem]:
+        """Search both active and archive for an evidence item by ID."""
+        for item in self.active_items:
+            if item.evidence_id == evidence_id:
+                return item
+        for item in self.archive_items:
+            if item.evidence_id == evidence_id:
+                return item
+        return None
+
+    def all_evidence_ids(self) -> set[str]:
+        """Return all evidence IDs across active and archive."""
+        return {e.evidence_id for e in self.active_items} | {e.evidence_id for e in self.archive_items}
+
+    def validate_refs(self, refs: list[str]) -> list[str]:
+        """Return any evidence_refs that don't exist in either store.
+
+        DOD §10.3: "Cited evidence missing from both stores → ERROR"
+        """
+        known = self.all_evidence_ids()
+        return [ref for ref in refs if ref and ref not in known]
+
+    def _evict_to_archive(self, item: EvidenceItem, reason: str = "cap_pressure") -> None:
+        """Move an item from active to archive."""
+        self.active_items.remove(item)
+        item.is_active = False
+        item.is_archived = True
+        self.archive_items.append(item)
+        self._eviction_counter += 1
+        self.eviction_log.append(EvictionEvent(
+            event_id=f"EVICT-{self._eviction_counter}",
+            evidence_id=item.evidence_id,
+            from_active=True,
+            to_archive=True,
+            reason=reason,
+        ))
+
+    def add(self, item: EvidenceItem) -> bool:
+        """Add evidence item. Returns False if rejected.
+
+        Rejection reasons: duplicate content, duplicate URL, cross-domain,
+        or lower-scored than all existing items when ledger is full.
+        Under cap pressure: if the new item scores higher than the
+        lowest-scored existing item, evict that item to archive.
+        """
+        # Cross-domain filter
+        if self.brief_domain and is_cross_domain(item.fact + " " + item.topic, self.brief_domain):
+            self.cross_domain_rejections += 1
+            return False
+
+        # Content dedup
+        content_hash = hashlib.sha256(item.fact.encode()).hexdigest()[:16]
+        if content_hash in self._content_hashes:
+            return False
+
+        # URL dedup
+        if item.url in self._seen_urls:
+            return False
+
+        # Score the new item
+        item.score = score_evidence(item, self.brief_keywords)
+        item.is_active = True
+        item.is_archived = False
+
+        # Cap check with eviction to archive
+        if len(self.active_items) >= self.max_items:
+            min_item = min(self.active_items, key=lambda e: e.score)
+            if item.score > min_item.score:
+                # Evict the lowest-scored item to archive
+                self._content_hashes.discard(min_item.content_hash)
+                self._seen_urls.discard(min_item.url)
+                self._evict_to_archive(min_item, reason="cap_pressure_score_eviction")
+            else:
+                return False
+
+        self._content_hashes.add(content_hash)
+        self._seen_urls.add(item.url)
+        item.content_hash = content_hash
+        self.active_items.append(item)
+
+        # DOD §10.3: "Active exceeds 10 → ERROR" — post-condition check
+        if len(self.active_items) > self.max_items:
+            from thinker.types import BrainError
+            raise BrainError(
+                "evidence_ledger",
+                f"Active evidence exceeds cap: {len(self.active_items)} > {self.max_items}",
+                detail="DOD §10.3: Active exceeds 10 → ERROR",
+            )
+
+        # Check for contradictions with existing active items
+        from thinker.tools.contradiction import detect_contradiction
+        for existing in self.active_items[:-1]:
+            ctr = detect_contradiction(existing, item)
+            if ctr:
+                self.contradictions.append(ctr)
+
+        return True
+
+    def format_for_prompt(self) -> str:
+        """Format active evidence for injection into a model prompt."""
+        if not self.active_items:
+            return ""
+        lines = []
+        for i, item in enumerate(self.active_items, 1):
+            lines.append(
+                f"{{{item.evidence_id}}} {item.fact}\n"
+                f"Source: {item.url}\n"
+            )
+        lines.append(
+            "Any specific number, percentage, or dollar figure in your analysis "
+            "MUST cite an evidence ID (E001-E999) from above."
+        )
+        return "\n".join(lines)
+
+```
+
+
 ### thinker/config.py
 
 
@@ -7381,349 +6045,6 @@ class BrainConfig:
     outdir: str = "./output"
     analysis_debug_runs_remaining: int = 10  # DOD §18.4: debug sunset counter
     skip_assumption_gate: bool = False  # Override: skip fatal assumption check (for self-review briefs)
-
-```
-
-
-### thinker/tools/position.py
-
-
-```python
-"""Position Tracker — tracks model positions per round and measures convergence."""
-from __future__ import annotations
-
-import re
-from collections import Counter
-
-from thinker.config import MODEL_REGISTRY
-from thinker.pipeline import pipeline_stage
-from thinker.types import Confidence, Position
-
-# Known model names for validation — only accept these as position sources
-_KNOWN_MODELS = set(MODEL_REGISTRY.keys())
-
-POSITION_EXTRACT_PROMPT = """Extract each model's position from these round {round_num} outputs.
-
-Model outputs:
-{outputs}
-
-For each model, identify:
-- Their primary option/position (O1, O2, O3, O4, or a short label)
-- Their confidence (HIGH, MEDIUM, LOW)
-- Brief qualifier (one sentence summary of their stance)
-
-IMPORTANT: If a model gives a compound position covering multiple frameworks, standards, or
-dimensions (e.g., "GDPR-reportable + SOC 2-reportable + HIPAA-not-reportable"), break it into
-separate per-framework lines. This lets us detect partial agreement (e.g., all models agree on
-GDPR but split on SOC 2).
-
-Format for single-dimension positions:
-model_name: OPTION [CONFIDENCE] — qualifier
-
-Format for multi-framework positions (one line per framework):
-model_name/FRAMEWORK: POSITION [CONFIDENCE] — qualifier
-
-Example:
-r1/GDPR: reportable [HIGH] — 72-hour notification required
-r1/SOC_2: documentation-required [MEDIUM] — depends on BAA scope
-r1/HIPAA: not-reportable [HIGH] — no PHI exposed"""
-
-
-def _normalize_position(option: str) -> str:
-    """Normalize a position label for agreement comparison.
-
-    Strips parenthetical qualifiers, trailing whitespace, and lowercases.
-    Also normalizes option variants: 'O3-modified', 'Enhanced Option 3',
-    'Modified/Accelerated Option 3' all become 'o3'.
-
-    'GDPR-reportable + SOC 2-reportable + HIPAA-not-reportable (BAA review required)'
-    becomes 'gdpr-reportable + soc 2-reportable + hipaa-not-reportable'
-    """
-    # Remove parenthetical qualifiers
-    normalized = re.sub(r"\s*\([^)]*\)", "", option)
-    normalized = normalized.strip().lower()
-
-    # Normalize option variants: extract core option number
-    # Matches: "o3", "o3-modified", "option 3", "enhanced option 3",
-    # "modified/accelerated option 3", "option 3 (enhanced)", etc.
-    core_match = re.search(r"(?:option\s*|o)(\d+)", normalized)
-    if core_match:
-        return f"o{core_match.group(1)}"
-
-    return normalized
-
-
-class PositionTracker:
-    def __init__(self, llm_client):
-        self._llm = llm_client
-        self.positions_by_round: dict[int, dict[str, Position]] = {}
-        self.last_raw_response: str = ""  # For debug logging
-
-    async def extract_positions(
-        self, round_num: int, model_outputs: dict[str, str],
-    ) -> dict[str, Position]:
-        combined = "\n\n".join(f"### {m}\n{t}" for m, t in model_outputs.items())
-        resp = await self._llm.call(
-            "sonnet",
-            POSITION_EXTRACT_PROMPT.format(round_num=round_num, outputs=combined),
-        )
-        if not resp.ok:
-            from thinker.types import BrainError
-            raise BrainError(f"track{round_num}", f"Position extraction failed: {resp.error}",
-                             detail="Sonnet could not extract positions from round outputs.")
-        self.last_raw_response = resp.text
-
-        positions = self._parse_positions(resp.text, round_num)
-        if not positions:
-            from thinker.types import BrainError
-            raise BrainError(f"track{round_num}",
-                             f"Position extraction returned 0 positions (expected {len(model_outputs)})",
-                             detail=f"Raw response:\n{resp.text[:500]}")
-        self.positions_by_round[round_num] = positions
-        return positions
-
-    def agreement_ratio(self, round_num: int) -> float:
-        """What fraction of models agree on the core position?
-
-        For single-dimension positions: majority count / total models.
-        For per-framework positions: average agreement across frameworks.
-        Normalizes positions before comparison.
-        """
-        positions = self.positions_by_round.get(round_num, {})
-        if not positions:
-            return 0.0
-
-        # Check if any positions are per-framework (kind="sequence")
-        has_frameworks = any(p.kind == "sequence" for p in positions.values())
-
-        if has_frameworks:
-            return self._framework_agreement_ratio(positions)
-
-        options = [_normalize_position(p.primary_option) for p in positions.values()]
-        counts = Counter(options)
-        majority_count = counts.most_common(1)[0][1]
-        return majority_count / len(options)
-
-    def _framework_agreement_ratio(self, positions: dict[str, Position]) -> float:
-        """Compute agreement across per-framework components.
-
-        For each framework, compute what fraction of models agree.
-        Return the average across all frameworks.
-        """
-        # Collect {framework: [position_label, ...]} across all models
-        framework_positions: dict[str, list[str]] = {}
-        for p in positions.values():
-            if p.kind == "sequence" and p.components:
-                for comp in p.components:
-                    if ":" in comp:
-                        fw, label = comp.split(":", 1)
-                        framework_positions.setdefault(fw.strip(), []).append(
-                            label.strip().lower()
-                        )
-                    else:
-                        framework_positions.setdefault("default", []).append(
-                            comp.strip().lower()
-                        )
-            else:
-                framework_positions.setdefault("default", []).append(
-                    _normalize_position(p.primary_option)
-                )
-
-        if not framework_positions:
-            return 0.0
-
-        ratios = []
-        for fw, labels in framework_positions.items():
-            counts = Counter(labels)
-            majority = counts.most_common(1)[0][1]
-            ratios.append(majority / len(labels))
-        return sum(ratios) / len(ratios)
-
-    def get_position_changes(self, from_round: int, to_round: int) -> list[dict]:
-        from_pos = self.positions_by_round.get(from_round, {})
-        to_pos = self.positions_by_round.get(to_round, {})
-        changes = []
-        for model in set(from_pos) & set(to_pos):
-            if from_pos[model].primary_option != to_pos[model].primary_option:
-                changes.append({
-                    "model": model,
-                    "from_round": from_round,
-                    "to_round": to_round,
-                    "from_position": from_pos[model].primary_option,
-                    "to_position": to_pos[model].primary_option,
-                })
-        return changes
-
-    def _parse_positions(self, text: str, round_num: int) -> dict[str, Position]:
-        positions = {}
-        # Collect per-framework components: {model: [(framework, option, conf, qualifier)]}
-        framework_components: dict[str, list[tuple[str, str, Confidence, str]]] = {}
-
-        # Track current model from ### headers (for table-per-model format)
-        current_model = ""
-
-        for line in text.strip().split("\n"):
-            line = line.strip()
-
-            # Track model headers: ### r1, ### reasoner, etc.
-            header_match = re.match(r"#{1,4}\s+[*`]*(\w+)[*`]*\s*$", line)
-            if header_match:
-                candidate = header_match.group(1).lower()
-                if candidate in _KNOWN_MODELS:
-                    current_model = candidate
-                continue
-
-            # Table row with framework as first column (model from header):
-            # | GDPR | **not-reportable** | MEDIUM | qualifier |
-            # | Framework | Position | Confidence | Qualifier | (skip header)
-            if current_model and "|" in line:
-                fw_row = re.search(
-                    r"\|\s*[*`]*(\w[\w\s]*\w|\w+)[*`]*\s*\|\s*[*`]*(.+?)[*`]*\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
-                    line,
-                )
-                if fw_row:
-                    framework = fw_row.group(1).strip().upper().replace(" ", "_")
-                    option = fw_row.group(2).strip().strip("*`").strip()
-                    conf_text = fw_row.group(3).strip()
-                    qualifier = fw_row.group(4).strip()
-                    # Skip header rows and separator rows
-                    if (framework not in ("FRAMEWORK", "---", "MODEL")
-                            and not option.startswith("---")
-                            and not option.lower().startswith("position")
-                            and conf_text.upper() in ("HIGH", "MEDIUM", "LOW")):
-                        conf = self._parse_confidence(conf_text)
-                        framework_components.setdefault(current_model, []).append(
-                            (framework, option, conf, qualifier)
-                        )
-                        continue
-
-            # Try markdown table row with model/framework
-            # Handles: | `r1/PCI_DSS` | position | HIGH | qualifier |
-            # Also: | **r1/GDPR** | position | MEDIUM | qualifier |
-            # Also: | 1 | `r1/PCI_DSS` | position | HIGH | qualifier | (leading column)
-            table_match = re.search(
-                r"\|\s*[*`]*(\w+)/(\w+)[*`]*\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
-                line,
-            )
-            if table_match:
-                model = table_match.group(1).lower()
-                framework = table_match.group(2).upper()
-                option = table_match.group(3).strip().strip("*`").strip()
-                conf = self._parse_confidence(table_match.group(4))
-                qualifier = table_match.group(5).strip()
-                if model in _KNOWN_MODELS and not option.startswith("---"):
-                    framework_components.setdefault(model, []).append(
-                        (framework, option, conf, qualifier)
-                    )
-                continue
-
-            # Also handle: | `model` | position | HIGH | qualifier | (no framework)
-            # Also: | **model** | position | HIGH | qualifier |
-            table_simple = re.search(
-                r"\|\s*[*`]*(\w+)[*`]*\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|",
-                line,
-            )
-            if table_simple:
-                model = table_simple.group(1).lower()
-                option = table_simple.group(2).strip().strip("*`").strip()
-                if model in _KNOWN_MODELS and not option.startswith("---"):
-                    conf = self._parse_confidence(table_simple.group(3))
-                    qualifier = table_simple.group(4).strip()
-                    positions[model] = Position(
-                        model=model, round_num=round_num, primary_option=option,
-                        components=[option], confidence=conf, qualifier=qualifier,
-                    )
-                continue
-
-            # Try per-framework format: model/FRAMEWORK: POSITION [CONFIDENCE] — qualifier
-            fw_match = re.match(
-                r"[*`]*(\w+)/(\w+)[*`]*:?\s*"   # model/framework
-                r"(.+?)\s*"                      # option
-                r"\[([^\]]+)\]\s*"               # confidence bracket
-                r"(?:[—-]\s*(.+))?",             # optional qualifier
-                line,
-            )
-            if fw_match:
-                model = fw_match.group(1).lower()
-                if model not in _KNOWN_MODELS:
-                    continue
-                framework = fw_match.group(2).upper()
-                option = fw_match.group(3).strip().strip("*`").strip()
-                conf = self._parse_confidence(fw_match.group(4))
-                qualifier = (fw_match.group(5) or "").strip()
-                framework_components.setdefault(model, []).append(
-                    (framework, option, conf, qualifier)
-                )
-                continue
-
-            # Standard format: model: OPTION [CONFIDENCE] — qualifier
-            match = re.match(
-                r"[*`]*(\w+)[*`]*:?\s*"         # model name (with optional markdown + colon)
-                r"(.+?)\s*"                      # option (lazy until confidence bracket)
-                r"\[([^\]]+)\]\s*"               # confidence bracket
-                r"(?:[—-]\s*(.+))?",             # optional qualifier
-                line,
-            )
-            if match:
-                model = match.group(1).lower()
-                if model not in _KNOWN_MODELS:
-                    continue
-                option = match.group(2).strip().strip("*`").strip()
-                conf = self._parse_confidence(match.group(3))
-                qualifier = (match.group(4) or "").strip()
-                positions[model] = Position(
-                    model=model, round_num=round_num, primary_option=option,
-                    components=[option], confidence=conf, qualifier=qualifier,
-                )
-
-        # Merge per-framework components into composite positions
-        for model, components in framework_components.items():
-            if model not in _KNOWN_MODELS:
-                continue
-            comp_labels = [f"{fw}:{opt}" for fw, opt, _, _ in components]
-            primary = " + ".join(comp_labels)
-            # Use the lowest confidence across frameworks
-            confs = [c for _, _, c, _ in components]
-            min_conf = min(confs, key=lambda c: {"HIGH": 2, "MEDIUM": 1, "LOW": 0}[c.value])
-            qualifiers = [q for _, _, _, q in components if q]
-            positions[model] = Position(
-                model=model, round_num=round_num, primary_option=primary,
-                components=comp_labels, confidence=min_conf,
-                qualifier="; ".join(qualifiers),
-                kind="sequence",
-            )
-
-        return positions
-
-    @staticmethod
-    def _parse_confidence(conf_text: str) -> Confidence:
-        conf_text = conf_text.upper()
-        if "HIGH" in conf_text:
-            return Confidence.HIGH
-        elif "MEDIUM" in conf_text:
-            return Confidence.MEDIUM
-        elif "LOW" in conf_text:
-            return Confidence.LOW
-        return Confidence.MEDIUM
-
-
-@pipeline_stage(
-    name="Position Tracker",
-    description="Extracts each model's position label and confidence from round outputs. Tracks position changes across rounds. Computes agreement_ratio for Gate 2.",
-    stage_type="track",
-    order=4,
-    provider="sonnet (1 call per round)",
-    inputs=["model_outputs (dict[model, text])"],
-    outputs=["positions (dict[model, Position])", "agreement_ratio (float)", "position_changes (list)"],
-    prompt=POSITION_EXTRACT_PROMPT,
-    logic="""Sonnet extracts: model: POSITION [CONFIDENCE] — qualifier.
-Parser handles bold (**model:**), multi-word options, compound positions.
-Agreement ratio = count(majority_option) / total_models.""",
-    failure_mode="Extraction fails: empty positions, agreement=0.0.",
-    cost="1 Sonnet call per round ($0 on Max subscription)",
-    stage_id="position_tracker",
-)
-def _register_position_tracker(): pass
 
 ```
 
@@ -7861,173 +6182,68 @@ def generate_verification_queries(ungrounded_stats: list[str], context: str) -> 
 ```
 
 
-### thinker/tools/cross_domain.py
+### thinker/tools/contradiction.py
 
 
 ```python
-"""Cross-domain evidence filter.
-
-Prevents medical evidence from polluting security briefs, finance from
-infrastructure briefs, etc. Domain detection via keyword families.
-"""
+"""Contradiction Detector — finds numeric conflicts between evidence items."""
 from __future__ import annotations
 
-DOMAIN_KEYWORDS: dict[str, set[str]] = {
-    "security": {"cve", "vulnerability", "exploit", "rce", "xss", "sql injection",
-                 "buffer overflow", "privilege escalation", "malware", "breach",
-                 "authentication", "authorization", "firewall", "encryption"},
-    "medical": {"dosage", "patient", "clinical", "diagnosis", "treatment",
-                "medication", "symptom", "therapy", "pharmaceutical", "surgery"},
-    "finance": {"stock", "equity", "portfolio", "etf", "dividend", "trading",
-                "market cap", "earnings", "revenue", "valuation", "bond"},
-    "infrastructure": {"server", "database", "kubernetes", "docker", "deployment",
-                       "latency", "throughput", "scaling", "load balancer", "cdn"},
-    "compliance": {"gdpr", "hipaa", "sox", "pci", "dora", "regulation", "audit",
-                   "compliance", "certification", "framework"},
-}
+import re
+from typing import Optional
 
-# Which domains are compatible with each other
-COMPATIBLE_DOMAINS: dict[str, set[str]] = {
-    "security": {"security", "infrastructure", "compliance"},
-    "medical": {"medical"},
-    "finance": {"finance"},
-    "infrastructure": {"infrastructure", "security", "compliance"},
-    "compliance": {"compliance", "security", "infrastructure"},
-}
+from thinker.types import Contradiction, EvidenceItem
+
+_NUMBER_PATTERN = re.compile(r"\b(\d[\d,.]*%?)\b")
 
 
-def detect_domain(text: str) -> str | None:
-    """Detect the primary domain of a text based on keyword density."""
-    text_lower = text.lower()
-    scores: dict[str, int] = {}
-    for domain, keywords in DOMAIN_KEYWORDS.items():
-        scores[domain] = sum(1 for kw in keywords if kw in text_lower)
-    if not scores:
+def _extract_numbers(text: str) -> set[str]:
+    return set(_NUMBER_PATTERN.findall(text))
+
+
+def _topic_overlap(a: str, b: str) -> int:
+    words_a = {w.lower() for w in a.split() if len(w) >= 4}
+    words_b = {w.lower() for w in b.split() if len(w) >= 4}
+    return len(words_a & words_b)
+
+
+_CONTRADICTION_COUNTER = 0
+
+
+def detect_contradiction(
+    item_a: EvidenceItem, item_b: EvidenceItem,
+) -> Optional[Contradiction]:
+    global _CONTRADICTION_COUNTER
+
+    if _topic_overlap(item_a.topic + " " + item_a.fact, item_b.topic + " " + item_b.fact) < 2:
         return None
-    best = max(scores, key=scores.get)
-    return best if scores[best] >= 2 else None
 
+    nums_a = _extract_numbers(item_a.fact)
+    nums_b = _extract_numbers(item_b.fact)
 
-def is_cross_domain(evidence_text: str, brief_domain: str) -> bool:
-    """Check if evidence is from an incompatible domain."""
-    ev_domain = detect_domain(evidence_text)
-    if ev_domain is None:
-        return False  # Can't determine domain — allow it
-    compatible = COMPATIBLE_DOMAINS.get(brief_domain, {brief_domain})
-    return ev_domain not in compatible
+    if not nums_a or not nums_b:
+        return None
 
-```
+    # If all numbers in the smaller set appear in the larger set, no contradiction
+    # (one item may just have more detail)
+    if nums_a.issubset(nums_b) or nums_b.issubset(nums_a):
+        return None
 
-
-### thinker/invariant.py
-
-
-```python
-"""Invariant Validator — structural integrity checks before proof finalization.
-
-V8-F6 (Spec Section 4): Runs after Gate 2. Checks positions exist for every
-round, all rounds have responses, evidence IDs are sequential, no orphaned
-BLK/CTR references. Returns violations with severity (WARN or ERROR).
-"""
-from __future__ import annotations
-
-from thinker.evidence import EvidenceLedger
-from thinker.pipeline import pipeline_stage
-from thinker.tools.blocker import BlockerLedger
-from thinker.types import Position
-
-
-def validate_invariants(
-    positions_by_round: dict[int, dict[str, Position]],
-    round_responded: dict[int, list[str]],
-    evidence: EvidenceLedger,
-    blocker_ledger: BlockerLedger,
-    rounds_completed: int,
-) -> list[dict]:
-    """Run all invariant checks. Returns list of violation dicts.
-
-    Each violation: {"id": str, "severity": "WARN"|"ERROR", "detail": str}
-    """
-    violations: list[dict] = []
-
-    # 1. Positions extracted for every completed round
-    for rnd in range(1, rounds_completed + 1):
-        if rnd not in positions_by_round or not positions_by_round[rnd]:
-            violations.append({
-                "id": "INV-POS-MISSING",
-                "severity": "ERROR",
-                "detail": f"No positions extracted for round {rnd}",
-            })
-
-    # 2. All rounds have at least one response
-    for rnd in range(1, rounds_completed + 1):
-        responded = round_responded.get(rnd, [])
-        if not responded:
-            violations.append({
-                "id": "INV-ROUND-EMPTY",
-                "severity": "ERROR",
-                "detail": f"Round {rnd} has no model responses",
-            })
-
-    # 3. Evidence IDs are sequential (E001, E002, ...)
-    if evidence.items:
-        for i, item in enumerate(evidence.items):
-            expected_id = f"E{i + 1:03d}"
-            if item.evidence_id != expected_id:
-                violations.append({
-                    "id": "INV-EVIDENCE-SEQ",
-                    "severity": "WARN",
-                    "detail": f"Evidence ID gap: expected {expected_id}, got {item.evidence_id}",
-                })
-                break  # One violation is enough to flag the issue
-
-    # 4. No orphaned blocker references (detected_round within completed rounds)
-    for b in blocker_ledger.blockers:
-        if b.detected_round > rounds_completed:
-            violations.append({
-                "id": "INV-BLK-ORPHAN",
-                "severity": "WARN",
-                "detail": (
-                    f"Blocker {b.blocker_id} references round {b.detected_round} "
-                    f"but only {rounds_completed} rounds completed"
-                ),
-            })
-
-    # 5. No orphaned contradiction evidence references
-    evidence_ids = {item.evidence_id for item in evidence.items}
-    for ctr in evidence.contradictions:
-        for eid in ctr.evidence_ids:
-            if eid not in evidence_ids:
-                violations.append({
-                    "id": "INV-CTR-ORPHAN",
-                    "severity": "WARN",
-                    "detail": (
-                        f"Contradiction {ctr.contradiction_id} references "
-                        f"{eid} which is not in the evidence ledger"
-                    ),
-                })
-
-    return violations
-
-
-@pipeline_stage(
-    name="Invariant Validator",
-    description="Structural integrity checks after Gate 2. Verifies positions exist for every round, all rounds have responses, evidence IDs are sequential, no orphaned blocker or contradiction references. Returns violations with WARN/ERROR severity.",
-    stage_type="deterministic",
-    order=8,
-    provider="deterministic (no LLM)",
-    inputs=["positions_by_round", "round_responded", "evidence", "blocker_ledger", "rounds_completed"],
-    outputs=["violations (list[dict]) — each with id, severity, detail"],
-    logic="""1. For each round 1..N: positions extracted? If not → INV-POS-MISSING (ERROR)
-2. For each round 1..N: at least one response? If not → INV-ROUND-EMPTY (ERROR)
-3. Evidence IDs sequential (E001, E002, ...)? If gap → INV-EVIDENCE-SEQ (WARN)
-4. Blocker detected_round <= rounds_completed? If not → INV-BLK-ORPHAN (WARN)
-5. Contradiction evidence_ids all exist in ledger? If not → INV-CTR-ORPHAN (WARN)""",
-    failure_mode="Cannot fail — deterministic computation.",
-    cost="$0 (no LLM call)",
-    stage_id="invariant_validator",
-)
-def _register_invariant_validator(): pass
+    _CONTRADICTION_COUNTER += 1
+    # HIGH if the unique numbers differ significantly (both have exclusive numbers)
+    exclusive_a = nums_a - nums_b
+    exclusive_b = nums_b - nums_a
+    severity = "HIGH" if exclusive_a and exclusive_b else "MEDIUM"
+    return Contradiction(
+        contradiction_id=f"CTR{_CONTRADICTION_COUNTER:03d}",
+        evidence_ids=[item_a.evidence_id, item_b.evidence_id],
+        topic=item_a.topic,
+        severity=severity,
+        evidence_ref_a=item_a.evidence_id,
+        evidence_ref_b=item_b.evidence_id,
+        same_entity=item_a.topic_cluster == item_b.topic_cluster if item_a.topic_cluster else False,
+        same_timeframe=True,  # Numeric contradictions on same topic assumed same timeframe
+    )
 
 ```
 

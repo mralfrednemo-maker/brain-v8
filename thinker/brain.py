@@ -587,6 +587,10 @@ class Brain:
                 t0 = time.monotonic()
                 # ANALYSIS mode: prepend exploration preamble to brief
                 effective_brief = (get_analysis_round_preamble() + brief) if is_analysis_mode else brief
+                # R1: cap brief for perspective card compliance on very large briefs
+                # Models need output budget for the 5 structured fields
+                if round_num == 1 and len(effective_brief) > 100000:
+                    effective_brief = effective_brief[:100000] + "\n\n[Brief truncated for R1 — full content available in subsequent rounds]\n"
                 round_result = await execute_round(
                     self._llm, round_num=round_num, brief=effective_brief,
                     prior_views=prior_views if round_num > 1 else None,

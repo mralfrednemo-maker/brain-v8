@@ -41,35 +41,25 @@ else:
     raise SystemExit(1)
 brief_parts.append("\n```\n\n---\n\n")
 
-# Add all V9 source files
-brief_parts.append("## Source Code\n\n")
+# Add core V9 source files (trimmed to stay under 200k for model compliance)
+brief_parts.append("## Source Code (core modules — full implementation)\n\n")
 src_files = [
     "thinker/types.py",
     "thinker/brain.py",
+    "thinker/gate2.py",
+    "thinker/proof.py",
+    "thinker/stability.py",
     "thinker/preflight.py",
-    "thinker/dimension_seeder.py",
+    "thinker/residue.py",
+    "thinker/argument_tracker.py",
     "thinker/perspective_cards.py",
     "thinker/divergent_framing.py",
-    "thinker/semantic_contradiction.py",
     "thinker/decisive_claims.py",
-    "thinker/synthesis_packet.py",
-    "thinker/synthesis.py",
-    "thinker/analysis_mode.py",
-    "thinker/stability.py",
-    "thinker/gate2.py",
-    "thinker/rounds.py",
     "thinker/evidence.py",
-    "thinker/evidence_extractor.py",
-    "thinker/residue.py",
-    "thinker/proof.py",
-    "thinker/checkpoint.py",
-    "thinker/argument_tracker.py",
     "thinker/config.py",
-    "thinker/tools/position.py",
     "thinker/tools/blocker.py",
     "thinker/tools/ungrounded.py",
-    "thinker/tools/cross_domain.py",
-    "thinker/invariant.py",
+    "thinker/tools/contradiction.py",
 ]
 
 for f in src_files:
