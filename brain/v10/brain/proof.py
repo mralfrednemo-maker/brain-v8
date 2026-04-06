@@ -25,13 +25,16 @@ _EXPECTED_STAGE_ORDER = [
     "dimensions",
     "r1",
     "track1",
+    "retroactive_premise_scan",   # V3.1 — conditional, may not appear in every run
     "perspective_cards",
     "framing_pass",
+    "anti_groupthink_search",     # V3.1 — conditional
     "ungrounded_r1",
     "search1",
     "r2",
     "track2",
     "frame_survival_r2",
+    "breadth_recovery_eval",      # V3.1 — conditional
     "ungrounded_r2",
     "search2",
     "r3",
@@ -47,6 +50,7 @@ _EXPECTED_STAGE_ORDER = [
     "residue_verification",
     "gate2",
 ]
+# Note: residue_verification runs AFTER stability in brain.py execution order.
 
 
 def _validate_stage_order(order: list[str]) -> tuple[bool, list[str]]:
