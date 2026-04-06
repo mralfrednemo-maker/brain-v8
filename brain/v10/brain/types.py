@@ -73,6 +73,17 @@ class WarningRecord:
     tier: str = "WARNING"
 
 
+@dataclass
+class RetroactivePremiseResult:
+    """Result of the post-R1 retroactive premise escalation scan (V3.1 ADDITION-4)."""
+    executed: bool = False
+    triggered: bool = False
+    matched_premise: str = ""
+    model_ids: list[str] = field(default_factory=list)
+    rerun_outcome: Optional[str] = None
+    consumed: bool = False  # one-shot guard
+
+
 class Outcome(Enum):
     """Top-level outcomes of a Brain deliberation (DoD v3.0 Section 1)."""
     DECIDE = "DECIDE"
@@ -337,6 +348,7 @@ class Argument:
     evidence_refs: list[str] = field(default_factory=list)
     open: bool = True
     blocker_link_ids: list[str] = field(default_factory=list)  # DOD §11.1
+    argument_type: Optional[str] = None  # e.g. "premise_challenge", "evidence_gap"
 
     def to_dict(self) -> dict:
         return {
@@ -599,6 +611,10 @@ class PreflightResult:
     hidden_context_gaps: list[HiddenContextGap] = field(default_factory=list)
     critical_assumptions: list[CriticalAssumption] = field(default_factory=list)
     reasoning: str = ""
+    # V3.1 DELTA-3: Reformulation metadata (schema enrichment, no auto-proceed)
+    original_brief: Optional[str] = None
+    reformulated_brief: Optional[str] = None
+    reformulation_reason: Optional[str] = None
 
     @property
     def has_critical_flags(self) -> bool:

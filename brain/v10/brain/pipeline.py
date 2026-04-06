@@ -325,3 +325,44 @@ def _detail(title: str, content: str, open_default: bool = False) -> str:
 def _esc(text: str) -> str:
     """Escape HTML entities."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# --- V3.1 Stage Registry Entries ---
+
+@pipeline_stage(
+    name="Retroactive Premise Scan",
+    description="Post-R1 scan: if >= 2 independent models flag the same flawed premise, "
+                "rerun preflight once. One-shot cap enforced via retroactive_escalation_consumed.",
+    stage_type="gate",
+    order=4,
+    provider="deterministic+sonnet (conditional)",
+    inputs=["arguments_by_round[1]", "preflight"],
+    outputs=["retroactive_premise_result"],
+    logic="Scan R1 arguments for argument_type=premise_challenge. "
+          "If >= 2 independent models flag same premise: rerun preflight once.",
+    thresholds={"min_models": 2, "similarity_threshold": 0.5},
+    failure_mode="Trigger met but rerun skipped → ERROR",
+    stage_id="retroactive_premise_scan",
+)
+def _retroactive_premise_scan_placeholder():
+    """Stage registry entry — actual logic lives in brain.py."""
+    pass
+
+
+@pipeline_stage(
+    name="Anti-Groupthink Search",
+    description="Post-R1 conditional search: if agreement > 0.80 on OPEN/AMBIGUOUS or HIGH-stakes "
+                "question, issue exactly one adversarial query against the consensus.",
+    stage_type="search",
+    order=7,
+    provider="brave/sonar (conditional)",
+    inputs=["agreement_ratio", "question_class", "stakes_class"],
+    outputs=["anti_groupthink_search", "evidence (flows into R2)"],
+    logic="Trigger: agreement_ratio > 0.80 AND (OPEN/AMBIGUOUS OR HIGH stakes). "
+          "Issue exactly 1 adversarial query.",
+    thresholds={"agreement_ratio": "> 0.80"},
+    failure_mode="Trigger met but query omitted/unlogged → ERROR",
+    stage_id="anti_groupthink_search",
+)
+def _anti_groupthink_search_placeholder():
+    pass

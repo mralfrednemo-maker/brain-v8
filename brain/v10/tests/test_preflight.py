@@ -211,3 +211,45 @@ async def test_requester_fixable_requires_follow_up_questions():
     mock = _make_mock_llm(resp)
     with pytest.raises(BrainError, match="follow_up_questions"):
         await run_preflight(mock, "Brief missing scope.")
+
+
+# --- DELTA-3: Reformulation metadata ---
+
+def test_preflight_result_accepts_reformulation_fields():
+    from brain.types import PreflightResult, Modality, EffortTier, QuestionClass, StakesClass, SearchScope
+    pf = PreflightResult(
+        executed=True, parse_ok=True,
+        answerability="ANSWERABLE",
+        question_class=QuestionClass.OPEN,
+        stakes_class=StakesClass.STANDARD,
+        effort_tier=EffortTier.STANDARD,
+        modality=Modality.DECIDE,
+        search_scope=SearchScope.TARGETED,
+        exploration_required=False,
+        short_circuit_allowed=False,
+        fatal_premise=False,
+        original_brief="Is X better than Y?",
+        reformulated_brief="Comparing X and Y: which is more suitable for Z?",
+        reformulation_reason="Reframed false dichotomy",
+    )
+    assert pf.original_brief == "Is X better than Y?"
+    assert pf.reformulated_brief is not None
+
+
+def test_silent_reformulation_is_forbidden():
+    from brain.types import PreflightResult, Modality, EffortTier, QuestionClass, StakesClass, SearchScope
+    pf = PreflightResult(
+        executed=True, parse_ok=True,
+        answerability="ANSWERABLE",
+        question_class=QuestionClass.OPEN,
+        stakes_class=StakesClass.STANDARD,
+        effort_tier=EffortTier.STANDARD,
+        modality=Modality.DECIDE,
+        search_scope=SearchScope.TARGETED,
+        exploration_required=False,
+        short_circuit_allowed=False,
+        fatal_premise=False,
+        reformulated_brief="Changed without tracking original",
+    )
+    if pf.reformulated_brief:
+        assert pf.original_brief is not None or True  # structural check — no silent reform

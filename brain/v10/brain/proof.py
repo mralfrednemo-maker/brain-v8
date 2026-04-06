@@ -123,6 +123,8 @@ class ProofBuilder:
         self._budgeting: Optional[dict] = None
         # V3.1 additions
         self._warnings: list[dict] = []
+        self._retroactive_premise: Optional[dict] = None
+        self._anti_groupthink_search: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -246,7 +248,14 @@ class ProofBuilder:
 
     def set_preflight(self, result) -> None:
         """Set preflight assessment result (PreflightResult.to_dict())."""
-        self._preflight = result.to_dict() if hasattr(result, 'to_dict') else result
+        d = result.to_dict() if hasattr(result, 'to_dict') else result
+        if getattr(result, 'original_brief', None):
+            d["original_brief"] = result.original_brief
+        if getattr(result, 'reformulated_brief', None):
+            d["reformulated_brief"] = result.reformulated_brief
+        if getattr(result, 'reformulation_reason', None):
+            d["reformulation_reason"] = result.reformulation_reason
+        self._preflight = d
 
     def set_dimensions(self, result) -> None:
         """Set dimension seeder result (DimensionSeedResult.to_dict())."""
@@ -451,6 +460,14 @@ class ProofBuilder:
             "detail": detail,
         })
 
+    def set_retroactive_premise(self, result: dict) -> None:
+        """Record retroactive premise scan result (V3.1 ADDITION-4)."""
+        self._retroactive_premise = result
+
+    def set_anti_groupthink_search(self, result: dict) -> None:
+        """Record anti-groupthink search result (V3.1 ADDITION-7)."""
+        self._anti_groupthink_search = result
+
     def build(self) -> dict:
         """Build the complete proof.json dict."""
         blocker_list = []
@@ -552,5 +569,7 @@ class ProofBuilder:
             "invariant_violations": self._invariant_violations,
             "synthesis_residue_omissions": self._synthesis_residue_omissions,
             "warnings": self._warnings,
+            "retroactive_premise": self._retroactive_premise,
+            "anti_groupthink_search": self._anti_groupthink_search,
         }
         return proof

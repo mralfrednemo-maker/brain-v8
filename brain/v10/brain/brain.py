@@ -63,6 +63,55 @@ from brain.types import (
 )
 
 
+def _should_trigger_retroactive_premise(
+    premise_findings: list[dict],
+    min_models: int = 2,
+) -> bool:
+    """Check if >= min_models independent models flagged the same flawed premise.
+    'Same premise' = keyword overlap >= 50% as proxy for semantic similarity.
+    'Independent' = different model_ids.
+    """
+    if len(premise_findings) < min_models:
+        return False
+    by_model: dict[str, list[str]] = {}
+    for f in premise_findings:
+        model = f.get("model", "unknown")
+        premise = f.get("premise", "").lower().strip()
+        if model not in by_model:
+            by_model[model] = []
+        by_model[model].append(premise)
+    if len(by_model) < min_models:
+        return False
+    all_premises = [(model, p) for model, plist in by_model.items() for p in plist]
+    for i, (m1, p1) in enumerate(all_premises):
+        for m2, p2 in all_premises[i+1:]:
+            if m1 == m2:
+                continue
+            words1 = set(p1.split())
+            words2 = set(p2.split())
+            if len(words1) > 0 and len(words2) > 0:
+                overlap = len(words1 & words2) / min(len(words1), len(words2))
+                if overlap >= 0.5:
+                    return True
+    return False
+
+
+def _should_trigger_anti_groupthink(
+    agreement_ratio: float,
+    question_class,
+    stakes_class,
+) -> bool:
+    """Trigger anti-groupthink search when models converge suspiciously fast.
+    Fires when: agreement_ratio > 0.80 AND (question is OPEN/AMBIGUOUS OR stakes is HIGH).
+    """
+    from brain.types import QuestionClass, StakesClass
+    if agreement_ratio <= 0.80:
+        return False
+    is_open = question_class in (QuestionClass.OPEN, QuestionClass.AMBIGUOUS)
+    is_high_stakes = stakes_class == StakesClass.HIGH
+    return is_open or is_high_stakes
+
+
 class Brain:
     """The V9 Brain deliberation engine."""
 
