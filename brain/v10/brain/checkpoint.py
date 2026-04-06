@@ -26,7 +26,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-CHECKPOINT_VERSION = "2.0"
+CHECKPOINT_VERSION = "3.0"
 
 
 @dataclass
@@ -104,6 +104,16 @@ class PipelineState:
     # Gate 2
     outcome: str = ""
 
+    # V3.1 additions
+    retroactive_escalation_consumed: bool = False
+    retroactive_premise_result: dict = field(default_factory=dict)
+    anti_groupthink_search: dict = field(default_factory=dict)
+    breadth_recovery: dict = field(default_factory=dict)
+    warnings: list[dict] = field(default_factory=list)
+    original_brief: str = ""
+    reformulated_brief: str = ""
+    reformulation_reason: str = ""
+
     def save(self, path: Path):
         path.write_text(json.dumps(asdict(self), indent=2, default=str), encoding="utf-8")
 
@@ -120,12 +130,12 @@ class PipelineState:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
-# Valid stage IDs in pipeline order (V9)
+# Valid stage IDs in pipeline order (V10)
 STAGE_ORDER = [
     "preflight", "dimensions",
-    "r1", "track1", "perspective_cards", "framing_pass",
-    "ungrounded_r1", "search1",
-    "r2", "track2", "frame_survival_r2",
+    "r1", "track1", "retroactive_premise_scan", "perspective_cards", "framing_pass",
+    "anti_groupthink_search", "ungrounded_r1", "search1",
+    "r2", "track2", "frame_survival_r2", "breadth_recovery_eval",
     "ungrounded_r2", "search2",
     "r3", "track3", "frame_survival_r3",
     "r4", "track4",

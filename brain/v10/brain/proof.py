@@ -121,6 +121,8 @@ class ProofBuilder:
         self._residue_verification: Optional[dict] = None
         self._synthesis_output: Optional[dict] = None
         self._budgeting: Optional[dict] = None
+        # V3.1 additions
+        self._warnings: list[dict] = []
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -440,6 +442,15 @@ class ProofBuilder:
         """Set diagnostics data."""
         self._diagnostics = data
 
+    def add_warning(self, warning_id: str, stage: str, detail: str) -> None:
+        """Record a non-terminal suboptimal condition (V3.1 WARNING tier)."""
+        self._warnings.append({
+            "warning_id": warning_id,
+            "tier": "WARNING",
+            "stage": stage,
+            "detail": detail,
+        })
+
     def build(self) -> dict:
         """Build the complete proof.json dict."""
         blocker_list = []
@@ -476,7 +487,8 @@ class ProofBuilder:
 
         proof = {
             # --- DOD §19 canonical keys ---
-            "proof_version": "3.0",
+            "proof_version": "3.1",
+            "schema_version": "3.1",
             "run_id": self._run_id,
             "timestamp_started": self._timestamp_started,
             "timestamp_completed": self._timestamp_completed or datetime.now(timezone.utc).isoformat(),
@@ -539,5 +551,6 @@ class ProofBuilder:
             "blocker_summary": blocker_summary,
             "invariant_violations": self._invariant_violations,
             "synthesis_residue_omissions": self._synthesis_residue_omissions,
+            "warnings": self._warnings,
         }
         return proof

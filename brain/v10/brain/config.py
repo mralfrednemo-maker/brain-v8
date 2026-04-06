@@ -58,3 +58,5 @@ class BrainConfig:
     outdir: str = "./output"
     analysis_debug_runs_remaining: int = 10  # DOD §18.4: debug sunset counter
     skip_assumption_gate: bool = False  # Deprecated no-op: requester-fixable defects always block admission
+    schema_version: str = "3.1"
+    residue_omission_threshold: float = 0.25

@@ -13,7 +13,8 @@ class TestProofBuilder:
     def test_schema_version(self):
         pb = ProofBuilder(run_id="test-001", brief="Test brief", rounds_requested=4)
         proof = pb.build()
-        assert proof["proof_version"] == "3.0"
+        assert proof["proof_version"] == "3.1"
+        assert proof["schema_version"] == "3.1"
         assert proof["run_id"] == "test-001"
 
     def test_records_round_results(self):
@@ -333,3 +334,42 @@ class TestProofV9:
                 "total_argument_count": 0,
                 "dimension_coverage_score": 0.0,
             })
+
+
+# --- DELTA-2: schema 3.1 tests ---
+
+def test_proof_version_is_3_1():
+    from brain.proof import ProofBuilder
+    pb = ProofBuilder(run_id="test-1", brief="test brief", rounds_requested=4)
+    result = pb.build()
+    assert result["proof_version"] == "3.1"
+    assert result["schema_version"] == "3.1"
+
+
+def test_v30_proof_missing_schema_version_is_ok():
+    v30 = {"proof_version": "3.0", "outcome": {"verdict": "DECIDE"}}
+    assert v30.get("schema_version") is None
+    assert v30["proof_version"] == "3.0"
+
+
+# --- DELTA-1: warnings[] tests ---
+
+def test_add_warning_records_to_warnings_list():
+    from brain.proof import ProofBuilder
+    pb = ProofBuilder(run_id="test-1", brief="test", rounds_requested=4)
+    pb.add_warning(warning_id="W001", stage="r1", detail="Agreement suspicious but not terminal")
+    result = pb.build()
+    assert "warnings" in result
+    assert len(result["warnings"]) == 1
+    assert result["warnings"][0]["warning_id"] == "W001"
+    assert result["warnings"][0]["stage"] == "r1"
+
+
+def test_warning_never_changes_outcome():
+    from brain.proof import ProofBuilder
+    pb = ProofBuilder(run_id="test-1", brief="test", rounds_requested=4)
+    pb.set_outcome(Outcome.DECIDE, agreement_ratio=1.0, outcome_class="CONSENSUS")
+    pb.add_warning(warning_id="W999", stage="synthesis", detail="Suboptimal but non-terminal")
+    result = pb.build()
+    assert result["outcome"]["verdict"] == "DECIDE"
+    assert len(result["warnings"]) == 1

@@ -256,3 +256,28 @@ def test_blocker_to_dict_uses_dod_field_names():
     assert payload["type"] == "EVIDENCE_GAP"
     assert payload["linked_ids"] == []
     assert "kind" not in payload
+
+
+# --- DELTA-13: formalize undocumented behavior ---
+
+def test_brain_result_has_no_gate1_field():
+    import dataclasses
+    from brain.types import BrainResult
+    field_names = {f.name for f in dataclasses.fields(BrainResult)}
+    assert "gate1" not in field_names, "gate1 is dead code and must be removed"
+
+
+def test_blocker_dropped_serializes_as_deferred():
+    from brain.types import Blocker, BlockerKind, BlockerStatus
+    b = Blocker(blocker_id="BLK-001", kind=BlockerKind.EVIDENCE_GAP,
+                source="dimension:DIM-1", detected_round=1, severity="LOW")
+    b.status = BlockerStatus.DROPPED
+    d = b.to_dict()
+    assert d["status"] == "DEFERRED", "DROPPED must serialize as DEFERRED"
+
+
+def test_frame_survival_status_has_analysis_statuses():
+    from brain.types import FrameSurvivalStatus
+    assert hasattr(FrameSurvivalStatus, "EXPLORED")
+    assert hasattr(FrameSurvivalStatus, "NOTED")
+    assert hasattr(FrameSurvivalStatus, "UNEXPLORED")

@@ -157,9 +157,9 @@ class TestStageOrder:
     def test_all_stages_present(self):
         expected = [
             "preflight", "dimensions",
-            "r1", "track1", "perspective_cards", "framing_pass",
-            "ungrounded_r1", "search1",
-            "r2", "track2", "frame_survival_r2",
+            "r1", "track1", "retroactive_premise_scan", "perspective_cards", "framing_pass",
+            "anti_groupthink_search", "ungrounded_r1", "search1",
+            "r2", "track2", "frame_survival_r2", "breadth_recovery_eval",
             "ungrounded_r2", "search2",
             "r3", "track3", "frame_survival_r3",
             "r4", "track4",

@@ -64,6 +64,15 @@ class BrainError(Exception):
         super().__init__(f"[{stage}] {message}")
 
 
+@dataclass
+class WarningRecord:
+    """A non-terminal suboptimal condition (V3.1 three-tier taxonomy)."""
+    warning_id: str
+    stage: str
+    detail: str
+    tier: str = "WARNING"
+
+
 class Outcome(Enum):
     """Top-level outcomes of a Brain deliberation (DoD v3.0 Section 1)."""
     DECIDE = "DECIDE"
@@ -191,7 +200,7 @@ class FrameSurvivalStatus(Enum):
     DROPPED = "DROPPED"
     ADOPTED = "ADOPTED"
     REBUTTED = "REBUTTED"
-    # ANALYSIS mode statuses
+    # ANALYSIS-mode only (V3.1 DELTA-13: documented)
     EXPLORED = "EXPLORED"
     NOTED = "NOTED"
     UNEXPLORED = "UNEXPLORED"
@@ -382,6 +391,7 @@ class Blocker:
                 **entry,
                 "status": "DEFERRED" if status == "DROPPED" else status,
             })
+        # V3.1 DELTA-13: DROPPED is serialized as DEFERRED (normalized for consumers)
         return {
             "blocker_id": self.blocker_id,
             "type": self.kind.value,
@@ -495,7 +505,6 @@ class BrainResult:
     outcome: Outcome
     proof: dict
     report: str
-    gate1: Optional[Gate1Result] = None
     preflight: Optional["PreflightResult"] = None
     gate2: Optional[Gate2Assessment] = None
     dimensions: Optional["DimensionSeedResult"] = None

@@ -152,12 +152,12 @@ class TestBrainE2E:
             assert result.outcome in (Outcome.DECIDE, Outcome.ESCALATE, Outcome.NO_CONSENSUS)
             assert result.preflight is not None
             assert "proof_version" in result.proof
-            assert result.proof["proof_version"] == "3.0"
+            assert result.proof["proof_version"] == "3.1"
         except BrainError as e:
             # DOD-compliant ERROR — mock data may lack dispositions (§14.5) or
             # have phantom evidence refs (§10.3). Verify partial proof was written.
             assert hasattr(e, 'partial_proof'), "BrainError should have partial_proof"
-            assert e.partial_proof["proof_version"] == "3.0"
+            assert e.partial_proof["proof_version"] == "3.1"
             assert e.partial_proof["error_class"] is not None
 
     async def test_preflight_rejection_short_circuits(self):
