@@ -93,6 +93,7 @@ class ProofBuilder:
         self._invariant_violations: list[dict] = []
         self._acceptance_status: Optional[str] = None
         self._synthesis_residue_omissions: list[dict] = []
+        self._synthesis_residue_threshold_violation: bool = False
         self._search_decision: Optional[dict] = None
         self._v3_outcome_class: str = "not applicable"
         # V9 additions
@@ -198,8 +199,9 @@ class ProofBuilder:
         )
         self._acceptance_status = AcceptanceStatus.ACCEPTED.value if is_clean else "REVIEW_REQUIRED"
 
-    def set_synthesis_residue(self, omissions: list[dict]):
+    def set_synthesis_residue(self, omissions: list[dict], threshold_violation: bool = False):
         self._synthesis_residue_omissions = omissions
+        self._synthesis_residue_threshold_violation = threshold_violation
 
     def set_search_decision(self, source: str, value: bool, reasoning: str,
                             gate1_recommended: Optional[bool] = None,
@@ -602,6 +604,7 @@ class ProofBuilder:
             "blocker_summary": blocker_summary,
             "invariant_violations": self._invariant_violations,
             "synthesis_residue_omissions": self._synthesis_residue_omissions,
+            "synthesis_residue_threshold_violation": self._synthesis_residue_threshold_violation,
             "warnings": self._warnings,
             "retroactive_premise": self._retroactive_premise,
             "anti_groupthink_search": self._anti_groupthink_search,

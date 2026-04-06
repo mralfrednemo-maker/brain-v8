@@ -1402,8 +1402,11 @@ class Brain:
             contradictions=evidence.contradictions,
             unaddressed_arguments=argument_tracker.all_unaddressed,
         )
-        proof.set_synthesis_residue(residue_omissions)
-        if any(o.get("threshold_violation") for o in residue_omissions):
+        residue_threshold_violated = any(
+            o.get("threshold_violation") for o in residue_omissions
+        ) if residue_omissions else False
+        proof.set_synthesis_residue(residue_omissions, threshold_violation=residue_threshold_violated)
+        if residue_threshold_violated:
             proof.add_violation(
                 "RESIDUE-THRESHOLD", "WARN",
                 f"Synthesis omitted >30% of structural findings ({len(residue_omissions)} omissions)",
@@ -1470,6 +1473,7 @@ class Brain:
             known_evidence_ids=evidence.all_evidence_ids(),
             round_model_counts=[len(st.round_responded.get(str(i), [])) for i in range(1, self._config.rounds + 1)],
             expected_round_model_counts=[len(ROUND_TOPOLOGY[i]) for i in range(1, self._config.rounds + 1)],
+            residue_threshold_violation=residue_threshold_violated,
         )
         log.gate2_result(
             gate2.outcome.value, agreement, outcome_class,
