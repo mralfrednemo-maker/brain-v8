@@ -12,7 +12,8 @@ import pytest
 from brain.types import ModelResponse
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-TMP_ROOT = Path("C:/Users/chris/.codex/memories/thinker-v8-test-tmp")
+import tempfile as _tempfile
+TMP_ROOT = Path(_tempfile.gettempdir()) / "thinker-v10-test-tmp"
 
 
 class MockLLMClient:

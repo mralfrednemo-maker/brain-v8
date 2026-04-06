@@ -6,8 +6,8 @@ class TestStageRegistry:
 
     def test_registry_has_stages(self):
         # Import all modules to populate registry
-        import brain.gate1, thinker.rounds, thinker.argument_tracker  # noqa
-        import brain.tools.position, thinker.search, thinker.synthesis, thinker.gate2  # noqa
+        import brain.gate1, brain.rounds, brain.argument_tracker  # noqa
+        import brain.tools.position, brain.search, brain.synthesis, brain.gate2  # noqa
         assert len(STAGE_REGISTRY) > 0
 
     def test_stage_info_fields(self):

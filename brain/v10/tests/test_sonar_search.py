@@ -12,4 +12,4 @@ class TestSonarSearchError:
     def test_sonar_module_importable(self):
         """Sonar search module should import without errors."""
         import brain.sonar_search  # noqa
-        assert hasattr(thinker.sonar_search, "sonar_search")
+        assert hasattr(brain.sonar_search, "sonar_search")
