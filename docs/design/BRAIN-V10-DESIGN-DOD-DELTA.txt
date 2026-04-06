@@ -1,0 +1,657 @@
+2026-04-06 12:51 (Athens)
+
+I do not need more context. I have enough to proceed from the two reports plus the baseline design, DoD, and code.
+
+I am using **new 20.txt as the primary backbone** because it is materially closer to the current architecture: it keeps merged `PreflightAssessment`, preserves ANALYSIS `A1–A7`, and introduces a real `3.1` schema transition instead of leaving versioning half-frozen. I am pulling in the strongest corrections from **report.md** where it is more code-realistic: defer **canonical entity IDs** and **full claim-aware pinning**, keep the **two-tier evidence ledger** as the baseline, and formalize the current code’s undocumented behaviors in the DOD. That combination is the best delta on top of V3.0 rather than a partial rewrite disguised as a delta.      
+
+## Brain V8 — Unified Master Design & DOD (V3.1)
+
+**Delta on V3.0 baseline**
+
+### What stays unchanged from V3.0
+
+Unchanged from V3.0: merged `PreflightAssessment`; fixed `4→3→2→2` topology; `DimensionSeeder`; `PerspectiveCards`; frame-survival contract; exploration-stress trigger; two-tier evidence ledger; semantic contradiction pass; ungrounded-stat detection after R1/R2 on DECIDE runs; controller-curated synthesis packet; residue verification; stability tests; and ANALYSIS `A1–A7`. These are already wired into the current design/DoD and much of the current code.    
+
+---
+
+## Why I am choosing these features over the competing ones
+
+### 1) Merged PreflightAssessment beats split Gate 1 + CS Audit
+
+I keep the V3.0 merged preflight. The live architecture already runs a single `run_preflight(...)` stage, returns `NEED_MORE` from there, stores `proof.preflight`, and carries no real separate admission owner in the pipeline. V3.0B’s split Gate 1 / CS Audit is a structural fork, not a delta. The lingering `gate1` names in `BrainResult` and `proof.py` are legacy residue to clean up, not evidence that the split architecture should return.    
+
+### 2) Keep ANALYSIS A1–A7; reject the A1–A3 simplification
+
+The current DOD and code already support ANALYSIS `A1–A7`, including artifact-integrity checks, evidence floor, dimension floor, and total-argument floor. V3.0B’s `A1–A3` version throws away guardrails that already exist and are already useful. New 20 is right here.    
+
+### 3) Defer canonical entity IDs
+
+Report.md is stronger than new 20 on this point. Canonical IDs touch prompts, trackers, decisive-claim extraction, contradiction linkage, synthesis, and proof schema all at once. That is not a clean V3.1 delta on top of the current codebase. The current code already has claim IDs, argument IDs, contradiction IDs, and blocker IDs where needed; the real gap is not total absence of IDs, but incomplete cross-round normalization. That should be a V3.2 structural program, not a V3.1 delta.   
+
+### 4) Defer full claim-aware pinning
+
+New 20 correctly identifies the downstream-consumer problem: if pinning lands, every consumer that iterates active evidence must become pin-aware. That insight is good. But that is exactly why the feature is too invasive for this delta. Report.md is stronger on the release decision: keep the two-tier ledger and add a forensic eviction overlay now; defer full pinning until the entity/linkage layer is mature.   
+
+### 5) Defer Virtual Frames
+
+Report.md makes the best positive case for Virtual Frames, but new 20 makes the better release call. V3.0 already has `DimensionSeeder`, `PerspectiveCards`, fixed adversarial Kimi in R1, and the exploration-stress trigger. For V3.1, **Breadth Recovery + Anti-Groupthink Search** address the concrete premature-convergence failure with less new controller state and no new pre-R1 synthetic frame lifecycle.   
+
+### 6) Keep D-rules explicit, but do not keep D1–D17 exactly as written in new 20
+
+New 20 is right that the DECIDE contract should be one explicit rule table. But its `D15` depends on pin-cap enforcement, and I am deferring pinning. So the optimal V3.1 compromise is **explicit D1–D16**: add residue-threshold escalation and suspicious-agreement escalation, keep groupthink escalation, and make final DECIDE the last rule. That is more internally coherent than pretending a deferred feature still owns a live Gate 2 rule.   
+
+---
+
+# Part 1: DESIGN (V3.0 + selected deltas)
+
+## DELTA-1 — Three-tier failure taxonomy
+
+**Chosen over:** V3.0’s implicit two-bucket behavior and V3.0B’s overly broad “everything failed means stop” reading.
+
+**Reasoning:** V3.0 already reserves `ERROR` for infrastructure/fatal integrity, but it does not formalize `WARNING` as a first-class non-blocking tier. V3.0B’s three-tier model is the right clarification, and new 20 correctly frames zero tolerance as “no silent failures,” not “every defect is fatal.”   
+
+**What it replaces**
+Implicit failure classification.
+
+**What changes in code**
+
+* `proof.py`: add `warnings[]`.
+* `brain.py`: non-terminal suboptimal states log warnings instead of silently disappearing.
+* `gate2.py`: remains terminal owner of `DECIDE/ESCALATE/NO_CONSENSUS/ANALYSIS/ERROR`.
+
+**What conflicts arise**
+
+* Any currently detected-but-unlogged suboptimal condition becomes inconsistent with the new contract.
+* Existing comments or docs that treat all non-ideal states as `ERROR` must be narrowed.
+
+**DOD acceptance criteria**
+
+* Every failure mode maps to exactly one of `ERROR`, `ESCALATE`, `WARNING`.
+* `WARNING` never changes terminal outcome.
+* A detected warning that is not logged is itself a fatal integrity defect.
+
+---
+
+## DELTA-2 — Explicit schema transition: `proof_version = "3.1"` and `schema_version = "3.1"`
+
+**Chosen over:** report.md’s `MASTER-1.0` overlay and V3.0’s current hardcoded `proof_version = "3.0"`.
+
+**Reasoning:** The code already emits a fixed proof version and does not emit a schema version. A real transition plan is needed, and new 20 is stronger than report.md here. Using `3.1` for both proof and schema is clearer than introducing a parallel master-only version label.   
+
+**What it replaces**
+Single hardcoded `proof_version: "3.0"` and no schema transition contract.
+
+**What changes in code**
+
+* `proof.py`: emit `proof_version`, `schema_version`.
+* Parser/validator path: accept legacy V3.0 proofs during transition.
+* `BrainConfig`: transition window config and threshold telemetry config.
+
+**What conflicts arise**
+
+* Consumers expecting only `proof_version` need updating.
+* Backward parsing rules must be explicit; otherwise old proofs break.
+
+**DOD acceptance criteria**
+
+* After cutover, all new runs emit `proof_version = "3.1"` and `schema_version = "3.1"`.
+* During transition, V3.0 proofs parse without `ERROR`.
+* Missing required V3.1 fields after transition is `ERROR`.
+
+---
+
+## DELTA-3 — Reformulation metadata inside merged Preflight, with execution deferred
+
+**Chosen over:** V3.0B’s auto-reformulation-through-split-admission design.
+
+**Reasoning:** The best compromise is new 20’s: keep merged `PreflightAssessment`, add reformulation fields for auditability, but do not silently auto-proceed yet. That preserves delta discipline and avoids hidden admission behavior.  
+
+**What it replaces**
+Nothing functional; this is a schema enrichment of V3.0 preflight.
+
+**What changes in code**
+
+* `types.py`: extend `PreflightResult` with `original_brief`, `reformulated_brief`, `reformulation_reason`.
+* `proof.py`: persist these under `proof.preflight`.
+* `brain.py`: no second admission stage; no silent rewrite-and-proceed.
+
+**What conflicts arise**
+
+* V3.0B’s `gate1/cs_audit` proof split is incompatible with merged preflight.
+* Legacy `gate1` nomenclature in result/proof helper code should be deprecated or aliased.
+
+**DOD acceptance criteria**
+
+* Reformulation metadata is logged when present.
+* Silent reformulation is forbidden.
+* Requester-fixable defects still return `NEED_MORE` from preflight.
+
+---
+
+## ADDITION-4 — Retroactive premise escalation via one-shot preflight re-audit
+
+**Chosen over:** doing nothing after R1 or adding a second permanent front-gate stage.
+
+**Reasoning:** This is one of the best additions from both reports. It catches premise failures that only become visible after R1 argument extraction while preserving the single admission owner. The important correction from report.md is the one-shot cap to prevent recursive reruns.  
+
+**What it replaces**
+Nothing.
+
+**What changes in code**
+
+* `brain.py`: after `track1`, scan for repeated `premise_challenge` findings; if `>= 2` independent models hit the same premise, rerun preflight once.
+* `types.py`: add `RetroactivePremiseResult`.
+* `proof.py`: add `retroactive_premise`.
+* State/checkpoint: add one-shot guard, e.g. `_retroactive_escalation_consumed`.
+
+**What conflicts arise**
+
+* Rerun can raise effort tier or change modality.
+* Lowering effort tier mid-run is forbidden; only ratchet upward.
+
+**DOD acceptance criteria**
+
+* Scan runs after R1 on all admitted DECIDE runs.
+* Trigger is `>= 2` independent models on the same flawed premise.
+* Rerun happens at most once.
+* Fatal/requester-fixable rerun outcomes cannot be ignored.
+
+---
+
+## DELTA-5 — SHORT_CIRCUIT reasoning contract
+
+**Chosen over:** V3.0’s lighter short-circuit logging and V3.0B’s broader compressed-mode design without merged-preflight alignment.
+
+**Reasoning:** V3.0 already keeps fixed topology under `SHORT_CIRCUIT`; the missing piece is a proof-visible contract showing that compression did not collapse reasoning structure. New 20’s five-invariant contract is the right tightening.   
+
+**What it replaces**
+V3.0’s weaker auditability for compressed runs.
+
+**What changes in code**
+
+* `proof.py`: add `reasoning_contract`.
+* `brain.py`: validate on compressed runs that each admitted response contains:
+
+  * premise check
+  * confidence basis
+  * known unknowns
+  * one counter-consideration
+  * machine-readable compression reason
+
+**What conflicts arise**
+
+* Existing budgeting fields show *that* short-circuit happened, not whether it preserved reasoning quality.
+
+**DOD acceptance criteria**
+
+* `SHORT_CIRCUIT` never changes topology.
+* Missing any invariant on a compressed run is `ERROR`.
+* If fallback occurs, it is logged.
+
+---
+
+## ADDITION-6 — Breadth-Recovery Pulse
+
+**Chosen over:** Virtual Frames as the first breadth-control addition.
+
+**Reasoning:** This is lower blast radius and targets a concrete observable failure: R1 arguments ignored in R2. It uses existing argument IDs and tracking instead of introducing new synthetic frame state.  
+
+**What it replaces**
+Nothing.
+
+**What changes in code**
+
+* `brain.py`: after `track2`, compute ignored ratio for R1 arguments in R2; if `> 0.40`, inject mandatory recovery instructions into R3.
+* `proof.py`: add `breadth_recovery`.
+
+**What conflicts arise**
+
+* Depends on stable argument tracking; if argument lineage is broken, fail closed.
+
+**DOD acceptance criteria**
+
+* Evaluation after R2 is mandatory.
+* Trigger is `ignored_ratio > 0.40`.
+* If triggered, R3 injection is mandatory and logged.
+
+---
+
+## ADDITION-7 — Calibrated Anti-Groupthink Search
+
+**Chosen over:** Virtual Frames and rotating adversarial role as immediate anti-convergence controls.
+
+**Reasoning:** This is the other high-value low-blast addition. It complements, rather than replaces, V3.0’s exploration-stress trigger and stability-based groupthink detection. It also fits the current search/provenance model cleanly.   
+
+**What it replaces**
+Nothing.
+
+**What changes in code**
+
+* `brain.py`: after R1, if `agreement_ratio > 0.80` and the question is `OPEN/AMBIGUOUS` or `HIGH` stakes, issue one adversarial search query against apparent consensus.
+* `types.py`: extend query provenance with `anti_groupthink`.
+* `proof.py`: add `anti_groupthink_search`.
+
+**What conflicts arise**
+
+* Search provenance enum and proof schema must update together.
+
+**DOD acceptance criteria**
+
+* Evaluation after R1 is mandatory.
+* Exactly one adversarial query is issued when threshold is met.
+* Query is logged and its evidence flows into R2.
+
+---
+
+## DELTA-8 — Residue threshold becomes explicit: `threshold_violation`
+
+**Chosen over:** V3.0’s implicit “material omissions unresolved” rule and V3.0B’s coupling of this upgrade to broader structural changes.
+
+**Reasoning:** This is a clean, valuable refinement. V3.0 already has residue verification, deep scan, and controller-curated synthesis state. The useful addition is to make the 25% omission threshold explicit in proof and Gate 2.  
+
+**What it replaces**
+Implicit residue-failure escalation.
+
+**What changes in code**
+
+* `proof.py`: extend `proof.residue_verification` with `threshold_violation`.
+* Residue checker: set `threshold_violation = true` when omissions exceed configured threshold.
+* `gate2.py`: consume the field explicitly.
+
+**What conflicts arise**
+
+* Rule numbering and proof expectations change together.
+* Deep-scan logic and threshold telemetry must stay synchronized.
+
+**DOD acceptance criteria**
+
+* `omission_rate > 0.20` triggers deep scan.
+* `threshold_violation = true` is explicit in proof.
+* Threshold default is `0.25`, configurable, and recorded.
+
+---
+
+## DELTA-9 — Expanded DECIDE Gate 2, but as D1–D16, not D1–D17
+
+**Chosen over:** V3.0’s D1–D14 and new 20’s D1–D17.
+
+**Reasoning:** The explicit table is correct, but the pin-cap rule in new 20 depends on claim-aware pinning, which I am deferring. So V3.1 should add only the rules that do not depend on deferred infrastructure. That yields a cleaner D1–D16 table:
+
+* add explicit residue escalation
+* keep groupthink escalation
+* add suspicious high-agreement/no-evidence escalation
+* final DECIDE becomes D16.   
+
+**What it replaces**
+Current D1–D14 contract in V3.0/code.
+
+**What changes in code**
+
+* `gate2.py`: change DECIDE rules to:
+
+  * D1 fatal integrity/infrastructure → ERROR
+  * D2 modality mismatch → ERROR
+  * D3 illegal SHORT_CIRCUIT state → ERROR
+  * D4 agreement < 0.50 → NO_CONSENSUS
+  * D5 agreement 0.50–<0.75 → ESCALATE
+  * D6 unresolved CRITICAL blocker → ESCALATE
+  * D7 decisive claim lacks valid evidence binding → ESCALATE
+  * D8 unresolved HIGH/CRITICAL contradiction → ESCALATE
+  * D9 unresolved CRITICAL premise flag → ESCALATE
+  * D10 material frame unresolved or decisive untested analogy → ESCALATE
+  * D11 conclusion unstable → NO_CONSENSUS
+  * D12 reason/assumption unstable → ESCALATE
+  * D13 residue.threshold_violation → ESCALATE
+  * D14 groupthink_warning and no independent evidence → ESCALATE
+  * D15 suspicious agreement without evidence on non-SHORT_CIRCUIT run → ESCALATE
+  * D16 otherwise → DECIDE
+
+**What conflicts arise**
+
+* Current code stops at D14 with `D13 = groupthink`, `D14 = DECIDE`, so rule IDs, trace expectations, and tests must all shift. 
+
+**DOD acceptance criteria**
+
+* Rule order is fixed and deterministic.
+* Rule trace is mandatory.
+* Same proof state yields same outcome.
+
+---
+
+## ADDITION-10 — ANALYSIS overlays on top of A1–A7
+
+**Chosen over:** V3.0B’s ANALYSIS controller rewrite and A1–A3 reduction.
+
+**Reasoning:** New 20 gets this exactly right. The V3.0 ANALYSIS contract is already stronger than the simplified V3.0B one, but V3.0B contributes valuable reporting overlays: 8-section synthesis, extractive information-boundary classification, coverage assessment, and track-only semantic contradictions. Those should sit *on top of* the existing ANALYSIS gate, not replace it.   
+
+**What it replaces**
+Nothing terminal.
+
+**What changes in code**
+
+* `analysis_mode.py`: emit 8-section synthesis structure.
+* `proof.py`: add `information_boundary`, `coverage_assessment`.
+* ANALYSIS semantic contradictions: mark `track_only: true`.
+
+**What conflicts arise**
+
+* Must not replace `analysis_map`.
+* Must not replace `A1–A7`.
+* Must not swap in a new DimensionTracker-based controller.
+
+**DOD acceptance criteria**
+
+* Every ANALYSIS run still satisfies A1–A7.
+* Every ANALYSIS run also emits:
+
+  * 8-section synthesis
+  * extractive information-boundary classification
+  * top-level coverage assessment
+  * track-only semantic contradiction records
+
+---
+
+## ADDITION-11 — Paywall detection + intersection-based cross-domain filter
+
+**Chosen over:** leaving evidence-quality gaps unchanged.
+
+**Reasoning:** This is a good low-risk addition from new 20. It improves evidence quality without changing controller semantics.  
+
+**What it replaces**
+Nothing.
+
+**What changes in code**
+
+* `page_fetch.py`: detect paywalled pages before extraction; log skipped pages.
+* `evidence.py`: change cross-domain compatibility from strict match to non-empty intersection.
+
+**What conflicts arise**
+
+* None of consequence; this is a localized evidence-quality change.
+
+**DOD acceptance criteria**
+
+* Paywalled pages are skipped and logged.
+* Hybrid-domain evidence is admitted when there is non-empty domain overlap.
+
+---
+
+## ADDITION-12 — Proof-layer remediation + confidence telemetry
+
+**Chosen over:** using these as terminal rule inputs.
+
+**Reasoning:** New 20’s proof-layer-only compromise is stronger than V3.0B’s harder coupling. These are useful for operators, but not mature enough to drive Gate 2.  
+
+**What it replaces**
+Nothing.
+
+**What changes in code**
+
+* `proof.py`: add `escalate_remediation`, `outcome_confidence`.
+* `gate2.py`: when `ESCALATE`, emit rule-specific remediation text.
+
+**What conflicts arise**
+
+* None if they remain proof-layer only.
+
+**DOD acceptance criteria**
+
+* Every `ESCALATE` outcome includes remediation.
+* `outcome_confidence` is recorded but never used as a Gate 2 input.
+
+---
+
+## DELTA-13 — Formalize current undocumented behavior and legacy residue
+
+**Chosen over:** leaving code and DoD drift unresolved.
+
+**Reasoning:** report.md is clearly right here. The current code exposes behavior the DOD does not formally cover:
+
+* `FrameSurvivalStatus.EXPLORED/NOTED/UNEXPLORED`
+* `Blocker.to_dict()` normalizing `DROPPED → DEFERRED`
+* `BrainResult.gate1` lingering in a merged-preflight architecture
+* `PerspectiveCard.field_provenance` existing without full proof-level contract.    
+
+**What it replaces**
+Undocumented implicit behavior.
+
+**What changes in code**
+
+* `types.py` / DOD alignment:
+
+  * formalize ANALYSIS-only frame statuses
+  * formalize serialized blocker status normalization
+  * deprecate `BrainResult.gate1`
+  * specify `field_provenance` schema and acceptance rules
+
+**What conflicts arise**
+
+* Docs/tests currently do not fully match emitted objects.
+* Legacy `gate1` labels must either be aliased temporarily or removed cleanly.
+
+**DOD acceptance criteria**
+
+* Every emitted field has schema coverage.
+* Serialized blocker status contract is explicit.
+* ANALYSIS frame statuses are explicit.
+* `gate1` is removed or clearly deprecated as always-null legacy residue.
+
+---
+
+## DELTA-14 — Forensic eviction overlay on the two-tier ledger
+
+**Chosen over:** full claim-aware pinning.
+
+**Reasoning:** This is the strongest compromise between the two reports. Keep the V3.0 two-tier evidence ledger, but make evictions more auditable now. That closes part of the DC-5 observability gap without taking on the full dependency chain of pinning + canonical IDs.  
+
+**What it replaces**
+Bare-minimum eviction logging.
+
+**What changes in code**
+
+* `types.py`: extend `EvictionEvent` with optional contradiction/blocker linkage metadata.
+* `proof.py`: emit richer eviction records.
+* Residue/synthesis path: explain orphaned high-authority evidence explicitly.
+
+**What conflicts arise**
+
+* If contradiction linkage is added, it must stay consistent with existing contradiction IDs.
+
+**DOD acceptance criteria**
+
+* Every eviction is logged.
+* High-authority orphaned evidence gets explicit non-decisive explanation.
+* Evicted contradiction-linked evidence is visible in proof for audit.
+
+---
+
+# Part 2: DOD (updated to cover every selected delta)
+
+## 1. Consolidated stage sequence
+
+For DECIDE runs:
+
+`Preflight → DimensionSeeder → R1 → Track1 → RetroactivePremiseScan (conditional) → PerspectiveCards → DivergentFramingPass → AntiGroupthinkSearch (conditional) → UngroundedR1 → Search(R1) → R2 → Track2 → FrameSurvivalR2 → BreadthRecoveryEval (conditional) → UngroundedR2 → Search(R2) → R3 → Track3 → FrameSurvivalR3 → R4 → Track4 → SemanticContradiction → SynthesisPacket → Synthesis → ResidueVerification → Stability → Gate2`
+
+For ANALYSIS runs, the shared pipeline stays intact, and post-synthesis overlays add:
+`InformationBoundaryClassification`, `CoverageAssessment`.
+
+Virtual Frames are **not** part of V3.1. Claim-aware pinning is **not** part of V3.1. Canonical entity registry is **not** part of V3.1.
+
+## 2. Updated top-level proof contract
+
+V3.1 adds these fields on top of V3.0:
+
+* `schema_version`
+* `warnings`
+* `reasoning_contract`
+* reformulation metadata inside `preflight`
+* `retroactive_premise`
+* `breadth_recovery`
+* `anti_groupthink_search`
+* `information_boundary`
+* `coverage_assessment`
+* `outcome_confidence`
+* `escalate_remediation`
+* `telemetry_hooks`
+
+It does **not** add `entity_registry`, `evidence_pinning`, or `pin_cap` in V3.1.
+
+## 3. Gate 2 DECIDE rules (authoritative V3.1)
+
+**D1** fatal integrity/infrastructure → `ERROR`
+**D2** modality mismatch → `ERROR`
+**D3** illegal `SHORT_CIRCUIT` state → `ERROR`
+**D4** `agreement_ratio < 0.50` → `NO_CONSENSUS`
+**D5** `0.50 <= agreement_ratio < 0.75` → `ESCALATE`
+**D6** unresolved CRITICAL blocker → `ESCALATE`
+**D7** decisive claim lacks valid evidence binding → `ESCALATE`
+**D8** unresolved HIGH/CRITICAL contradiction → `ESCALATE`
+**D9** unresolved CRITICAL premise flag → `ESCALATE`
+**D10** material frame unresolved or decisive untested analogy → `ESCALATE`
+**D11** `conclusion_stable = false` → `NO_CONSENSUS`
+**D12** `reason_stable = false OR assumption_stable = false` → `ESCALATE`
+**D13** `residue.threshold_violation = true` → `ESCALATE`
+**D14** `groupthink_warning = true AND independent_evidence_present = false` → `ESCALATE`
+**D15** `agreement_ratio >= 0.75 AND effort_tier != SHORT_CIRCUIT AND evidence_count == 0` → `ESCALATE`
+**D16** otherwise → `DECIDE`
+
+## 4. Gate 2 ANALYSIS rules (authoritative V3.1)
+
+V3.1 keeps V3.0 `A1–A7` unchanged as the terminal gate:
+
+* A1 missing/invalid preflight → `ERROR`
+* A2 modality mismatch → `ERROR`
+* A3 missing required shared artifacts → `ERROR`
+* A4 evidence archive empty while search was required → `ESCALATE`
+* A5 mandatory dimension has zero arguments → `ESCALATE`
+* A6 total arguments < 8 → `ESCALATE`
+* A7 otherwise → `ANALYSIS`
+
+`dimension_coverage_score` remains diagnostic/reporting metadata, not a replacement for A5/A6.
+
+## 5. V3.1 acceptance criteria by selected delta
+
+### Failure taxonomy
+
+* Every failure mode has exactly one tier.
+* `WARNING` never alters outcome.
+* Unlogged warning = `ERROR`.
+
+### Schema transition
+
+* V3.0 proofs parse during transition.
+* Post-cutover V3.1 runs emit both `proof_version` and `schema_version`.
+* Missing mandatory V3.1 fields after transition = `ERROR`.
+
+### Reformulation metadata
+
+* `original_brief` preserved when reformulation metadata exists.
+* Silent reformulation forbidden.
+* Requester-fixable defects still route to `NEED_MORE`.
+
+### Retroactive premise escalation
+
+* Scan runs after R1.
+* Trigger `>= 2` independent models.
+* Re-audit happens at most once.
+* Fatal rerun result cannot be ignored.
+
+### SHORT_CIRCUIT reasoning contract
+
+* Fixed topology preserved.
+* All 5 invariants present on compressed responses.
+* Missing invariant = `ERROR`.
+* Fallback logged if it occurs.
+
+### Breadth recovery
+
+* Evaluation after R2 mandatory.
+* Trigger `ignored_ratio > 0.40`.
+* Triggered recovery injection mandatory.
+
+### Anti-groupthink search
+
+* Evaluation after R1 mandatory.
+* Exactly one adversarial query when threshold met.
+* Query logged with provenance and fed into R2.
+
+### Residue threshold
+
+* `threshold_violation` explicit in proof.
+* Default threshold `0.25`, configurable and logged.
+* Deep scan still triggers at `> 0.20`.
+
+### ANALYSIS overlays
+
+* 8-section synthesis always present on ANALYSIS runs.
+* Information-boundary classification is extractive, not self-tagged by models.
+* Coverage assessment present.
+* Semantic contradictions marked `track_only: true`.
+
+### Proof-layer remediation/confidence
+
+* Every `ESCALATE` outcome includes remediation.
+* `outcome_confidence` recorded but not used by Gate 2.
+
+### Undocumented behavior formalization
+
+* ANALYSIS-only frame statuses documented.
+* Serialized blocker-status normalization documented.
+* `PerspectiveCard.field_provenance` fully specified.
+* `BrainResult.gate1` removed or formally deprecated.
+
+### Forensic eviction overlay
+
+* Every eviction logged.
+* High-authority orphaned evidence explained.
+* Contradiction-linked evictions visible in proof.
+
+## 6. New V3.1 failure modes
+
+* Untiered condition or warning not logged → `ERROR`
+* Silent reformulation → `ERROR`
+* Retroactive premise trigger met but rerun skipped → `ERROR`
+* Compressed invariant missing → `ERROR`
+* Breadth recovery trigger met but injection omitted → `ERROR`
+* Anti-groupthink trigger met but query omitted/unlogged → `ERROR`
+* `threshold_violation = true` → `ESCALATE`
+* Suspicious high-agreement/no-evidence state on non-`SHORT_CIRCUIT` run → `ESCALATE`
+* ANALYSIS information boundary missing or self-tagged → `ERROR`
+* ANALYSIS coverage assessment missing → `ERROR`
+* ANALYSIS semantic contradictions not `track_only` → `ERROR`
+
+---
+
+## Deferred / rejected for V3.1
+
+### Rejected now
+
+* Split Gate 1 + CS Audit
+* ANALYSIS `A1–A3` replacement
+* Semantic CTR threshold adjustment as live Gate 2 math
+* Evidence quality floor as hard DECIDE blocker
+* Rotating adversarial role
+* Perspective lenses as controller-required replacement for Perspective Cards
+* Concurrent mechanism budget
+
+### Deferred to V3.2
+
+* Virtual Frames
+* Canonical cross-round entity registry
+* Full claim-aware pinning and pin-cap Gate 2 rule
+
+The reason is the same in each case: these are either structural forks from the current merged/baseline design, or they require a wider dependency chain than is appropriate for a V3.1 delta.   
+
+## Final judgment
+
+The optimal merge is:
+
+* **Take new 20’s architecture discipline**: merged preflight, preserved ANALYSIS `A1–A7`, schema transition, low-blast-radius additions.
+* **Take report.md’s scope discipline**: defer canonical IDs and full pinning, keep two-tier evidence ledger, formalize code/documentation drift.
+* **Do not ship V3.1 as a “15-feature everything merge.”**
+* **Do not shrink V3.1 to only a handful of deltas either.**
+
+The right V3.1 is a **medium-scope, code-compatible delta**: enough to improve failure taxonomy, residue enforcement, anti-groupthink behavior, short-circuit auditability, and ANALYSIS reporting, without smuggling in a second architecture under the label of a delta.   
+
+If you want, I can turn this into an even stricter “implementation-ready” version with numbered acceptance tests and exact proof-field schemas only.

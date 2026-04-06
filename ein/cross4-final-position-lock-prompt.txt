@@ -1,0 +1,27 @@
+=== PROMPT ===
+This file contains your next task. Read it carefully and respond as instructed inside.
+============================================================
+
+You are now in the FINAL position-lock round. After three rounds of cross-pollination, the following disagreements remain unresolved between participants:
+
+{disagreement_list}
+
+For EACH disagreement listed above, you MUST do exactly one of:
+
+  CONCEDE — adopt the other side's position. State: "CONCEDE: [topic]. I adopt [position] because [reason]."
+
+  HOLD — keep your position. But you MUST first state the strongest version of the opposing argument IN YOUR OWN WORDS (steelman), then explain why you still reject it despite that. State: "HOLD: [topic]. Opposing argument at its best: [steelman]. I reject this because [reason]. Severity: [CRITICAL / IMPORTANT / PREFERENCE]."
+
+CONSTRAINT: You may HOLD on at most {max_holds} points. All remaining disagreements MUST be CONCEDE. Choose your fights carefully — hold only on issues where adopting the other side would genuinely damage the system.
+
+After your CONCEDE/HOLD declarations, produce your FINAL complete revised document with all concessions applied.
+
+Add as an appendix your HOLD declarations with their steelman arguments and severity ratings.
+
+--- PARTICIPANT: {name_a} (latest position) ---
+
+{draft_a}
+
+--- PARTICIPANT: {name_b} (latest position) ---
+
+{draft_b}

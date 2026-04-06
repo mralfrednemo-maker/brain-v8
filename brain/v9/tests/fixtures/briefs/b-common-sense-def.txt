@@ -1,0 +1,39 @@
+=== BRIEF: Defining "Common Sense" and "Out-of-the-Box Thinking" for a Multi-Model Deliberation Engine ===
+
+GOAL: Brain V8 is a multi-model deliberation engine that takes a question (brief), runs it through 4 independent AI models across multiple rounds, tracks arguments, injects web-verified evidence, and produces one of four outcomes: DECIDE, ESCALATE, NO_CONSENSUS, or ERROR. It is rigorous, auditable, and zero-tolerance on failures.
+
+Two capabilities that Brain V8 currently lacks are described loosely as "common sense" and "out-of-the-box thinking." Before these can be designed or built, they need precise, operational definitions — not philosophical ones. The goal of this brief is to produce those definitions: what each capability means specifically for a deliberation engine, how they differ from each other, where they interact, and what their presence or absence looks like in practice.
+
+Current Brain V8 architecture summary:
+- Gate 1 (Sonnet): pre-run admission + search decision. Validates brief has sufficient context.
+- R1 (4 models): all models answer the same question independently from the brief.
+- Argument Tracker: extracts and compares arguments across rounds.
+- Search + Evidence: injects web-verified facts between rounds.
+- R2 (3 models), R3 (2 models), R4 (2 models): narrowing topology with prior context re-injected.
+- Synthesis (Sonnet): consolidates all positions into verdict + reasoning.
+- Gate 2 (deterministic): classifies outcome by agreement_ratio and argument/blocker resolution.
+
+What is MISSING in the current design:
+1. No calibration of effort to question difficulty or stakes.
+2. No ability to question the premise of the brief itself.
+3. No model is ever asked to argue the unconventional or contrarian position.
+4. Fast unanimous agreement is treated as a positive signal (high agreement_ratio = DECIDE).
+5. All models answer the same framing of the question — no frame diversity.
+6. No cross-domain or analogical reasoning is prompted or tracked.
+7. No filter between "answer is already well-established" and "genuine uncertainty exists."
+
+TASK: Provide precise, operational definitions for each capability as it applies specifically to Brain V8:
+
+1. COMMON SENSE: Define what "common sense" means for this specific system. What would a Brain V8 with common sense do differently from the current system? Give 3 concrete examples of questions or scenarios where the difference is visible. What is the minimum architectural addition required to implement it?
+
+2. OUT-OF-THE-BOX THINKING: Define what "out-of-the-box thinking" means for this system. Is it about generating options not in the brief? Questioning the brief's premises? Cross-domain analogies? Adversarial framing? Give 3 concrete examples. What is the minimum architectural addition required to implement it?
+
+3. RELATIONSHIP: Are these two capabilities complementary, opposed, or orthogonal? Where do they interact in the pipeline? Is there a risk that one undermines the other?
+
+4. FAILURE MODES: What does a deliberation engine look like when it has common sense but no out-of-the-box thinking? And vice versa? Describe the failure pattern for each.
+
+5. OPERATIONALIZATION: For each capability, propose a measurable indicator that would tell you whether the system has it or not. Not a philosophical test — something you could compute from proof.json or run as a benchmark.
+
+Be specific. Cite the current architecture where relevant. Avoid philosophical definitions — only operational ones that can inform code changes.
+
+=== END BRIEF ===

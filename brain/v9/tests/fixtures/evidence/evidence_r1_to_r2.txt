@@ -1,0 +1,52 @@
+[RESEARCH CONTEXT — Web-verified evidence, 2026-03-25]
+
+The following evidence was retrieved to ground this round's analysis.
+Reference evidence IDs where relevant. If evidence contradicts a prior view, address the discrepancy.
+
+{E001} [MEDIUM] RCE meaning: Remote code execution attacks explained | Wiz
+Fact: Insecure APIs: Exposing systems to RCE by lacking proper authentication or request validation. File deserialization vulnerabilities: <strong>Exploiting improper deserialization of input to execute malicious code in the application</strong>.
+Source: https://www.wiz.io/academy/application-security/remote-code-execution-rce-attack
+
+{E002} [MEDIUM] CVE-2025-59287 Explained: WSUS Unauthenticated RCE Vulnerability
+Fact: Immediate action is required to prevent compromise. Apply the security update released by Microsoft immediately. This patch addresses the vulnerability by implementing secure serialization mechanisms and/or strict type validation, preventing the dese
+Source: https://www.picussecurity.com/resource/blog/cve-2025-59287-explained-wsus-unauthenticated-rce-vulnerability
+
+{E003} [MEDIUM] CVE-2025-55182 – React Server Components RCE via Flight Payload Deserialization
+Fact: During normal operation, React ... request parsing logic. The vulnerable versions of RSC <strong>allow an attacker to craft a fake Chunk object and submit it in the request body</strong>....
+Source: https://www.offsec.com/blog/cve-2025-55182/
+
+{E004} [MEDIUM] Remote Code Execution Deserialization Vulnerability Blocked by Contrast
+Fact: Readers will notice that it was much different than when the exploit was successful. We highlighted the part that called out when the Contrast agent detected a system command call during deserialization. We then followed the POC steps and confirmed i
+Source: https://www.contrastsecurity.com/security-influencers/remote-code-execution-deserialization-vulnerability
+
+{E005} [MEDIUM] Remote Code Execution (RCE)
+Fact: Remote code execution vulnerabilities ... Deserialization vulnerabilities <strong>allow attackers to supply malicious objects that execute code during reconstruction and occur when applications process serialized data without strict input validation<
+Source: https://www.invicti.com/learn/remote-code-execution-rce
+
+{E006} [MEDIUM] What is Remote Code Execution (RCE)? Attack & Defense - Rapid7
+Fact: Remote Code Execution (RCE) is a critical vulnerability that lets attacker run malicious code remotely. Learn how RCE works—and how to detect and prevent it.
+Source: https://www.rapid7.com/fundamentals/what-is-remote-code-execution-rce/
+
+{E007} [MEDIUM] SIEM: Security Information & Event Management Explained | Splunk
+Fact: Market-leading SIEM to quickly detect, investigate, and respond to threats. ... Monitor IT service performance to ensure reliability and efficiency. Learn key metrics, best practices, and how modern tools help optimize cloud-based IT systems. ... Lea
+Source: https://www.splunk.com/en_us/blog/learn/siem-security-information-event-management.html
+
+{E008} [MEDIUM] Oracle Emergency Patch: Critical Pre-Auth RCE in Identity Manager (CVE-2026-21992) Demands Immediate
+Fact: <strong>Look for unusual process execution, unauthorized file access, unexpected network connections, or atypical access patterns to the critical functions</strong>. Integrate these logs with a Security Information and Event Management (SIEM) system 
+Source: https://grabify.org/blog/oracle-issues-emergency-fix-for-pre-auth-rce-in-identity-manager-cve-2026-21992/
+
+{E009} [MEDIUM] How SIEM Detects and Responds to Advanced Persistent Threats - SearchInform
+Fact: From log collection to event correlation, each element plays a crucial role in identifying potential risks, especially when dealing with advanced threats like APTs (Advanced Persistent Threats). SIEM for APTs relies on this structured architecture to
+Source: https://searchinform.com/articles/cybersecurity/measures/siem/use-cases/apt/
+
+{E010} [MEDIUM] Unauthenticated RCE Vulnerability in Microsoft SharePoint Server
+Fact: Upload and execution of persistent web shells (e.g., aspx), enabling ongoing access and lateral movement. Theft of cryptographic secrets, such as machine keys, used to generate authentication tokens and ViewState payloads. Evasion of detection, as at
+Source: https://www.avertium.com/flash-notices/critical-unauthenticated-rce-in-microsoft-sharepoint-server
+
+
+[EVIDENCE DISCIPLINE]
+Any specific number, percentage, probability, or dollar figure in your analysis
+MUST cite an evidence ID (E001-E999) from the Research Context above.
+If no evidence supports a figure, explicitly label it as an estimate or assumption.
+Do not present ungrounded figures as established facts.
+[END RESEARCH CONTEXT]
