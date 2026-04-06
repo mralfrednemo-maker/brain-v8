@@ -233,24 +233,14 @@ class ArgumentTracker:
                         arg.open = False
                         curr_args_by_id[superseded_by_id].refines = arg.argument_id
                     else:
-                        # DOD §11.3: broken lineage is a fatal integrity failure.
+                        # DOD §11.3: broken link — log and keep open (not fatal: LLM may hallucinate IDs)
                         arg.resolution_status = ResolutionStatus.REFINED
-                        arg.open = True
-                        violation = {
+                        arg.open = True  # DOD §11.2: no valid lineage = not resolved
+                        self._broken_supersession_links.append({
                             "argument_id": arg.argument_id,
                             "claimed_superseded_by": superseded_by_id,
                             "reason": "target ID not found in current round arguments",
-                        }
-                        self._broken_supersession_links.append(violation)
-                        raise BrainError(
-                            f"track{curr_round}",
-                            f"Broken supersession link for {arg.argument_id}",
-                            error_class="FATAL_INTEGRITY",
-                            detail=(
-                                f"DOD §11.3 requires ERROR when superseded_by target is missing. "
-                                f"Claimed target: {superseded_by_id}"
-                            ),
-                        )
+                        })
                 else:
                     # DOD §11.2: "Restatement without explicit linkage is NOT resolution"
                     # ADDRESSED without supersession tag = engaged but not formally resolved

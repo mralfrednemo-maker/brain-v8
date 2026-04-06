@@ -1761,12 +1761,12 @@ async def main():
 
     # Generate auto-populated diagram from stage registry + run data
     # Import all tagged modules so the registry is populated
-    import brain.preflight, thinker.rounds, thinker.argument_tracker  # noqa: F401
-    import brain.tools.position, thinker.search, thinker.synthesis, thinker.gate2  # noqa: F401
-    import brain.invariant, thinker.residue, thinker.page_fetch, thinker.evidence_extractor  # noqa: F401
-    import brain.preflight, thinker.dimension_seeder  # noqa: F401
-    import brain.perspective_cards, thinker.divergent_framing  # noqa: F401
-    import brain.semantic_contradiction, thinker.stability  # noqa: F401
+    import brain.preflight, brain.rounds, brain.argument_tracker  # noqa: F401
+    import brain.tools.position, brain.search, brain.synthesis, brain.gate2  # noqa: F401
+    import brain.invariant, brain.residue, brain.page_fetch, brain.evidence_extractor  # noqa: F401
+    import brain.preflight, brain.dimension_seeder  # noqa: F401
+    import brain.perspective_cards, brain.divergent_framing  # noqa: F401
+    import brain.semantic_contradiction, brain.stability  # noqa: F401
     from brain.pipeline import generate_architecture_html
     events_data = json.loads((Path(args.outdir) / "events.json").read_text())
     generate_architecture_html(
