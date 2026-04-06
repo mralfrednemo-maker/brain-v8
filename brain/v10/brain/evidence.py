@@ -27,6 +27,15 @@ _AUTHORITY_DOMAINS = {
 }
 
 
+def _domains_compatible(item_domains: set[str], active_domains: set[str]) -> bool:
+    """V3.1 ADDITION-11: Non-empty intersection is sufficient (replaces strict match).
+    Empty active_domains = unconstrained, admit anything.
+    """
+    if not active_domains:
+        return True
+    return bool(item_domains & active_domains)
+
+
 def derive_topic_cluster(item: EvidenceItem) -> str:
     """Derive a deterministic topic cluster from source metadata."""
     try:

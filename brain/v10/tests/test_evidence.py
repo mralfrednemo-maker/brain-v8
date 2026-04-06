@@ -269,3 +269,42 @@ class TestTwoTierLedger:
         assert len(ledger.all_items) == 2
         # Archived item still accessible
         assert ledger.get_from_any("E001") is not None
+
+
+class TestEvictionEventForensicOverlay:
+    """DELTA-14: EvictionEvent forensic linkage fields."""
+
+    def test_eviction_event_has_linkage_fields(self):
+        from brain.types import EvictionEvent
+        e = EvictionEvent(
+            event_id="EVICT-001",
+            evidence_id="E001",
+            reason="cap_pressure",
+            linked_contradiction_id="CTR-001",
+            contradiction_severity="HIGH",
+        )
+        assert e.linked_contradiction_id == "CTR-001"
+        assert e.contradiction_severity == "HIGH"
+        assert e.linked_blocker_id is None
+
+    def test_eviction_event_to_dict_includes_forensic_fields(self):
+        from brain.types import EvictionEvent
+        e = EvictionEvent(
+            event_id="EVICT-002",
+            evidence_id="E002",
+            reason="cap_pressure",
+            linked_contradiction_id="CTR-002",
+            linked_blocker_id="BLK-001",
+            contradiction_severity="MEDIUM",
+        )
+        d = e.to_dict()
+        assert d["linked_contradiction_id"] == "CTR-002"
+        assert d["linked_blocker_id"] == "BLK-001"
+        assert d["contradiction_severity"] == "MEDIUM"
+
+    def test_eviction_event_defaults_are_none(self):
+        from brain.types import EvictionEvent
+        e = EvictionEvent(event_id="EVICT-003", evidence_id="E003")
+        assert e.linked_contradiction_id is None
+        assert e.linked_blocker_id is None
+        assert e.contradiction_severity is None

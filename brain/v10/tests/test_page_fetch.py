@@ -58,3 +58,19 @@ class TestTruncateContent:
     def test_exact_limit(self):
         text = "a" * 100
         assert truncate_content(text, max_chars=100) == text
+
+
+class TestIsPaywalled:
+    """Paywall detection (V3.1 ADDITION-11)."""
+
+    def test_paywall_detected(self):
+        from brain.page_fetch import is_paywalled
+        assert is_paywalled("Subscribe to continue reading. This content is for subscribers only.") is True
+
+    def test_paywall_not_detected_on_free_content(self):
+        from brain.page_fetch import is_paywalled
+        assert is_paywalled("The study found that X causes Y in 80% of cases.") is False
+
+    def test_empty_text_not_paywalled(self):
+        from brain.page_fetch import is_paywalled
+        assert is_paywalled("") is False

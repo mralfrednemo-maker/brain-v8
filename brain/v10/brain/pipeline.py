@@ -350,6 +350,23 @@ def _retroactive_premise_scan_placeholder():
 
 
 @pipeline_stage(
+    name="Breadth Recovery Eval",
+    description="Post-R2: if R1 ignored_ratio > 0.40, inject mandatory recovery into R3 prompt.",
+    stage_type="track",
+    order=12,
+    provider="deterministic",
+    inputs=["arguments_by_round[1]", "arguments_by_round[2]"],
+    outputs=["breadth_recovery", "R3 prompt injection (conditional)"],
+    logic="ignored_ratio = ignored_r1_args / total_r1_args. Trigger: > 0.40.",
+    thresholds={"ignored_ratio": "> 0.40"},
+    failure_mode="Trigger met but injection omitted → ERROR",
+    stage_id="breadth_recovery_eval",
+)
+def _breadth_recovery_eval_placeholder():
+    pass
+
+
+@pipeline_stage(
     name="Anti-Groupthink Search",
     description="Post-R1 conditional search: if agreement > 0.80 on OPEN/AMBIGUOUS or HIGH-stakes "
                 "question, issue exactly one adversarial query against the consensus.",

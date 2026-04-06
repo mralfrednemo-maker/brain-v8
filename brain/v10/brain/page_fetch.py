@@ -18,6 +18,31 @@ from brain.pipeline import pipeline_stage
 from brain.types import SearchResult
 
 
+_PAYWALL_MARKERS = [
+    "subscribe to continue",
+    "subscription required",
+    "subscribers only",
+    "sign in to read",
+    "sign up to read",
+    "premium content",
+    "this content is for subscribers",
+    "create a free account to continue",
+    "register to read",
+    "to read the full article",
+    "unlock full access",
+]
+
+
+def is_paywalled(text: str) -> bool:
+    """Detect if fetched page content is a paywall gate.
+    Returns True if the text is likely a paywall/subscription prompt.
+    """
+    if not text or len(text) < 10:
+        return False
+    text_lower = text.lower()
+    return any(marker in text_lower for marker in _PAYWALL_MARKERS)
+
+
 def strip_html(html: str) -> str:
     """Strip HTML tags, scripts, styles, and decode entities.
 

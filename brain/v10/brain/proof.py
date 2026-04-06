@@ -125,6 +125,8 @@ class ProofBuilder:
         self._warnings: list[dict] = []
         self._retroactive_premise: Optional[dict] = None
         self._anti_groupthink_search: Optional[dict] = None
+        self._breadth_recovery: Optional[dict] = None
+        self._reasoning_contract: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -468,6 +470,14 @@ class ProofBuilder:
         """Record anti-groupthink search result (V3.1 ADDITION-7)."""
         self._anti_groupthink_search = result
 
+    def set_breadth_recovery(self, result: dict) -> None:
+        """Record breadth recovery evaluation (V3.1 ADDITION-6)."""
+        self._breadth_recovery = result
+
+    def set_reasoning_contract(self, result: dict) -> None:
+        """Record SHORT_CIRCUIT 5-invariant reasoning contract (V3.1 DELTA-5)."""
+        self._reasoning_contract = result
+
     def build(self) -> dict:
         """Build the complete proof.json dict."""
         blocker_list = []
@@ -571,5 +581,7 @@ class ProofBuilder:
             "warnings": self._warnings,
             "retroactive_premise": self._retroactive_premise,
             "anti_groupthink_search": self._anti_groupthink_search,
+            "breadth_recovery": self._breadth_recovery,
+            "reasoning_contract": self._reasoning_contract,
         }
         return proof

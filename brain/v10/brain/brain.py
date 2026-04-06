@@ -96,6 +96,40 @@ def _should_trigger_retroactive_premise(
     return False
 
 
+_SHORT_CIRCUIT_INVARIANTS = [
+    ("premise_check", ["premise check", "premise:", "assumes"]),
+    ("confidence_basis", ["confidence basis", "confidence:", "based on"]),
+    ("known_unknowns", ["known unknowns", "unknown", "we don't know", "uncertain"]),
+    ("counter_consideration", ["counter-consideration", "counter consideration",
+                                "one could argue", "alternatively", "however"]),
+    ("compression_reason", ["compression reason", "short_circuit", "short circuit",
+                             "trivial", "well_established"]),
+]
+
+
+def _validate_short_circuit_invariants(response_text: str) -> tuple[bool, list[str]]:
+    """Check that a SHORT_CIRCUIT compressed response contains all 5 required invariants.
+    Returns (all_present: bool, missing_invariant_names: list[str]).
+    Missing any invariant = ERROR per V3.1 DOD.
+    """
+    text_lower = response_text.lower()
+    missing = []
+    for invariant_name, markers in _SHORT_CIRCUIT_INVARIANTS:
+        if not any(marker in text_lower for marker in markers):
+            missing.append(invariant_name)
+    return len(missing) == 0, missing
+
+
+def _should_trigger_breadth_recovery(r1_arg_count: int, ignored_count: int) -> bool:
+    """Trigger breadth recovery injection into R3 when R1 arguments were over-ignored in R2.
+    Trigger: ignored_ratio > 0.40 (strictly greater than).
+    If argument lineage broken (r1_arg_count == 0), fail closed.
+    """
+    if r1_arg_count == 0:
+        return False
+    return (ignored_count / r1_arg_count) > 0.40
+
+
 def _should_trigger_anti_groupthink(
     agreement_ratio: float,
     question_class,

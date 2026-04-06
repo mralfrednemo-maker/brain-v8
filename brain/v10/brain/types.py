@@ -849,6 +849,10 @@ class EvictionEvent:
     from_active: bool = True
     to_archive: bool = True
     reason: str = ""
+    # V3.1 DELTA-14: Forensic eviction overlay
+    linked_contradiction_id: Optional[str] = None
+    linked_blocker_id: Optional[str] = None
+    contradiction_severity: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -857,6 +861,9 @@ class EvictionEvent:
             "from_active": self.from_active,
             "to_archive": self.to_archive,
             "reason": self.reason,
+            "linked_contradiction_id": self.linked_contradiction_id,
+            "linked_blocker_id": self.linked_blocker_id,
+            "contradiction_severity": self.contradiction_severity,
         }
 
 
