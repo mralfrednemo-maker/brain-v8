@@ -197,14 +197,17 @@ def _eval_decide_rules(
         trace[-1]["outcome_if_fired"] = "ERROR"
         return Outcome.ERROR, trace
 
-    # --- D3: SHORT_CIRCUIT without evidence ---
+    # --- D3: SHORT_CIRCUIT without evidence (only when search was enabled) ---
+    # If search_scope=NONE, evidence=0 is expected — D3 must not fire.
     short_circuit_without_evidence = (
         preflight is not None
         and preflight.short_circuit_allowed
+        and search_enabled
         and evidence_count == 0
     )
     if _t("D3", short_circuit_without_evidence,
-          f"short_circuit_allowed={preflight.short_circuit_allowed if preflight else False}, evidence={evidence_count}"):
+          f"short_circuit_allowed={preflight.short_circuit_allowed if preflight else False}, "
+          f"search_enabled={search_enabled}, evidence={evidence_count}"):
         trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
 
