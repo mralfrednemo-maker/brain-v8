@@ -127,6 +127,11 @@ class ProofBuilder:
         self._anti_groupthink_search: Optional[dict] = None
         self._breadth_recovery: Optional[dict] = None
         self._reasoning_contract: Optional[dict] = None
+        self._escalate_remediation: Optional[dict] = None
+        self._outcome_confidence: Optional[float] = None
+        # V3.1 ADDITION-10: ANALYSIS overlays
+        self._information_boundary: Optional[dict] = None
+        self._coverage_assessment: Optional[dict] = None
 
     def record_round(self, round_num: int, responded: list[str], failed: list[str]):
         self._rounds[str(round_num)] = {
@@ -478,6 +483,25 @@ class ProofBuilder:
         """Record SHORT_CIRCUIT 5-invariant reasoning contract (V3.1 DELTA-5)."""
         self._reasoning_contract = result
 
+    def set_escalate_remediation(self, rule_id: str, message: str) -> None:
+        """Rule-specific remediation for ESCALATE outcomes (V3.1 ADDITION-12)."""
+        self._escalate_remediation = {"rule_id": rule_id, "message": message}
+
+    def set_outcome_confidence(self, confidence: float) -> None:
+        """Outcome confidence score — recorded only, never used by Gate 2 (V3.1 ADDITION-12)."""
+        self._outcome_confidence = confidence
+
+    def set_information_boundary(self, boundary: dict) -> None:
+        """Extractive information-boundary classification for ANALYSIS runs (V3.1 ADDITION-10).
+        boundary = {"known": [...], "inferred": [...], "unknown": [...]}
+        Must be extractive from evidence, not self-tagged by models.
+        """
+        self._information_boundary = boundary
+
+    def set_coverage_assessment(self, assessment: dict) -> None:
+        """Top-level coverage assessment for ANALYSIS runs (V3.1 ADDITION-10)."""
+        self._coverage_assessment = assessment
+
     def build(self) -> dict:
         """Build the complete proof.json dict."""
         blocker_list = []
@@ -583,5 +607,9 @@ class ProofBuilder:
             "anti_groupthink_search": self._anti_groupthink_search,
             "breadth_recovery": self._breadth_recovery,
             "reasoning_contract": self._reasoning_contract,
+            "escalate_remediation": self._escalate_remediation,
+            "outcome_confidence": self._outcome_confidence,
+            "information_boundary": self._information_boundary,
+            "coverage_assessment": self._coverage_assessment,
         }
         return proof

@@ -1,8 +1,8 @@
-"""Gate 2: Deterministic trust assessment with D1-D14 and A1-A7 rule sets.
+"""Gate 2: Deterministic trust assessment with D1-D16 and A1-A7 rule sets.
 
 No LLM call. Thresholds on mechanical tool data only.
 
-DECIDE modality: D1-D14 rules, first match wins.
+DECIDE modality: D1-D16 rules, first match wins (V3.1 DELTA-9).
 ANALYSIS modality: A1-A7 rules, first match wins.
 
 Every rule evaluated is recorded in rule_trace for auditability.
@@ -34,7 +34,7 @@ from brain.types import (
             "preflight", "divergence", "stability", "decisive_claims", "dimensions",
             "total_arguments", "archive_evidence_count"],
     outputs=["outcome (DECIDE/ESCALATE/NO_CONSENSUS/ANALYSIS/ERROR/NEED_MORE)", "rule_trace"],
-    logic="""DECIDE modality: D1-D14, first match wins.
+    logic="""DECIDE modality: D1-D16, first match wins (V3.1 DELTA-9: added D13 residue, D15 suspicious agreement, renumbered).
 ANALYSIS modality: A1-A7, first match wins.
 See module docstring for full rule definitions.""",
     thresholds={"agreement_ratio >= 0.75": "DECIDE", "agreement_ratio < 0.5": "NO_CONSENSUS/ESCALATE"},
@@ -111,8 +111,9 @@ def _eval_decide_rules(
     known_evidence_ids: Optional[set[str]] = None,
     round_model_counts: Optional[list[int]] = None,
     expected_round_model_counts: Optional[list[int]] = None,
+    residue_threshold_violation: bool = False,
 ) -> tuple[Outcome, list[dict]]:
-    """Evaluate D1-D14 per DOD-V3 Section 16. First match wins."""
+    """Evaluate D1-D16 per DOD-V3 Section 16 (V3.1 DELTA-9). First match wins."""
     trace: list[dict] = []
 
     def _t(rule_id: str, matched: bool, reason: str) -> bool:
@@ -272,14 +273,32 @@ def _eval_decide_rules(
         trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
 
-    # --- D13: groupthink + no independent evidence ---
-    if _t("D13", groupthink_warning and not independent_evidence,
+    # --- D13: residue.threshold_violation → ESCALATE (V3.1 DELTA-9) ---
+    if _t("D13", residue_threshold_violation,
+          f"residue_threshold_violation={residue_threshold_violation}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D14: groupthink + no independent evidence (was D13) ---
+    if _t("D14", groupthink_warning and not independent_evidence,
           f"groupthink={groupthink_warning}, independent_evidence={independent_evidence}"):
         trace[-1]["outcome_if_fired"] = "ESCALATE"
         return Outcome.ESCALATE, trace
 
-    # --- D14: Otherwise → DECIDE ---
-    _t("D14", True, "all checks passed")
+    # --- D15: suspicious agreement without evidence on non-SHORT_CIRCUIT run ---
+    _effort_tier_val = getattr(getattr(preflight, 'effort_tier', None), 'value', '') if preflight else ''
+    short_circuit_run = (preflight is not None and getattr(preflight, 'short_circuit_allowed', False)
+                         and _effort_tier_val == "SHORT_CIRCUIT")
+    suspicious_agreement = (agreement_ratio >= 0.75 and not short_circuit_run
+                             and evidence_count == 0 and search_enabled)
+    if _t("D15", suspicious_agreement,
+          f"agreement={agreement_ratio:.2f}>=0.75, short_circuit={short_circuit_run}, "
+          f"evidence={evidence_count}, search_enabled={search_enabled}"):
+        trace[-1]["outcome_if_fired"] = "ESCALATE"
+        return Outcome.ESCALATE, trace
+
+    # --- D16: Otherwise → DECIDE (was D14) ---
+    _t("D16", True, "all checks passed")
     trace[-1]["outcome_if_fired"] = "DECIDE"
     return Outcome.DECIDE, trace
 
@@ -408,10 +427,11 @@ def run_gate2_deterministic(
     known_evidence_ids: Optional[set[str]] = None,
     round_model_counts: Optional[list[int]] = None,
     expected_round_model_counts: Optional[list[int]] = None,
+    residue_threshold_violation: bool = False,
 ) -> Gate2Assessment:
     """Deterministic Gate 2 — no LLM call.
 
-    Dispatches to D1-D14 (DECIDE modality) or A1-A7 (ANALYSIS modality)
+    Dispatches to D1-D16 (DECIDE modality) or A1-A7 (ANALYSIS modality)
     based on preflight.modality. First matching rule wins.
 
     All parameters after search_enabled are optional for backward compatibility.
@@ -471,6 +491,7 @@ def run_gate2_deterministic(
             known_evidence_ids=known_evidence_ids,
             round_model_counts=round_model_counts,
             expected_round_model_counts=expected_round_model_counts,
+            residue_threshold_violation=residue_threshold_violation,
         )
 
     # Identify which rule fired

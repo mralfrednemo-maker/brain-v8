@@ -52,9 +52,10 @@ def check_synthesis_residue(
         if a.argument_id not in report:
             omissions.append({"type": "argument", "id": a.argument_id})
 
-    # Threshold check: >30% omitted
+    # Threshold check: >25% omitted (V3.1 DELTA-8: was 0.30)
+    _THRESHOLD = 0.25
     threshold_violated = (
-        total_items > 0 and len(omissions) / total_items > 0.30
+        total_items > 0 and len(omissions) / total_items > _THRESHOLD
     )
     if threshold_violated:
         for o in omissions:
@@ -177,7 +178,7 @@ def run_deep_semantic_scan(
 
 @pipeline_stage(
     name="Residue Verification",
-    description="Post-synthesis narrative completeness check. Scans the synthesis report text for BLK IDs, CTR IDs, and unaddressed argument IDs. If >30% of structural findings are omitted, flags a threshold violation. This is NOT truth verification — it checks whether the synthesis mentioned the findings, not whether it got them right.",
+    description="Post-synthesis narrative completeness check. Scans the synthesis report text for BLK IDs, CTR IDs, and unaddressed argument IDs. If >25% of structural findings are omitted, flags a threshold violation (V3.1 DELTA-8: was 30%). This is NOT truth verification — it checks whether the synthesis mentioned the findings, not whether it got them right.",
     stage_type="deterministic",
     order=9,
     provider="deterministic (no LLM)",
@@ -186,7 +187,7 @@ def run_deep_semantic_scan(
     logic="""For each BLK ID: is it mentioned in the report text? If not → omission.
 For each CTR ID: is it mentioned? If not → omission.
 For each unaddressed argument ID: is it mentioned? If not → omission.
-If omissions / total_items > 0.30 → threshold_violation=True on all omissions.""",
+If omissions / total_items > 0.25 → threshold_violation=True on all omissions (V3.1 DELTA-8: was 0.30).""",
     failure_mode="Cannot fail — string matching only.",
     cost="$0 (no LLM call)",
     stage_id="residue_verification",

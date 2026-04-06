@@ -71,3 +71,29 @@ class TestCheckSynthesisResidue:
         assert len(omissions) == 1
         assert "type" in omissions[0]
         assert "id" in omissions[0]
+
+
+def test_threshold_violation_at_25_percent():
+    """3 of 4 items missing = 75% > 25% threshold → violation."""
+    from brain.residue import check_synthesis_residue
+    class FB:
+        def __init__(self, bid): self.blocker_id = bid
+    blockers = [FB("BLK-001"), FB("BLK-002"), FB("BLK-003"), FB("BLK-004")]
+    # Only BLK-001 in report
+    report = "We addressed BLK-001 in the synthesis."
+    omissions = check_synthesis_residue(report=report, blockers=blockers,
+                                        contradictions=[], unaddressed_arguments=[])
+    assert any(o.get("threshold_violation") for o in omissions)
+
+
+def test_no_violation_at_20_percent():
+    """1 of 5 missing = 20% ≤ 25% threshold → no violation."""
+    from brain.residue import check_synthesis_residue
+    class FB:
+        def __init__(self, bid): self.blocker_id = bid
+    blockers = [FB(f"BLK-{i:03d}") for i in range(5)]
+    # 4 of 5 mentioned
+    report = " ".join(f"BLK-{i:03d}" for i in range(4))
+    omissions = check_synthesis_residue(report=report, blockers=blockers,
+                                        contradictions=[], unaddressed_arguments=[])
+    assert not any(o.get("threshold_violation") for o in omissions)

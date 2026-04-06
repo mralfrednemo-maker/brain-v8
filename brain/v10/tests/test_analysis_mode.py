@@ -58,3 +58,29 @@ class TestAnalysisDebugSunset:
         }
         for field in required_fields:
             assert field in data
+
+
+# ---------------------------------------------------------------------------
+# V3.1 ADDITION-10: ANALYSIS overlays
+# ---------------------------------------------------------------------------
+
+def test_analysis_synthesis_sections_has_8_items():
+    from brain.analysis_mode import ANALYSIS_SYNTHESIS_SECTIONS
+    assert len(ANALYSIS_SYNTHESIS_SECTIONS) == 8
+
+
+def test_information_boundary_proof_field():
+    from brain.proof import ProofBuilder
+    pb = ProofBuilder(run_id="t", brief="t", rounds_requested=4)
+    pb.set_information_boundary({"known": ["X causes Y"], "inferred": [], "unknown": ["trend"]})
+    result = pb.build()
+    assert "information_boundary" in result
+    assert result["information_boundary"]["known"] == ["X causes Y"]
+
+
+def test_coverage_assessment_proof_field():
+    from brain.proof import ProofBuilder
+    pb = ProofBuilder(run_id="t", brief="t", rounds_requested=4)
+    pb.set_coverage_assessment({"coverage_score": 0.80, "gaps": []})
+    result = pb.build()
+    assert result.get("coverage_assessment", {}).get("coverage_score") == 0.80

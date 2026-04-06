@@ -542,17 +542,17 @@ class TestDecideRules:
         )
         assert result.outcome == Outcome.ESCALATE
         fired = [r for r in result.rule_trace if r["fired"]]
-        assert fired[0]["rule_id"] == "D13"
+        assert fired[0]["rule_id"] == "D14"  # was D13 before V3.1 DELTA-9 renumbering
         assert fired[0]["outcome_if_fired"] == "ESCALATE"
 
     def test_d14_otherwise_decide(self):
-        """D14: all checks passed -> DECIDE."""
+        """D16: all checks passed -> DECIDE (was D14 before V3.1 DELTA-9 renumbering)."""
         result = run_gate2_deterministic(**_base_decide_kwargs())
         assert result.outcome == Outcome.DECIDE
         fired = [r for r in result.rule_trace if r["fired"]]
-        # D3 always evaluates as fired=False, D14 is the first that fires True
+        # D3 always evaluates as fired=False, D16 is the first that fires True
         fired_true = [r for r in fired if r["fired"]]
-        assert fired_true[-1]["rule_id"] == "D14"
+        assert fired_true[-1]["rule_id"] == "D16"  # was D14 before V3.1 DELTA-9 renumbering
         assert fired_true[-1]["outcome_if_fired"] == "DECIDE"
 
 
@@ -734,9 +734,9 @@ class TestRuleTrace:
     def test_rule_trace_populated(self):
         result = run_gate2_deterministic(**_base_decide_kwargs())
         assert len(result.rule_trace) > 0
-        # D14 should be the last fired rule for a clean path
+        # D16 should be the last fired rule for a clean path (was D14 before V3.1 DELTA-9)
         fired = [r for r in result.rule_trace if r["fired"]]
-        assert fired[-1]["rule_id"] == "D14"
+        assert fired[-1]["rule_id"] == "D16"
         assert fired[-1]["fired"] is True
 
     def test_rule_trace_records_non_matches(self):
@@ -800,3 +800,71 @@ class TestGate2Determinism:
         result1 = run_gate2_deterministic(**kwargs)
         result2 = run_gate2_deterministic(**kwargs)
         assert result1.outcome == result2.outcome
+
+
+# ---------------------------------------------------------------------------
+# V3.1 DELTA-9: D13/D15/D16 new rules
+# ---------------------------------------------------------------------------
+
+def _make_preflight(modality_str="DECIDE", short_circuit=False, effort_tier_str="STANDARD"):
+    from brain.types import PreflightResult, Modality, EffortTier, QuestionClass, StakesClass, SearchScope
+    modality_map = {"DECIDE": Modality.DECIDE, "ANALYSIS": Modality.ANALYSIS}
+    effort_map = {"STANDARD": EffortTier.STANDARD, "SHORT_CIRCUIT": EffortTier.SHORT_CIRCUIT, "ELEVATED": EffortTier.ELEVATED}
+    return PreflightResult(
+        executed=True, parse_ok=True, answerability="ANSWERABLE",
+        question_class=QuestionClass.OPEN, stakes_class=StakesClass.STANDARD,
+        effort_tier=effort_map[effort_tier_str], modality=modality_map[modality_str],
+        search_scope=SearchScope.TARGETED, exploration_required=False,
+        short_circuit_allowed=short_circuit, fatal_premise=False,
+    )
+
+
+def test_d13_residue_threshold_violation_escalates():
+    from brain.gate2 import run_gate2_deterministic
+    result = run_gate2_deterministic(
+        agreement_ratio=0.90,
+        positions={"r1": object(), "reasoner": object()},
+        contradictions=[], unaddressed_arguments=[], open_blockers=[],
+        evidence_count=5, search_enabled=True,
+        preflight=_make_preflight(),
+        stability=StabilityResult(conclusion_stable=True, reason_stable=True, assumption_stable=True),
+        total_arguments=10,
+        residue_threshold_violation=True,
+    )
+    assert result.outcome == Outcome.ESCALATE
+    fired = [r for r in result.rule_trace if r.get("fired")]
+    assert fired[0]["rule_id"] == "D13"
+
+
+def test_d15_suspicious_agreement_no_evidence_escalates():
+    from brain.gate2 import run_gate2_deterministic
+    result = run_gate2_deterministic(
+        agreement_ratio=0.90,
+        positions={"r1": object(), "reasoner": object()},
+        contradictions=[], unaddressed_arguments=[], open_blockers=[],
+        evidence_count=0, search_enabled=True,
+        preflight=_make_preflight(short_circuit=False),
+        stability=StabilityResult(conclusion_stable=True, reason_stable=True, assumption_stable=True),
+        total_arguments=10,
+        residue_threshold_violation=False,
+    )
+    assert result.outcome == Outcome.ESCALATE
+    fired = [r for r in result.rule_trace if r.get("fired")]
+    assert fired[0]["rule_id"] == "D15"
+
+
+def test_d16_all_clear_decides():
+    from brain.gate2 import run_gate2_deterministic
+    result = run_gate2_deterministic(
+        agreement_ratio=0.90,
+        positions={"r1": object(), "reasoner": object()},
+        contradictions=[], unaddressed_arguments=[], open_blockers=[],
+        evidence_count=5, search_enabled=True,
+        preflight=_make_preflight(),
+        stability=StabilityResult(conclusion_stable=True, reason_stable=True, assumption_stable=True),
+        total_arguments=10,
+        residue_threshold_violation=False,
+    )
+    assert result.outcome == Outcome.DECIDE
+    fired = [r for r in result.rule_trace if r.get("fired")]
+    assert fired[0]["rule_id"] == "D16"

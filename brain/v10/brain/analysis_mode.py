@@ -11,6 +11,19 @@ Deployed with debug_mode per Section 4.6: rules log without enforcing initially.
 from __future__ import annotations
 
 
+# V3.1 ADDITION-10: 8-section synthesis structure for ANALYSIS runs
+ANALYSIS_SYNTHESIS_SECTIONS = [
+    "framing",           # How the question is framed
+    "aspect_map",        # Exploration by dimension
+    "competing_lenses",  # Alternative hypotheses or interpretive frames
+    "evidence_for",      # Evidence supporting each lens
+    "evidence_against",  # Evidence against each lens
+    "uncertainties",     # Unresolved unknowns
+    "information_gaps",  # What data would most change the map
+    "boundary_summary",  # Known / Inferred / Unknown classification
+]
+
+
 def get_analysis_round_preamble() -> str:
     """Get the ANALYSIS-mode preamble prepended to round prompts."""
     return (
